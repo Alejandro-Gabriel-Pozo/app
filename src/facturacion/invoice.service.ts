@@ -62,13 +62,14 @@ import {
   CreditNoteAttributionMismatchError,
   CreditNoteAmbiguousSubjectError,
   ServiceItemNotFoundError,
+  CreditNoteRequestInvalidTransitionError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems, type AccountsReceivableWarningEntry } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { CreditNoteRequestRepository } from './credit-note-request.repository.js';
-import type { CreditNoteRequestSubject } from './credit-note-request.entities.js';
+import type { CreditNoteRequestSubject, TransitionCreditNoteRequestInput } from './credit-note-request.entities.js';
 import { logger } from '../logger.js';
 
 const AUDIT_ENTITY = 'invoices';
@@ -223,8 +224,15 @@ export class InvoiceService {
      * filtro se generarían filas espurias para reembolsos normales de C2).
      * `Pick<..., 'createWithClient'>` -- mínimo necesario, mismo criterio
      * que el resto de repos inyectados acá (bounded contexts).
+     *
+     * Bloque 4 (15/09/2026, §6.5 bis) -- suma `'findByInvoiceId'` y
+     * `'transitionWithClient'`: `transitionCreditNoteRequestAfterFailure()`
+     * (más abajo) los usa para enganchar las 3 transiciones automáticas
+     * sobre el `markFailedWithClient()` ya atómico del Bloque 2. Sigue
+     * siendo un `Pick` angosto, no el repo completo (`listByState`/`findById`
+     * no hacen falta acá).
      */
-    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient'>,
+    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -1411,9 +1419,8 @@ export class InvoiceService {
       // reintentable solo una vez corregido lo que haya rechazado.
       const obs = result.observaciones ?? 'sin detalle';
       // Bloque 2 (15/09/2026) -- transaccionaliza markFailed() (antes UPDATE
-      // suelto fuera de cualquier tx). Hoy no hay otra escritura que
-      // compartir acá; el wrapper deja el call-site listo para el Bloque 3
-      // (credit_note_request), que sí necesitará compartir esta misma tx.
+      // suelto fuera de cualquier tx). Bloque 4 (15/09/2026) -- ahora sí
+      // comparte esta misma tx con la transición de `credit_note_request`.
       await this.transactionManager.run(async (client: SqlClient) => {
         await this.invoiceRepo.markFailedWithClient(client, invoice.id, {
           status: 'REJECTED',
@@ -1421,6 +1428,11 @@ export class InvoiceService {
           afipResponse: result.raw,
           afipContacted: true,
         });
+        // Bloque 4 (15/09/2026, §6.5 bis) -- REJECTED con afipContacted:true
+        // es un disparador legítimo de PENDIENTE -> CERRADA (automático,
+        // resolution_outcome NULL) para la fila `credit_note_request`
+        // asociada, si existe (solo el escape fiscal crea una -- Bloque 3).
+        await this.transitionCreditNoteRequestAfterFailure(client, invoice.id, { toState: 'CERRADA', resolutionOutcome: null });
       });
       throw new AfipRequestRejectedError(invoice.id, obs);
     }
@@ -1430,8 +1442,14 @@ export class InvoiceService {
       // AFIP respondió pero de forma inesperada -- genuinamente ambiguo,
       // requiere revisión manual antes de reintentar (A8.6).
       // Bloque 2 (15/09/2026) -- ver nota de la rama REJECTED más arriba.
+      // Bloque 4 (15/09/2026) -- ídem, comparte tx con credit_note_request.
       await this.transactionManager.run(async (client: SqlClient) => {
         await this.invoiceRepo.markFailedWithClient(client, invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.raw, afipContacted: true });
+        // Bloque 4 (15/09/2026, §6.5 bis) -- FAILED_UNCERTAIN con
+        // afipContacted:true es ambiguo (AFIP respondió pero sin CbteDesde/
+        // CAE) -- escala PENDIENTE -> EN_REVISION_MANUAL si la factura tiene
+        // una fila `credit_note_request` asociada.
+        await this.transitionCreditNoteRequestAfterFailure(client, invoice.id, { toState: 'EN_REVISION_MANUAL' });
       });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
@@ -1477,10 +1495,82 @@ export class InvoiceService {
     // createNextVoucher() SÍ se invocó y no se pudo confirmar el resultado --
     // ambiguo por definición (A8.6), no reintentable solo.
     // Bloque 2 (15/09/2026) -- ver nota de la rama REJECTED en issue().
+    // Bloque 4 (15/09/2026) -- ídem, comparte tx con credit_note_request.
     await this.transactionManager.run(async (client: SqlClient) => {
       await this.invoiceRepo.markFailedWithClient(client, invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: true });
+      // Bloque 4 (15/09/2026, §6.5 bis) -- mismo criterio que la rama
+      // FAILED_UNCERTAIN de issue(): ambiguo, escala PENDIENTE ->
+      // EN_REVISION_MANUAL si hay fila `credit_note_request` asociada.
+      // `reconcileAfterFailure()` tiene un solo call-site de
+      // `markFailedWithClient()` -- el camino que SÍ confirma el CAE
+      // (arriba, `lastVoucherAfter > lastVoucherBefore` + `codAutorizacion`)
+      // vuelve por `finalizeIssued()`/`markIssued()`, no por acá, así que no
+      // hay una segunda rama que mapear a CERRADA dentro de este método
+      // (ver reporte de Bloque 4 sobre el gap declarado de ese camino).
+      await this.transitionCreditNoteRequestAfterFailure(client, invoice.id, { toState: 'EN_REVISION_MANUAL' });
     });
     throw new AfipRequestUncertainError(invoice.id, message);
+  }
+
+  /**
+   * Bloque 4 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) --
+   * engancha las 3 transiciones automáticas de `credit_note_request`
+   * (`:REJECTED`/`:FAILED_UNCERTAIN` de `issue()`, `:FAILED_UNCERTAIN` de
+   * `reconcileAfterFailure()`) sobre el `markFailedWithClient()` ya atómico
+   * del Bloque 2 -- SIEMPRE se llama con el `client` de la MISMA transacción
+   * que hizo ese UPDATE (atomic-state-mutation: un solo commit, nunca dos
+   * escrituras sueltas que puedan divergir si una falla a mitad de camino).
+   *
+   * No-op si la factura no tiene una fila `credit_note_request` asociada
+   * (camino mayoritario: factura normal, sin escape fiscal de por medio --
+   * solo `buildCreditNote()` con `tx.type === 'ADJUSTMENT'`, Bloque 3, crea
+   * una).
+   *
+   * Tolera `CreditNoteRequestInvalidTransitionError` únicamente cuando
+   * `fromState === 'CERRADA'` (terminal, A6.4): `retryExisting()`
+   * (`invoice.service.ts`) no bloquea el reintento de una factura
+   * `REJECTED` -- solo bloquea `ISSUED` y `FAILED_UNCERTAIN` con
+   * `afipContacted:true`. Si un operador reintenta una factura REJECTED
+   * cuya `credit_note_request` ya cerró (CERRADA) en el primer intento, y
+   * el reintento vuelve a fallar (REJECTED o FAILED_UNCERTAIN otra vez),
+   * este método intenta transicionar una fila que ya llegó a su estado
+   * terminal -- no es un bug, es la consecuencia esperada de que
+   * `retryExisting()` no sabe (ni le compete) que el workflow de NC ya se
+   * resolvió. El UPDATE de `invoices` que ya corrió en la misma
+   * transacción sigue siendo la escritura correcta y autoritativa de este
+   * call-site -- no tiene sentido abortarla por un estado de workflow que
+   * ya llegó a destino. Cualquier OTRA forma de `CreditNoteRequestInvalidTransitionError`
+   * (p. ej. `fromState === 'EN_REVISION_MANUAL'`, que hoy no debería ser
+   * alcanzable desde estos 3 call-sites porque `retryExisting()` ya bloquea
+   * el reintento de toda factura `FAILED_UNCERTAIN` con `afipContacted:true`)
+   * SÍ hace fallar toda la transacción -- señalaría un camino no
+   * contemplado por este diseño, y hay que enterarse, no enmascararlo.
+   */
+  private async transitionCreditNoteRequestAfterFailure(
+    client: SqlClient,
+    invoiceId: string,
+    transition: TransitionCreditNoteRequestInput,
+  ): Promise<void> {
+    const request = await this.creditNoteRequestRepo.findByInvoiceId(invoiceId);
+    if (!request) return; // camino mayoritario -- sin escape de NC, nada que transicionar.
+
+    try {
+      await this.creditNoteRequestRepo.transitionWithClient(client, request.id, transition);
+    } catch (err) {
+      if (err instanceof CreditNoteRequestInvalidTransitionError && err.fromState === 'CERRADA') {
+        logger.warn(
+          {
+            creditNoteRequestId: request.id,
+            invoiceId,
+            attemptedToState: transition.toState,
+          },
+          '[InvoiceService] credit_note_request ya estaba CERRADA (terminal) -- se tolera el intento de transición ' +
+            '(reintento de una factura cuyo workflow de NC ya se había resuelto), no se aborta el UPDATE de invoices ya aplicado en esta misma tx',
+        );
+        return;
+      }
+      throw err;
+    }
   }
 }
 

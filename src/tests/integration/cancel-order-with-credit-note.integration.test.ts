@@ -68,7 +68,7 @@ import { authorizeCreditNoteCancellation } from '../../facturacion/cancel-with-c
 import { handleOrderCancelled } from '../../workers/outbox.handlers.js';
 import { logger } from '../../logger.js';
 import type { DomainEvent } from '../../repositories/domain-event.repository.js';
-import { CreditNoteCancellationPendingError } from '../../domain/errors.js';
+import { CreditNoteCancellationPendingError, CreditNoteCancellationRejectedError, AfipRequestRejectedError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -134,6 +134,53 @@ function fakeArcaClientUncertain(): Arca {
     electronicBillingService: {
       getLastVoucher: async () => ({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 }),
       createNextVoucher: async () => { throw new Error('ECONNRESET simulado ante AFIP'); },
+      getVoucherInfo: async () => ({}),
+    },
+  } as unknown as Arca;
+}
+
+/**
+ * Bloque 4 (15/09/2026, §6.5 bis) -- AFIP EVALÚA y rechaza (`Resultado: 'R'`
+ * en `FeCabResp`/`FeDetResp`, mismo criterio de `ArcaSdkBillingAdapter` que
+ * `cabResp?.Resultado === 'R' || detResp?.Resultado === 'R'`) -> `issue()`
+ * marca la invoice `REJECTED` (`:1417`) -- el disparador de
+ * `PENDIENTE -> CERRADA` (automático) sobre `credit_note_request`.
+ */
+function fakeArcaClientRejected(): Arca {
+  return {
+    electronicBillingService: {
+      getLastVoucher: async () => ({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 }),
+      createNextVoucher: async () => ({
+        response: {
+          FeCabResp: { Resultado: 'R', CbteTipo: CBTE_TIPO_FACTURA_B },
+          FeDetResp: { FECAEDetResponse: [{ Resultado: 'R', Observaciones: { Obs: [{ Code: '10015', Msg: 'CUIT del receptor no autorizado (simulado)' }] } }] },
+        },
+      }),
+      getVoucherInfo: async () => ({}),
+    },
+  } as unknown as Arca;
+}
+
+/**
+ * Bloque 4 (15/09/2026, §6.5 bis) -- AFIP responde (no `Resultado: 'R'`)
+ * pero SIN `CbteDesde`/`CAE` -- `issue()` lo trata como genuinamente
+ * ambiguo (`:1436`, `FAILED_UNCERTAIN` + `afipContacted:true`) -- el
+ * disparador de `PENDIENTE -> EN_REVISION_MANUAL` que corre DENTRO de
+ * `issue()` (distinto del que corre dentro de `reconcileAfterFailure()`,
+ * ya cubierto por `fakeArcaClientUncertain()`).
+ */
+function fakeArcaClientNoCae(): Arca {
+  return {
+    electronicBillingService: {
+      getLastVoucher: async () => ({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 }),
+      createNextVoucher: async () => ({
+        response: {
+          FeCabResp: { Resultado: 'A', CbteTipo: CBTE_TIPO_FACTURA_B },
+          FeDetResp: { FECAEDetResponse: [{ Resultado: 'A' }] }, // sin CbteDesde
+        },
+        // sin `cae`/`caeFchVto` top-level tampoco -- `result.cbteDesde` Y
+        // `result.cae` quedan null, dispara la rama `!result.cbteDesde || !result.cae`.
+      }),
       getVoucherInfo: async () => ({}),
     },
   } as unknown as Arca;
@@ -239,9 +286,20 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
    * DENTRO de la misma transacción.
    */
   function buildInvoiceServiceWithFailingCreditNoteRequestRepo(arcaFactory: () => Arca): InvoiceService {
-    const failingRepo: Pick<CreditNoteRequestRepository, 'createWithClient'> = {
+    // Bloque 4 -- el Pick de InvoiceService ahora exige también
+    // findByInvoiceId/transitionWithClient (transitionCreditNoteRequestAfterFailure()),
+    // aunque este test solo ejercita createWithClient() (atomicidad del
+    // INSERT de Bloque 3). Los otros dos no deberían llamarse nunca acá --
+    // fallan ruidoso si algo los invoca por error.
+    const failingRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'> = {
       async createWithClient(): Promise<never> {
         throw new Error('simulado -- violación de constraint en credit_note_request');
+      },
+      async findByInvoiceId(): Promise<never> {
+        throw new Error('buildInvoiceServiceWithFailingCreditNoteRequestRepo: findByInvoiceId() no debería llamarse en este test');
+      },
+      async transitionWithClient(): Promise<never> {
+        throw new Error('buildInvoiceServiceWithFailingCreditNoteRequestRepo: transitionWithClient() no debería llamarse en este test');
       },
     };
     return new InvoiceService(
@@ -250,6 +308,34 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
       new SqlServiceItemRepository(db),
       failingRepo,
+      () => buildArcaBillingAdapter(arcaFactory()),
+    );
+  }
+
+  /**
+   * Bloque 4 -- test de atomicidad (más abajo): `createWithClient`/
+   * `findByInvoiceId` REALES (`SqlCreditNoteRequestRepository`, delegados),
+   * pero `transitionWithClient()` siempre tira un error NO tolerado (no es
+   * `CreditNoteRequestInvalidTransitionError`) -- para verificar que el
+   * `UPDATE` de `invoices` que `markFailedWithClient()` ya aplicó DENTRO de
+   * la misma tx tampoco persiste cuando `transitionCreditNoteRequestAfterFailure()`
+   * revienta con algo que el método no tolera.
+   */
+  function buildInvoiceServiceWithFailingTransition(arcaFactory: () => Arca): InvoiceService {
+    const real = new SqlCreditNoteRequestRepository(db);
+    const failingTransitionRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'> = {
+      createWithClient: (client, input) => real.createWithClient(client, input),
+      findByInvoiceId: (invoiceId) => real.findByInvoiceId(invoiceId),
+      async transitionWithClient(): Promise<never> {
+        throw new Error('simulado -- fallo NO tolerado al transicionar credit_note_request (Bloque 4, test de atomicidad)');
+      },
+    };
+    return new InvoiceService(
+      invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
+      orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
+      pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
+      failingTransitionRepo,
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }
@@ -859,8 +945,17 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       expect(rows[0]!.order_id).toBe(orderId);
       expect(rows[0]!.reservation_id).toBeNull();
       expect(rows[0]!.state).toBe('PENDIENTE');
-      // Cierre automático NO corrió (Bloque 4, todavía no implementado) --
-      // los campos de resolución tienen que seguir en NULL.
+      // Bloque 4 (15/09/2026) -- sigue en PENDIENTE incluso con Bloque 4 ya
+      // implementado: este test usa `fakeArcaClientOk` (AFIP APRUEBA,
+      // `creditNote.status === 'ISSUED'`), y las 3 transiciones automáticas
+      // de Bloque 4 cuelgan de `markFailedWithClient()` (REJECTED/
+      // FAILED_UNCERTAIN) -- el camino ISSUED nunca llama a
+      // `markFailedWithClient()`, pasa por `finalizeIssued()`/`markIssued()`.
+      // Ese cierre automático en ISSUED (que el diseño de §6.5 bis SÍ
+      // documenta, tabla de la máquina de estados) es un gap declarado, NO
+      // implementado en Bloque 4 -- ver reporte de Bloque 4. Los campos de
+      // resolución tienen que seguir en NULL de cualquier forma (cierre
+      // automático, cuando corra, nunca los puebla).
       expect(rows[0]!.resolution_outcome).toBeNull();
       expect(rows[0]!.resolved_by).toBeNull();
       expect(rows[0]!.resolved_at).toBeNull();
@@ -923,6 +1018,139 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       // NC ISSUED, la orden no se cancela).
       const { rows: orderRows } = await db.query<{ status: string }>(`SELECT status FROM orders WHERE id = $1`, [orderId]);
       expect(orderRows[0]!.status).toBe('CONFIRMED');
+    }, 30_000);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bloque 4 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) -- engancha
+  // las 3 transiciones automáticas de `credit_note_request` sobre el
+  // `markFailedWithClient()` ya atómico del Bloque 2. Bloques 1 (repo), 2
+  // (markFailedWithClient), 3 (INSERT en buildCreditNote()) ya cubiertos
+  // arriba.
+  // ---------------------------------------------------------------------------
+  describe('Bloque 4 -- transiciones automáticas de credit_note_request sobre markFailedWithClient()', () => {
+    it('(a) AFIP rechaza (REJECTED) -- credit_note_request pasa a CERRADA con los 3 campos de resolución en NULL', async () => {
+      const okService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId, invoiceId } = await seedInvoicedOrder(okService);
+
+      const sut = buildSut(buildInvoiceService(fakeArcaClientRejected));
+      await expect(sut.cancelOrderWithCreditNote(orderId, auth(orderId)))
+        .rejects.toBeInstanceOf(CreditNoteCancellationRejectedError);
+
+      const { rows } = await db.query<{
+        invoice_status: string; state: string;
+        resolution_outcome: string | null; resolved_by: string | null;
+        resolved_at: string | null; resolution_note: string | null;
+      }>(
+        `SELECT i.status AS invoice_status, cnr.state,
+                cnr.resolution_outcome, cnr.resolved_by, cnr.resolved_at, cnr.resolution_note
+         FROM credit_note_request cnr
+         JOIN invoices i ON i.id = cnr.invoice_id
+         WHERE cnr.reversed_invoice_id = $1`, [invoiceId],
+      );
+      expect(rows).toHaveLength(1);
+      // La invoice (intento de NC) y credit_note_request cerraron juntas --
+      // mismo commit que markFailedWithClient() (atomic-state-mutation).
+      expect(rows[0]!.invoice_status).toBe('REJECTED');
+      expect(rows[0]!.state).toBe('CERRADA');
+      expect(rows[0]!.resolution_outcome).toBeNull();
+      expect(rows[0]!.resolved_by).toBeNull();
+      expect(rows[0]!.resolved_at).toBeNull();
+      expect(rows[0]!.resolution_note).toBeNull();
+    }, 30_000);
+
+    it('(b) AFIP responde sin CbteDesde/CAE dentro de issue() -- credit_note_request pasa a EN_REVISION_MANUAL', async () => {
+      const okService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId, invoiceId } = await seedInvoicedOrder(okService);
+
+      const sut = buildSut(buildInvoiceService(fakeArcaClientNoCae));
+      await expect(sut.cancelOrderWithCreditNote(orderId, auth(orderId)))
+        .rejects.toBeInstanceOf(CreditNoteCancellationPendingError);
+
+      const { rows } = await db.query<{ invoice_status: string; state: string }>(
+        `SELECT i.status AS invoice_status, cnr.state
+         FROM credit_note_request cnr
+         JOIN invoices i ON i.id = cnr.invoice_id
+         WHERE cnr.reversed_invoice_id = $1`, [invoiceId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.invoice_status).toBe('FAILED_UNCERTAIN');
+      expect(rows[0]!.state).toBe('EN_REVISION_MANUAL');
+    }, 30_000);
+
+    it('(c) reconcileAfterFailure() no logra confirmar el CAE -- credit_note_request pasa a EN_REVISION_MANUAL', async () => {
+      const okService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId, invoiceId } = await seedInvoicedOrder(okService);
+
+      // fakeArcaClientUncertain -- createNextVoucher() tira (error de red
+      // simulado), reconcileAfterFailure() lo atrapa, getLastVoucher() no
+      // avanza (mismo cbteNro constante) -> no puede confirmar -> FAILED_UNCERTAIN.
+      const sut = buildSut(buildInvoiceService(fakeArcaClientUncertain));
+      await expect(sut.cancelOrderWithCreditNote(orderId, auth(orderId)))
+        .rejects.toBeInstanceOf(CreditNoteCancellationPendingError);
+
+      const { rows } = await db.query<{ invoice_status: string; state: string }>(
+        `SELECT i.status AS invoice_status, cnr.state
+         FROM credit_note_request cnr
+         JOIN invoices i ON i.id = cnr.invoice_id
+         WHERE cnr.reversed_invoice_id = $1`, [invoiceId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.invoice_status).toBe('FAILED_UNCERTAIN');
+      expect(rows[0]!.state).toBe('EN_REVISION_MANUAL');
+    }, 30_000);
+
+    it('camino mayoritario -- una factura normal (sin escape, sin fila credit_note_request asociada) que falla no intenta ninguna transición', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientRejected);
+      const order = await orderService.createOrder({
+        businessId: BIZ, customerId: CUS, locationId: LOC,
+        items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
+      });
+      await orderService.confirmOrder(order.id, ACTOR);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: CUS, orderId: order.id,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+
+      // Factura B normal (type='CHARGE', no pasa por buildCreditNote()/
+      // tx.type==='ADJUSTMENT') -- nunca tuvo una fila credit_note_request.
+      await expect(invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR,
+      })).rejects.toBeInstanceOf(AfipRequestRejectedError);
+
+      // markFailedWithClient() igual corrió y persistió -- el no-op de
+      // transitionCreditNoteRequestAfterFailure() (findByInvoiceId() ->
+      // null) no bloqueó el UPDATE de invoices.
+      const { rows: invRows } = await db.query<{ status: string }>(
+        `SELECT status FROM invoices WHERE financial_transaction_id = $1`, [charge!.id],
+      );
+      expect(invRows[0]!.status).toBe('REJECTED');
+
+      const { rows: cnrRows } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM credit_note_request`);
+      expect(Number(cnrRows[0]!.count)).toBe(0);
+    }, 30_000);
+
+    it('atomicidad -- si transitionWithClient() de credit_note_request falla con un error NO tolerado, el UPDATE de invoices tampoco persiste', async () => {
+      const okService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId, invoiceId } = await seedInvoicedOrder(okService);
+
+      const sut = buildSut(buildInvoiceServiceWithFailingTransition(fakeArcaClientRejected));
+      await expect(sut.cancelOrderWithCreditNote(orderId, auth(orderId))).rejects.toThrow(
+        /fallo NO tolerado al transicionar credit_note_request/,
+      );
+
+      // La NC (invoices) quedó PENDING -- el UPDATE de markFailedWithClient()
+      // se revirtió junto con el intento (fallido, no tolerado) de
+      // transición de credit_note_request -- misma tx, todo o nada.
+      const { rows } = await db.query<{ invoice_status: string; state: string }>(
+        `SELECT i.status AS invoice_status, cnr.state
+         FROM credit_note_request cnr
+         JOIN invoices i ON i.id = cnr.invoice_id
+         WHERE cnr.reversed_invoice_id = $1`, [invoiceId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.invoice_status).toBe('PENDING');
+      expect(rows[0]!.state).toBe('PENDIENTE');
     }, 30_000);
   });
 });

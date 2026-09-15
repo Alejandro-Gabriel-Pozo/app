@@ -1256,9 +1256,19 @@ export class CreditNoteAmbiguousSubjectError extends DomainError {
  * Cubre tanto un intento de salir de `CERRADA` (A6.4, terminal) como
  * cualquier otro salto no declarado -- nunca un UPDATE silencioso que dejaría
  * la fila en un estado inconsistente con la máquina documentada en §6.5 bis.
+ *
+ * `fromState`/`toState` quedan como campos públicos (Bloque 4, 15/09/2026)
+ * -- no solo interpolados en el mensaje -- para que
+ * `InvoiceService.transitionCreditNoteRequestAfterFailure()` pueda decidir
+ * en código si el estado de origen era `CERRADA` (terminal, tolerable --
+ * reintento de una factura ya resuelta) sin parsear el string del mensaje.
  */
 export class CreditNoteRequestInvalidTransitionError extends DomainError {
-  constructor(id: string, fromState: string, toState: string) {
+  constructor(
+    public readonly id: string,
+    public readonly fromState: string,
+    public readonly toState: string,
+  ) {
     super(
       `La solicitud de Nota de Crédito "${id}" está en estado "${fromState}" -- no admite la transición a "${toState}".`,
       'CREDIT_NOTE_REQUEST_INVALID_TRANSITION',

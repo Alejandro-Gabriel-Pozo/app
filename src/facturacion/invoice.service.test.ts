@@ -16,12 +16,13 @@ import type { Product, ProductVariant } from '../pos-menu/product.entities.js';
 import type { ServiceItemRepository } from '../pos-menu/service-item.repository.js';
 import type { ServiceItem } from '../pos-menu/service-item.entities.js';
 import type { CreditNoteRequestRepository } from './credit-note-request.repository.js';
-import type { CreditNoteRequest, CreateCreditNoteRequestInput } from './credit-note-request.entities.js';
+import type { CreditNoteRequest, CreateCreditNoteRequestInput, TransitionCreditNoteRequestInput } from './credit-note-request.entities.js';
+import { ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS } from './credit-note-request.entities.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -270,11 +271,25 @@ class FakeServiceItemRepository implements Pick<ServiceItemRepository, 'findById
  * verificar que el gate `tx.type === 'ADJUSTMENT'` de `buildCreditNote()`
  * llama (o NO llama) al repo, y con qué campos.
  */
-class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient'> {
+/**
+ * Bloque 4 (15/09/2026, §6.5 bis) -- amplía el Fake de Bloque 3 con
+ * `findByInvoiceId`/`transitionWithClient` reales (mismo comportamiento que
+ * `InMemoryCreditNoteRequestRepository`: valida contra
+ * `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS`, tira
+ * `CreditNoteRequestInvalidTransitionError` en transición inválida) para
+ * poder probar `transitionCreditNoteRequestAfterFailure()` sin levantar
+ * Postgres real. `seed()` deja precargar una fila (simula el INSERT que
+ * Bloque 3 ya hace de verdad en `buildCreditNote()`, fuera del alcance de
+ * este Fake).
+ */
+class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'> {
   public calls: CreateCreditNoteRequestInput[] = [];
+  public transitionCalls: { id: string; transition: TransitionCreditNoteRequestInput }[] = [];
+  private readonly requests = new Map<string, CreditNoteRequest>();
+
   async createWithClient(_client: SqlClient, input: CreateCreditNoteRequestInput): Promise<CreditNoteRequest> {
     this.calls.push(input);
-    return {
+    const request: CreditNoteRequest = {
       id: input.id,
       businessId: input.businessId,
       invoiceId: input.invoiceId,
@@ -290,6 +305,52 @@ class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepositor
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+    this.requests.set(request.id, request);
+    return request;
+  }
+
+  async findByInvoiceId(invoiceId: string): Promise<CreditNoteRequest | null> {
+    return [...this.requests.values()].find((r) => r.invoiceId === invoiceId) ?? null;
+  }
+
+  async transitionWithClient(
+    _client: SqlClient,
+    id: string,
+    transition: TransitionCreditNoteRequestInput,
+  ): Promise<CreditNoteRequest> {
+    this.transitionCalls.push({ id, transition });
+    const current = this.requests.get(id);
+    if (!current) throw new Error(`CreditNoteRequest ${id} no encontrada al transicionar`);
+
+    const allowed = ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS[current.state];
+    if (!allowed.includes(transition.toState)) {
+      throw new CreditNoteRequestInvalidTransitionError(id, current.state, transition.toState);
+    }
+
+    const now = new Date();
+    let updated: CreditNoteRequest;
+    if (transition.toState === 'EN_REVISION_MANUAL') {
+      updated = { ...current, state: 'EN_REVISION_MANUAL', updatedAt: now };
+    } else if (transition.resolutionOutcome === null) {
+      updated = { ...current, state: 'CERRADA', resolutionOutcome: null, resolvedBy: null, resolvedAt: null, resolutionNote: null, updatedAt: now };
+    } else {
+      updated = {
+        ...current,
+        state: 'CERRADA',
+        resolutionOutcome: transition.resolutionOutcome,
+        resolvedBy: transition.resolvedBy,
+        resolvedAt: now,
+        resolutionNote: transition.resolutionNote,
+        updatedAt: now,
+      };
+    }
+    this.requests.set(id, updated);
+    return updated;
+  }
+
+  /** Helper de test -- carga una fila directo sin pasar por createWithClient(). */
+  seed(request: CreditNoteRequest): void {
+    this.requests.set(request.id, request);
   }
 }
 

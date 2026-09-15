@@ -3246,6 +3246,44 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
+- **`credit_note_request` -- gap del camino ISSUED (15/09/2026, gate
+  `architecture-governor` sobre Bloque 4).** El ADR
+  (`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5
+  bis, tabla de transiciones) documenta 4 transiciones automáticas:
+  REJECTED→CERRADA, `FAILED_UNCERTAIN`+`afipContacted`→EN_REVISION_MANUAL
+  (x2 orígenes), e ISSUED→CERRADA. Bloque 4 implementó las 3 primeras
+  (las que pasan por `markFailedWithClient()`, ya atómico desde Bloque
+  2) -- la 4ta (`finalizeIssued()`/`markIssued()`, camino de ÉXITO) NO
+  pasa por `markFailedWithClient()` en ningún punto, así que quedó fuera
+  del alcance real de Bloque 4 tal como estaba delimitado. Sin esto, una
+  `credit_note_request` que llega a `ISSUED` (la NC se emitió con éxito)
+  se queda en `PENDIENTE` para siempre -- nunca cierra sola.
+  **Nuance que complica la implementación, no ignorar:** `retryExisting()`
+  (`invoice.service.ts:1327-1345`) NO bloquea el reintento de una factura
+  `REJECTED` -- así que una NC puede: 1er intento REJECTED (`credit_note_
+  request` auto-cierra CERRADA, resolution_outcome NULL), 2do intento
+  (retry) ISSUED (la NC se emitió). Esa fila queda `CERRADA`/`NULL` aunque
+  la NC finalmente SÍ se emitió -- `invoices` sigue siendo la fuente de
+  verdad real (sin riesgo de doble emisión ni de NC faltante), pero es un
+  gap de bookkeeping en la fila de workflow: nadie debería leer
+  `CERRADA`+`resolution_outcome: null` como "confirmado que no se emitió"
+  sin chequear `invoices` directamente. Al implementar esto, resolver
+  explícito (no inferir) si `finalizeIssued()` necesita la MISMA lógica
+  de tolerancia que Bloque 4 ya armó para `fromState==='CERRADA'`
+  (retry-post-cierre es alcanzable acá también) o si amerita una regla
+  propia.
+- **`credit_note_request` -- cobertura de test faltante en la rama de
+  tolerancia de Bloque 4** (15/09/2026, mismo gate). El único camino de
+  decisión nuevo de Bloque 4 (`transitionCreditNoteRequestAfterFailure()`
+  tolera `CreditNoteRequestInvalidTransitionError` solo cuando
+  `err.fromState === 'CERRADA'`, aborta la transacción en cualquier otro
+  caso) no tiene ningún test que lo ejercite hoy -- el test de
+  "atomicidad" existente fuerza un `Error` genérico, no el error tipado
+  real. Agregar un test (unit, reusando `FakeCreditNoteRequestRepository`
+  de `invoice.service.test.ts`, `seed()` de una fila ya `CERRADA` +
+  reintento) que confirme que la tx SÍ commitea en ese caso -- cerrar
+  antes de considerar el bloque completamente cubierto.
+
 - **`CANCEL-POLICY-SCOPE-BASE-001` Bloque 2** (14/09/2026, split del
   Bloque 1 -- gate `architecture-governor` sobre el diff de Bloque 1).
   Bloque 1 (schema + CRUD de `cancellation_policies.
