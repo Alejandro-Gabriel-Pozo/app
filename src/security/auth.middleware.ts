@@ -385,3 +385,43 @@ export const authorize = (requiredGroup: PermissionGroup) => {
     next();
   };
 };
+
+/**
+ * `authorizeAny([Roles.A, Roles.B])` — Bloque 5 del ADR común cancelar-con-NC
+ * (`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5 bis,
+ * pregunta de negocio 3, mecanismo corregido 15/09/2026): OR real entre
+ * varios grupos, para cuando dos roles distintos deben poder acceder a la
+ * misma ruta (ej. `EMISOR_NOTA_CREDITO` y `MANAGEMENT`, para la bandeja de
+ * reconciliación manual de Notas de Crédito).
+ *
+ * Existe porque encadenar dos `authorize()` en la misma ruta NO es OR — es
+ * AND: cada middleware de la cadena tiene que dejar pasar (`next()`) para
+ * que el siguiente corra, así que `authorize(A), authorize(B)` exige AMBOS
+ * grupos, no cualquiera de los dos (corrección registrada en el ADR arriba
+ * citado — no había precedente real de "dos `authorize()` encadenados como
+ * OR" en este repo pese a que una versión anterior del diseño lo daba por
+ * sentado). Mismo shape de respuesta que `authorize()` (401 sin
+ * `req.user`, 403 con mensaje claro si no tiene NINGUNO de los grupos) para
+ * que un caller no tenga que distinguir cuál de las dos usa una ruta dada.
+ */
+export const authorizeAny = (requiredGroups: readonly PermissionGroup[]) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
+      return;
+    }
+
+    const allowed = req.user.role === UserRole.CUSTOMER
+      ? requiredGroups.some((g) => CUSTOMER_PERMISSION_GROUPS.includes(g))
+      : requiredGroups.some((g) => (req.user!.permissionGroups ?? []).includes(g));
+
+    if (!allowed) {
+      res.status(403).json({
+        code: 'FORBIDDEN',
+        message: `Acceso denegado. Se requiere alguno de estos permisos: ${requiredGroups.join(', ')}`,
+      });
+      return;
+    }
+    next();
+  };
+};

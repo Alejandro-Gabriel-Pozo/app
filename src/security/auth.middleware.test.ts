@@ -11,6 +11,7 @@ import type { Request, Response, NextFunction } from 'express';
 import {
   authenticate,
   authorize,
+  authorizeAny,
   signToken,
   setAuthCookie,
   clearAuthCookie,
@@ -228,6 +229,101 @@ describe('authorize()', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+});
+
+/**
+ * Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) --
+ * `authorizeAny()`, OR real entre grupos (ver docblock en auth.middleware.ts
+ * para por qué no alcanza con encadenar dos `authorize()`).
+ */
+describe('authorizeAny()', () => {
+  function reqWithUser(user: Partial<NonNullable<Request['user']>>): Request {
+    return { user } as unknown as Request;
+  }
+
+  it('deja pasar si permissionGroups incluye CUALQUIERA de los grupos pedidos (primero)', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['EMISOR_NOTA_CREDITO'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('deja pasar si permissionGroups incluye CUALQUIERA de los grupos pedidos (segundo)', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['MANAGEMENT'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('deja pasar si tiene AMBOS grupos (no exige exclusividad)', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['EMISOR_NOTA_CREDITO', 'MANAGEMENT'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('rechaza con 403 si no tiene NINGUNO de los grupos pedidos', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['STAFF'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('rechaza con 403 (fail-closed) si permissionGroups es undefined', () => {
+    const req = reqWithUser({ id: 'identity-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('responde 401 si no hay req.user', () => {
+    const req = { user: undefined } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('un token CUSTOMER pasa si alguno de los grupos pedidos está en CUSTOMER_PERMISSION_GROUPS', () => {
+    const req = reqWithUser({ id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.MANAGEMENT, Roles.BOOKING])(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('un token CUSTOMER rechaza si ningún grupo pedido le corresponde', () => {
+    const req = reqWithUser({ id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
   });
 });
 

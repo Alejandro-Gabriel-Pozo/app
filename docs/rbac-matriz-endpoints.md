@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 15/09/2026 (`service-items.routes.ts` nuevo, Bloque B de `docs/diseno-factura-borrador-2026-08-31.md` §29.7).
+**Última actualización:** 15/09/2026 (`credit-note-requests.routes.ts` nuevo, Bloque 5 del ADR común cancelar-con-NC §6.5 bis — bandeja de reconciliación manual + `authorizeAny()`).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -31,7 +31,7 @@ subconjunto de estos 9 grupos (sección 3).
 | `FRONT_DESK` | Personal de mostrador: gestiona reservas y clientes |
 | `HOUSEKEEPING_AND_MANAGEMENT` | Housekeeping + management: ven y actualizan estado de habitaciones |
 | `ORDERS` | Acceso a órdenes de consumo (POS) |
-| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Rutas: `POST /api/orders/:id/cancel-with-credit-note` (sub-bloque 4, 07/09/2026) y `POST /api/reservations/:id/cancel-with-credit-note` (bloque 3.3-b2, 09/09/2026). |
+| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`) y resuelve la bandeja de reconciliación manual de esas NC. Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Rutas: `POST /api/orders/:id/cancel-with-credit-note` (sub-bloque 4, 07/09/2026), `POST /api/reservations/:id/cancel-with-credit-note` (bloque 3.3-b2, 09/09/2026) y `POST /api/credit-note-requests/:id/resolve` (Bloque 5, 15/09/2026, §6.5 bis — las 2 rutas GET de la misma bandeja además aceptan `MANAGEMENT` vía `authorizeAny()`, solo lectura). |
 | `CUSTOMER_ONLY` | Solo clientes externos — resuelto en código, no contra la BD (los clientes no tienen `role_id`) |
 | `BOOKING` | Clientes + recepción (reservas desde portal o mostrador) |
 
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (214 call-sites, 38 archivos)
+## 2. Matriz de endpoints por archivo (215 call-sites, 39 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -174,6 +174,11 @@ sección 4.
 - POST `/:id/reverse` — `MANAGEMENT` **Y** `EMISOR_NOTA_CREDITO` (Bloque 3c-iii, 14/09/2026, §3.7/§4.4 del ADR de City Ledger — dos `authorize()` en cadena, primer endpoint del repo que lo hace)
 
 ### `src/facturacion/`
+
+**`credit-note-requests.routes.ts`** (15/09/2026, Bloque 5 del ADR común cancelar-con-NC, `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5 bis — bandeja de reconciliación manual de `credit_note_request`)
+- GET `/` — `authorizeAny([EMISOR_NOTA_CREDITO, MANAGEMENT])` (formato de grupo compuesto para OR real vía `authorizeAny()` — no confundir con `` `GRUPO_A` **O** `GRUPO_B` `` de dos `authorize()` encadenados, que es AND; §6.5 bis pregunta de negocio 3)
+- GET `/:id` — `authorizeAny([EMISOR_NOTA_CREDITO, MANAGEMENT])`
+- POST `/:id/resolve` — `EMISOR_NOTA_CREDITO` (simple, NO `authorizeAny` — la transición de estado no se amplía a MANAGEMENT, solo la lectura)
 
 **`invoices.routes.ts`** — `requireModule(FACTURACION)` en las MUTACIONES y en `createAfipCredentialsRouter`. Los GET de `/api/invoices` van **sin** gate de módulo: leer un comprobante fiscal ya emitido es obligación legal de exhibición (`criterios-datos.md` línea 24; ver `diseno-cascada-enforcement-2026-08-30.md` §3d — 30/08/2026). Dos routers:
 - `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`; si el cargo pertenece a un cliente `kind='COMPANY'` exige **además** `MANAGEMENT`, chequeo inline en el handler, no un `authorize()` de más — 13/09/2026, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3, ver `requireManagementForCompanyCharge()` en `invoices.routes.ts`; NO aplica si el cargo es `REFUND`/`ADJUSTMENT` — la Nota de Crédito del escape de cancelación sigue alcanzando con `EMISOR_NOTA_CREDITO`, decisión separada del dueño); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/unreconciled` — `FRONT_DESK` (sin gate de módulo, 10/09/2026 — bandeja "factura viva no conciliada", registrada ANTES de `/:id` para no quedar sombreada por ese patrón); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)

@@ -4228,3 +4228,30 @@ END $$;
 -- por construcción de la Decisión (2) de §29.5 -- no porque el WHERE de sus
 -- 4 índices únicos parciales lo excluya.
 
+-- ---------------------------------------------------------------------------
+-- BLOQUE 24 — RECONCILIACIÓN MANUAL DE credit_note_request, Bloque 5
+-- (15/09/2026, schema v58, docs/diseno-cancelacion-con-nota-credito-comun-
+-- 2026-09-06.md §6.5 bis, pregunta de negocio 1, opción (b) YA RESUELTA por
+-- el dueño): cuando un operador resuelve una fila `EN_REVISION_MANUAL` con
+-- `resolution_outcome = 'NO_EMITIDA'` (confirmó contra AFIP a mano que NO
+-- hay CAE), el sistema solo DESBLOQUEA la factura para que un reintento
+-- normal de `issue()` sea posible -- el reintento en sí sigue siendo una
+-- acción aparte, manual, por la vía normal (NO se dispara automáticamente).
+--
+-- Sin esto, el guard de `InvoiceService.retryExisting()`
+-- (`if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted)
+-- return existing;`) se niega a reintentar CUALQUIER factura ambigua con
+-- AFIP ya contactado, JAMÁS -- exactamente la fila que esta reconciliación
+-- resuelve. Con estas 2 columnas, el guard pasa a chequear también
+-- `!existing.uncertainClearedAt`: si ya se limpió, SÍ deja reintentar.
+--
+-- Nullable, sin backfill (ninguna factura existente tiene este estado
+-- "limpiado" todavía) -- mismo patrón que el resto de columnas nullable
+-- agregadas en versiones recientes de este archivo (ver v52/v53/v55).
+-- `uncertain_cleared_by` es `identity_id` (JWT `sub`) de la platform DB, SIN
+-- FK a `users` -- mismo criterio que `audit_log.changed_by`/
+-- `credit_note_request.resolved_by` (BLOQUE 22).
+-- ---------------------------------------------------------------------------
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uncertain_cleared_at TIMESTAMPTZ;
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uncertain_cleared_by VARCHAR(255);
+

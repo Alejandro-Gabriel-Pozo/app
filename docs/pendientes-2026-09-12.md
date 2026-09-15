@@ -33,6 +33,31 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
+- **`credit_note_request` Bloque 5 -- reconciliación manual, verificación
+  contra Postgres real pendiente** (15/09/2026, gate `architecture-governor`,
+  APPROVED WITH CONDITIONS). Código completo, gate-aprobado: `authorizeAny()`
+  nuevo, las 3 rutas (`GET /api/credit-note-requests`, `GET
+  /api/credit-note-requests/:id`, `POST /api/credit-note-requests/:id/resolve`),
+  `InvoiceService.resolveCreditNoteRequestManually()` (un solo
+  `transactionManager.run()` para EMITIDA/NO_EMITIDA + transición), schema
+  v58 (`invoices.uncertain_cleared_at`/`_by`). El gate re-corrió `tsc`/
+  `lint`/`lint:arch`/`vitest run` completo (171 archivos, 2381 tests) y
+  regeneró `docs/inventario-rutas.md` de verdad (byte-idéntico al commiteado,
+  262 rutas) -- todo eso SÍ está confirmado. Lo que el gate declaró
+  explícitamente NO poder confirmar en este entorno (sin `TEST_DATABASE_URL`):
+  (1) atomicidad real BEGIN/COMMIT/ROLLBACK de
+  `resolveCreditNoteRequestManually()` contra una tenant DB real -- el
+  código de `PgTransactionManager` la garantiza por construcción, pero el
+  test unitario con el fake in-memory no puede verificar el rollback real;
+  (2) que la migración v58 (`ALTER TABLE invoices ADD COLUMN IF NOT
+  EXISTS uncertain_cleared_at/_by`) se aplique limpio contra una tenant DB
+  real -- no se corrió `npm run migrate:tenants`; (3) un smoke test HTTP
+  real de las 3 rutas nuevas (el test de rutas invoca el handler extraído
+  directo, no un server HTTP end-to-end). Acción puntual: correr `npm run
+  test:integration` con `TEST_DATABASE_URL` configurada (mismo patrón que
+  los ítems de City Ledger de esta misma sección), y `npm run
+  migrate:tenants` contra un tenant de prueba real, antes de considerar
+  Bloque 5 completamente verificado.
 - **`CRASH-CUSTOMER-RATE-RENDER-01`** — abrir la ficha de un cliente con
   una tarifa especial scope `categoryId`/`bucket`/`productId` en un
   entorno real (los 3 scopes nuevos de D9), confirmar que
@@ -3283,6 +3308,28 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   de `invoice.service.test.ts`, `seed()` de una fila ya `CERRADA` +
   reintento) que confirme que la tx SÍ commitea en ese caso -- cerrar
   antes de considerar el bloque completamente cubierto.
+- **`credit_note_request` -- `recordFieldChanges()` nunca se wireó, pese a
+  que el ADR lo pide explícito** (15/09/2026, gate `architecture-governor`
+  sobre Bloque 5). §6.5 bis, punto 4 de "El consumidor real de
+  `resolved_by`", texto literal del ADR: *"Auditoría: sigue el patrón
+  compartido `domain/audit.ts::recordFieldChanges()`... mismo criterio que
+  `RateCatalogService`"*. Verificado contra el código real: no hay ningún
+  `recordFieldChanges()` wireado para `credit_note_request`, ni en Bloque 4
+  (transiciones automáticas) ni en Bloque 5 (`resolveCreditNoteRequestManually()`,
+  transición manual). No es una regresión de Bloque 5 -- la brecha ya
+  existía desde Bloque 4 y no se había señalado en aquel gate tampoco.
+  Mitigante real, no excusa: `resolved_by`/`resolved_at`/`resolution_note`
+  quedan poblados como columnas de primera clase en la propia fila (el dato
+  no se pierde), y `CERRADA` es terminal -- no hay múltiples transiciones
+  que auditar por fila, así que el caso de uso principal de
+  `recordFieldChanges()` (historial de ediciones repetidas) no aplica tan
+  directo acá como en `RateCatalogService`. Aun así, es una desviación
+  explícita del texto del ADR sin que en ningún lugar del diff quede
+  declarada la decisión de omitirla. Antes de dar el bloque completo del
+  ADR por cerrado (no bloqueante para el commit puntual de Bloque 5):
+  decidir explícito si se wirea `recordFieldChanges()` para
+  `credit_note_request` (Bloques 4+5) o si se documenta en el ADR la
+  decisión consciente de omitirlo y por qué.
 
 - **`CANCEL-POLICY-SCOPE-BASE-001` Bloque 2** (14/09/2026, split del
   Bloque 1 -- gate `architecture-governor` sobre el diff de Bloque 1).

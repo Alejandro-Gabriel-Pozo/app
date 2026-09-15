@@ -243,6 +243,9 @@ function domainErrorStatus(error: DomainError): number {
       return 403;
 
     // --- 404 Not Found ---
+    // CREDIT_NOTE_REQUEST_NOT_FOUND (Bloque 5 del ADR común cancelar-con-NC,
+    // 15/09/2026, §6.5 bis) -- GET /api/credit-note-requests/:id sin fila
+    // real, mismo grupo que el resto de *_NOT_FOUND de acá abajo.
     case 'RESOURCE_NOT_FOUND':
     case 'RESERVATION_NOT_FOUND':
     case 'CATEGORY_NOT_FOUND':
@@ -266,6 +269,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RATE_CATALOG_ENTRY_NOT_FOUND':
     case 'ACCOUNT_RECEIVABLE_NOT_FOUND':
     case 'MAINTENANCE_WINDOW_NOT_FOUND':
+    case 'CREDIT_NOTE_REQUEST_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---

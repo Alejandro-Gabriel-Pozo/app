@@ -73,6 +73,17 @@ export interface Invoice {
    * puede reintentar un FAILED_UNCERTAIN solo, o si necesita revisión
    * manual primero (A8.6). */
   afipContacted: boolean;
+  /**
+   * Bloque 5 del ADR común cancelar-con-NC (schema v58, §6.5 bis, pregunta
+   * de negocio 1, opción (b)) — `NULL` hasta que un operador resuelve una
+   * `credit_note_request` asociada con `outcome: 'NO_EMITIDA'`
+   * (`POST /api/credit-note-requests/:id/resolve`). Desde ahí, poblado,
+   * `retryExisting()` (invoice.service.ts) deja de negarse a reintentar esta
+   * factura pese a `status === 'FAILED_UNCERTAIN' && afipContacted`.
+   */
+  uncertainClearedAt: Date | null;
+  /** `identity_id` (JWT sub) de quien limpió el estado ambiguo — ver `uncertainClearedAt`. Sin FK a `users`, mismo criterio que `credit_note_request.resolvedBy`. */
+  uncertainClearedBy: string | null;
   /** CUIT de autenticación AFIP congelado al crear (schema v26) — ver docblock en schema.sql. `null` = comprobante emitido antes de este campo. */
   emisorCuit: string | null;
   /**

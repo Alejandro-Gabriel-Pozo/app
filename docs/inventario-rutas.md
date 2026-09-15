@@ -5,7 +5,7 @@ job `route-inventory-check` de CI falla el build si queda desincronizado.
 
 - Cuándo se regeneró por última vez: ver `git log -1 -- docs/inventario-rutas.md` (sin timestamp acá adentro a propósito -- un timestamp en el contenido rompería el chequeo de CI, que compara el archivo generado contra el commiteado byte a byte para detectar drift, no para saber cuándo corrió).
 - `NODE_ENV` usado para generarlo: `development`
-- Total: **259** endpoints (218 observados en el árbol vivo de Express + 41 declarados vía `CLOSURE_MOUNTS`, ver el header de `src/scripts/generate-route-inventory.ts`)
+- Total: **262** endpoints (221 observados en el árbol vivo de Express + 41 declarados vía `CLOSURE_MOUNTS`, ver el header de `src/scripts/generate-route-inventory.ts`)
 - Este inventario dice QUÉ RUTAS EXISTEN. NO dice quién puede pegarles (ver `docs/rbac-matriz-endpoints.md`) ni la forma del request/response (ver `src/openapi/spec.ts`, parcial).
 - `/` y `/openapi.json` (`src/app.ts:246-247`) solo existen cuando `NODE_ENV !== 'production'` (`shouldExposeApiDocs()`, `src/api/docs-exposure.ts`) -- este inventario se generó con `NODE_ENV=development` a propósito, así que las incluye. En producción, esas 2 rutas no existen.
 
@@ -72,6 +72,9 @@ job `route-inventory-check` de CI falla el build si queda desincronizado.
 | DELETE | `/api/consumption-destinations/:id` | árbol vivo |
 | GET | `/api/consumption-destinations/:id` | árbol vivo |
 | PUT | `/api/consumption-destinations/:id` | árbol vivo |
+| GET | `/api/credit-note-requests/` | árbol vivo |
+| GET | `/api/credit-note-requests/:id` | árbol vivo |
+| POST | `/api/credit-note-requests/:id/resolve` | árbol vivo |
 | GET | `/api/customer/:businessSlug/availability` | árbol vivo |
 | POST | `/api/customer/:businessSlug/login` | árbol vivo |
 | POST | `/api/customer/:businessSlug/login/google` | árbol vivo |

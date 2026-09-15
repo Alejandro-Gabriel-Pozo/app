@@ -76,6 +76,7 @@ import { createAccountsReceivableRouter } from './clientes-finanzas/accounts-rec
 import { createBusinessHoursRouter }     from './platform/business-hours.routes.js';
 import { createBusinessProfileRouter }   from './api/routes/business-profile.routes.js';
 import { createInvoicesRouter, createAfipCredentialsRouter } from './facturacion/invoices.routes.js';
+import { createCreditNoteRequestsRouter } from './facturacion/credit-note-requests.routes.js';
 import { createBusinessModulesRouter }   from './platform/business-modules.routes.js';
 import { createBusinessPlanLimitsRouter } from './platform/business-plan-limits.routes.js';
 import { createBusinessContextRouter }    from './platform/business-context.routes.js';
@@ -385,6 +386,11 @@ export async function createApp(): Promise<{
   // (Roles.STAFF) vive dentro del router.
   app.use('/api/business/context', createBusinessContextRouter(platformRepo));
   app.use('/api/invoices',          createInvoicesRouter(container));
+  // Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) -- bandeja
+  // de reconciliación manual, mismo módulo `facturacion`, montada junto a
+  // /api/invoices (mismo criterio de posición: después del gate de tenant
+  // de más arriba en este archivo).
+  app.use('/api/credit-note-requests', createCreditNoteRequestsRouter(container));
   app.use('/api/audit-log',         createAuditLogRouter(platformRepo));
   app.use(
     '/api/cash-register',

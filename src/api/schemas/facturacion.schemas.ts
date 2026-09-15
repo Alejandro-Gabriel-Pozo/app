@@ -31,3 +31,34 @@ export const RequestConsolidatedInvoiceSchema = z.object({
   buyer: BuyerSchema.optional(),
   concepto: z.number().int().min(1).max(3).optional(),
 });
+
+/**
+ * Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) — body de
+ * `POST /api/credit-note-requests/:id/resolve`. `cbteNro`/`cae`/`caeVto`
+ * son obligatorios SOLO cuando `outcome === 'EMITIDA'` (el operador
+ * encontró un CAE real a mano contra AFIP) — `.superRefine()`, no una
+ * validación a mano en la ruta ni en el service (A6.2/A6.3: esa capa la
+ * cubre `transitionWithClient()`, esta capa cubre la FORMA del request).
+ * `caeVto` en formato `YYYY-MM-DD` — mismo formato que `Invoice.caeVto`
+ * (`sql.invoice.repository.ts::rowToEntity()`, columna DATE de Postgres).
+ */
+export const CreditNoteRequestResolveSchema = z
+  .object({
+    outcome: z.enum(['EMITIDA', 'NO_EMITIDA']),
+    note: z.string().trim().min(1).optional(),
+    cbteNro: z.number().int().positive().optional(),
+    cae: z.string().trim().min(1).optional(),
+    caeVto: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'caeVto debe tener formato YYYY-MM-DD').optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.outcome !== 'EMITIDA') return;
+    if (data.cbteNro === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['cbteNro'], message: 'cbteNro es obligatorio cuando outcome es EMITIDA' });
+    }
+    if (data.cae === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['cae'], message: 'cae es obligatorio cuando outcome es EMITIDA' });
+    }
+    if (data.caeVto === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['caeVto'], message: 'caeVto es obligatorio cuando outcome es EMITIDA' });
+    }
+  });

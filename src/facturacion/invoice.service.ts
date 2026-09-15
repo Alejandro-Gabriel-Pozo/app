@@ -63,13 +63,19 @@ import {
   CreditNoteAmbiguousSubjectError,
   ServiceItemNotFoundError,
   CreditNoteRequestInvalidTransitionError,
+  CreditNoteRequestNotFoundError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems, type AccountsReceivableWarningEntry } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { CreditNoteRequestRepository } from './credit-note-request.repository.js';
-import type { CreditNoteRequestSubject, TransitionCreditNoteRequestInput } from './credit-note-request.entities.js';
+import type {
+  CreditNoteRequest,
+  CreditNoteRequestResolutionOutcome,
+  CreditNoteRequestSubject,
+  TransitionCreditNoteRequestInput,
+} from './credit-note-request.entities.js';
 import { logger } from '../logger.js';
 
 const AUDIT_ENTITY = 'invoices';
@@ -120,6 +126,27 @@ export interface RequestConsolidatedInvoiceInput {
   concepto?: number;
   /** I9 (24/08/2026) — ver `RequestInvoiceInput.changedBy`. */
   changedBy: string;
+}
+
+/**
+ * Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) — body de
+ * `POST /api/credit-note-requests/:id/resolve` ya validado por Zod
+ * (`CreditNoteRequestResolveSchema`, `api/schemas/facturacion.schemas.ts`):
+ * `cbteNro`/`cae`/`caeVto` llegan garantizados no-undefined cuando
+ * `outcome === 'EMITIDA'` (el `.superRefine()` del schema lo exige), pero
+ * el tipo acá los deja opcionales porque TS no puede expresar esa
+ * correlación sin duplicar el discriminated union del schema — la ruta es
+ * la única caller de este método, y ya validó.
+ */
+export interface ResolveCreditNoteRequestManuallyInput {
+  creditNoteRequestId: string;
+  outcome: CreditNoteRequestResolutionOutcome;
+  /** identity id (JWT sub) del operador que resolvió -- `req.user!.id`. */
+  resolvedBy: string;
+  note: string | null;
+  cbteNro?: number;
+  cae?: string;
+  caeVto?: string;
 }
 
 /** yyyymmdd, el formato que exige WSFEv1 (nunca ISO) — ver referencia-afip-wsfev1.md. Exportada: la reusa InvoicePdfService. */
@@ -228,11 +255,19 @@ export class InvoiceService {
      * Bloque 4 (15/09/2026, §6.5 bis) -- suma `'findByInvoiceId'` y
      * `'transitionWithClient'`: `transitionCreditNoteRequestAfterFailure()`
      * (más abajo) los usa para enganchar las 3 transiciones automáticas
-     * sobre el `markFailedWithClient()` ya atómico del Bloque 2. Sigue
-     * siendo un `Pick` angosto, no el repo completo (`listByState`/`findById`
-     * no hacen falta acá).
+     * sobre el `markFailedWithClient()` ya atómico del Bloque 2.
+     *
+     * Bloque 5 (15/09/2026, §6.5 bis) -- suma `'findById'`:
+     * `resolveCreditNoteRequestManually()` (más abajo) lo usa para resolver
+     * la fila por `id` (el que trae la ruta `POST
+     * /api/credit-note-requests/:id/resolve`) antes de transicionarla --
+     * `findByInvoiceId` no sirve acá porque el caller solo tiene el id de la
+     * SOLICITUD, no el de la factura. Sigue siendo un `Pick` angosto, no el
+     * repo completo (`listByState` no hace falta acá — es de la ruta GET de
+     * listado, que instancia `SqlCreditNoteRequestRepository` directo, ver
+     * `credit-note-requests.routes.ts`).
      */
-    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'>,
+    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -1313,11 +1348,20 @@ export class InvoiceService {
    * determinístico) reintenta o no según qué tan seguro sea:
    *
    * - ISSUED: ya tiene CAE real de AFIP, nunca se vuelve a tocar.
-   * - FAILED_UNCERTAIN con `afipContacted=true`: AFIP fue contactado y no
-   *   se pudo confirmar qué pasó (A8.6) -- reintentar a ciegas podría
-   *   duplicar un comprobante fiscal real. Se devuelve tal cual, requiere
-   *   revisión manual (contra FECompUltimoAutorizado/getVoucherInfo)
-   *   antes de habilitar un reintento.
+   * - FAILED_UNCERTAIN con `afipContacted=true` y SIN `uncertainClearedAt`:
+   *   AFIP fue contactado y no se pudo confirmar qué pasó (A8.6) --
+   *   reintentar a ciegas podría duplicar un comprobante fiscal real. Se
+   *   devuelve tal cual, requiere revisión manual (contra
+   *   FECompUltimoAutorizado/getVoucherInfo) antes de habilitar un
+   *   reintento.
+   * - FAILED_UNCERTAIN con `afipContacted=true` pero CON `uncertainClearedAt`
+   *   poblado: Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1, opción
+   *   (b)) -- un operador ya revisó contra AFIP a mano, confirmó
+   *   `outcome: 'NO_EMITIDA'` (no hay CAE real) vía `POST
+   *   /api/credit-note-requests/:id/resolve`, y `resolveCreditNoteRequestManually()`
+   *   desbloqueó la factura (`markUncertainClearedWithClient()`). Esto SÍ
+   *   reintenta -- ya no es la misma incertidumbre que el guard de arriba
+   *   protege, un humano la resolvió.
    * - El resto (PENDING, REJECTED, o FAILED_UNCERTAIN con
    *   `afipContacted=false`): se sabe con certeza que no quedó nada
    *   emitido, reintento seguro reusando la MISMA fila y el MISMO
@@ -1326,7 +1370,7 @@ export class InvoiceService {
    */
   private async retryExisting(existing: Invoice): Promise<Invoice> {
     if (existing.status === 'ISSUED') return existing;
-    if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted) return existing;
+    if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted && !existing.uncertainClearedAt) return existing;
 
     const credentials = await this.afipCredentialsRepo.getDecrypted();
     if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
@@ -1359,21 +1403,42 @@ export class InvoiceService {
    */
   private async finalizeIssued(invoiceId: string, data: MarkIssuedInput): Promise<Invoice> {
     const issued = await this.invoiceRepo.markIssued(invoiceId, data);
-    if (issued.financialTransactionId) {
-      try {
-        const ar = await this.accountsReceivableRepo.getByFinancialTransactionId(issued.financialTransactionId);
-        if (ar && ar.status === 'PENDIENTE_FACTURAR') {
-          const invoiceRef = `${String(issued.ptoVta).padStart(4, '0')}-${String(issued.cbteNro).padStart(8, '0')}`;
-          await this.accountsReceivableRepo.markInvoiced(ar.id, invoiceRef);
-        }
-      } catch (err) {
-        logger.error(
-          { financialTransactionId: issued.financialTransactionId, invoiceId: issued.id, err: errMessage(err) },
-          '[InvoiceService] no se pudo cerrar el gap de accounts_receivable',
-        );
-      }
-    }
+    await this.closeAccountsReceivableGapBestEffort(issued);
     return issued;
+  }
+
+  /**
+   * Bloque 5 (15/09/2026, §6.5 bis) -- extraído de `finalizeIssued()` para
+   * poder reusarlo desde `resolveCreditNoteRequestManually()` (rama
+   * `EMITIDA`), que marca ISSUED con `markIssuedWithClient()` DENTRO de la
+   * transacción que también transiciona `credit_note_request` (no puede
+   * pasar por `finalizeIssued()` tal cual: ese método usa `markIssued()`
+   * sin `client`, fuera de la transacción compartida).
+   *
+   * Decisión de diseño (Bloque 5, chica): en vez de hacer inyectable la
+   * parte transaccional de `finalizeIssued()` (que hubiera significado
+   * tocar su firma y sus 2 call-sites existentes, `issue()`/
+   * `reconcileAfterFailure()`), se extrae SOLO el best-effort de
+   * `accounts_receivable` -- que ya era independiente del `client` de la
+   * transacción principal (corre DESPUÉS de que el `markIssued()` de
+   * `finalizeIssued()` ya resolvió, con su propio try/catch). Mismo
+   * criterio que ya usa `finalizeIssued()`: si esto falla, la factura YA es
+   * real (CAE ya emitido) -- no debe parecer que la resolución manual falló.
+   */
+  private async closeAccountsReceivableGapBestEffort(issued: Invoice): Promise<void> {
+    if (!issued.financialTransactionId) return;
+    try {
+      const ar = await this.accountsReceivableRepo.getByFinancialTransactionId(issued.financialTransactionId);
+      if (ar && ar.status === 'PENDIENTE_FACTURAR') {
+        const invoiceRef = `${String(issued.ptoVta).padStart(4, '0')}-${String(issued.cbteNro).padStart(8, '0')}`;
+        await this.accountsReceivableRepo.markInvoiced(ar.id, invoiceRef);
+      }
+    } catch (err) {
+      logger.error(
+        { financialTransactionId: issued.financialTransactionId, invoiceId: issued.id, err: errMessage(err) },
+        '[InvoiceService] no se pudo cerrar el gap de accounts_receivable',
+      );
+    }
   }
 
   private async issue(
@@ -1571,6 +1636,81 @@ export class InvoiceService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) -- la
+   * transición MANUAL `EN_REVISION_MANUAL -> CERRADA`, disparada por
+   * `POST /api/credit-note-requests/:id/resolve`. A diferencia de las 3
+   * transiciones automáticas de `transitionCreditNoteRequestAfterFailure()`
+   * (que parten de una factura ya conocida), acá el caller solo tiene el id
+   * de la SOLICITUD -- se resuelve primero con `findById()` para conocer
+   * `invoiceId` antes de escribir nada.
+   *
+   * Dos ramas, un solo commit cada una (atomic-state-mutation):
+   *  - `EMITIDA` (encontró un CAE real a mano contra AFIP): `markIssuedWithClient()`
+   *    + transición a CERRADA con `resolutionOutcome: 'EMITIDA'`, en la
+   *    MISMA transacción -- mismo orden que usa el Bloque 4 para las
+   *    transiciones automáticas (primero `invoices`, después
+   *    `credit_note_request`, porque esta última fila guarda `invoice_id`,
+   *    no al revés). El best-effort de `accounts_receivable`
+   *    (`closeAccountsReceivableGapBestEffort()`) corre DESPUÉS de cerrar la
+   *    transacción principal, igual que ya hace `finalizeIssued()` -- ver su
+   *    docblock para la decisión de diseño de por qué se extrajo así en vez
+   *    de inyectar la parte transaccional de `finalizeIssued()`.
+   *  - `NO_EMITIDA` (confirmó que AFIP no tiene nada): SOLO desbloquea la
+   *    factura (`markUncertainClearedWithClient()`) + transición a CERRADA
+   *    con `resolutionOutcome: 'NO_EMITIDA'`. Pregunta de negocio 1, opción
+   *    (b) YA RESUELTA por el dueño (ADR §6.5 bis) -- el reintento de
+   *    `issue()` sigue siendo una acción manual APARTE, esto no lo dispara.
+   *
+   * `transitionWithClient()` (llamado siempre en 2do lugar, adentro de la
+   * misma tx) ya valida contra `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS` y
+   * tira `CreditNoteRequestInvalidTransitionError` si la fila no está en
+   * `EN_REVISION_MANUAL` -- no se duplica esa validación acá (A6.2/A6.3).
+   */
+  async resolveCreditNoteRequestManually(input: ResolveCreditNoteRequestManuallyInput): Promise<CreditNoteRequest> {
+    const request = await this.creditNoteRequestRepo.findById(input.creditNoteRequestId);
+    if (!request) throw new CreditNoteRequestNotFoundError(input.creditNoteRequestId);
+
+    let issuedInvoice: Invoice | null = null;
+    let updatedRequest!: CreditNoteRequest;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      if (input.outcome === 'EMITIDA') {
+        // Validado por Zod antes de llegar acá (CreditNoteRequestResolveSchema
+        // .superRefine()) -- cbteNro/cae/caeVto son obligatorios cuando
+        // outcome === 'EMITIDA'. El `!` documenta esa garantía externa, no
+        // la re-valida (la ruta es la única caller de este método).
+        issuedInvoice = await this.invoiceRepo.markIssuedWithClient(client, request.invoiceId, {
+          cbteNro: input.cbteNro!,
+          cae: input.cae!,
+          caeVto: input.caeVto!,
+          // Sin respuesta cruda de AFIP -- esto es una confirmación manual,
+          // no una respuesta de `createNextVoucher()`/`getVoucherInfo()`.
+          // `manualResolution: true` deja rastro de que este ISSUED nació
+          // de la bandeja de reconciliación, no del flujo automático.
+          afipResponse: { manualResolution: true, resolvedBy: input.resolvedBy, note: input.note },
+        });
+      } else {
+        await this.invoiceRepo.markUncertainClearedWithClient(client, request.invoiceId, {
+          clearedBy: input.resolvedBy,
+        });
+      }
+
+      updatedRequest = await this.creditNoteRequestRepo.transitionWithClient(client, request.id, {
+        toState: 'CERRADA',
+        resolutionOutcome: input.outcome,
+        resolvedBy: input.resolvedBy,
+        resolutionNote: input.note,
+      });
+    });
+
+    if (issuedInvoice) {
+      await this.closeAccountsReceivableGapBestEffort(issuedInvoice);
+    }
+
+    return updatedRequest;
   }
 }
 

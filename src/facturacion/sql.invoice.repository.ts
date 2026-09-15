@@ -1,7 +1,7 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { isInvoiceFullyCompensatedByIssuedCreditNotes, isReservationPortionFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
@@ -30,6 +30,8 @@ interface InvoiceRow {
   cae_vto: Date | null; // DATE llega como Date en pg, no como string
   status: InvoiceStatus;
   afip_contacted: boolean;
+  uncertain_cleared_at: Date | null;
+  uncertain_cleared_by: string | null;
   emisor_cuit: string | null;
   payment_method: PaymentMethod | null;
   card_installments: number | null;
@@ -63,6 +65,8 @@ function rowToEntity(row: InvoiceRow): Invoice {
     caeVto: row.cae_vto ? row.cae_vto.toISOString().split('T')[0]! : null,
     status: row.status,
     afipContacted: row.afip_contacted,
+    uncertainClearedAt: row.uncertain_cleared_at,
+    uncertainClearedBy: row.uncertain_cleared_by,
     emisorCuit: row.emisor_cuit,
     paymentMethod: row.payment_method,
     cardInstallments: row.card_installments,
@@ -1396,7 +1400,11 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
-    const { rows } = await this.db.query<InvoiceRow>(
+    return this.markIssuedWithClient(this.db, id, data);
+  }
+
+  async markIssuedWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET cbte_nro = $2, cae = $3, cae_vto = $4, afip_response = $5,
            status = 'ISSUED', issued_at = NOW()
@@ -1425,6 +1433,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       ],
     );
     if (!rows[0]) throw new Error(`Invoice ${id} no encontrada al marcar ${data.status}`);
+    return rowToEntity(rows[0]);
+  }
+
+  async markUncertainClearedWithClient(client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice> {
+    const { rows } = await client.query<InvoiceRow>(
+      `UPDATE invoices
+       SET uncertain_cleared_at = NOW(), uncertain_cleared_by = $2
+       WHERE id = $1
+       RETURNING *`,
+      [id, data.clearedBy],
+    );
+    if (!rows[0]) throw new Error(`Invoice ${id} no encontrada al limpiar uncertain_cleared`);
     return rowToEntity(rows[0]);
   }
 

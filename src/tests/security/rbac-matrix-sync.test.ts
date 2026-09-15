@@ -59,13 +59,25 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // §29.7.6) -- 214, no 209: service-items.routes.ts nuevo suma 5
 // authorize() (GET / y GET /:id -> Roles.ORDERS; POST /, PUT /:id,
 // DELETE /:id -> Roles.MANAGEMENT).
-const EXPECTED_AUTHORIZE_CALL_SITES = 214;
+// Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) -- 215, no
+// 214: credit-note-requests.routes.ts nuevo suma SOLO 1
+// authorize(Roles.EMISOR_NOTA_CREDITO) (POST /:id/resolve). Las 2 rutas GET
+// usan `authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])` --
+// función DISTINTA de `authorize`, el literal `authorize\(Roles\.` de este
+// test no la matchea (el carácter después de "authorize" es "A", no "("),
+// así que NO suma al conteo -- a propósito, ver el docblock de
+// `authorizeAny()` en `security/auth.middleware.ts` y el de `AUTHZ_RE` en
+// `route-enumeration.fixture.ts` (que SÍ la reconoce, para la cerca
+// `rbac-route-coverage.test.ts`, un mecanismo distinto de éste).
+const EXPECTED_AUTHORIZE_CALL_SITES = 215;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:
 // business-context.routes.ts nuevo.
 // service_items Bloque B (15/09/2026) -- 38, no 37: service-items.routes.ts nuevo.
-const EXPECTED_ROUTES_FILE_COUNT = 38;
+// Bloque 5 del ADR común cancelar-con-NC (15/09/2026) -- 39, no 38:
+// credit-note-requests.routes.ts nuevo.
+const EXPECTED_ROUTES_FILE_COUNT = 39;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

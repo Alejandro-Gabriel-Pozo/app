@@ -1275,3 +1275,16 @@ export class CreditNoteRequestInvalidTransitionError extends DomainError {
     );
   }
 }
+
+/**
+ * Bloque 5 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis) — `GET
+ * /api/credit-note-requests/:id` y `POST /api/credit-note-requests/:id/resolve`
+ * piden una fila que no existe. `findById()` (R2) no filtra por estado --
+ * esto es "no existe en absoluto", no "existe pero en otro estado" (ese
+ * caso lo cubre `CreditNoteRequestInvalidTransitionError`, 409).
+ */
+export class CreditNoteRequestNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Solicitud de Nota de Crédito "${id}" no encontrada`, 'CREDIT_NOTE_REQUEST_NOT_FOUND');
+  }
+}

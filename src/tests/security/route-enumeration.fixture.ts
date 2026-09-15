@@ -53,8 +53,21 @@ const CALL_RE = new RegExp(String.raw`\brouter\.(${METHODS})\s*\(`, 'g');
 const USE_RE = /\brouter\.use\s*\(/g;
 /** Inicio de la función handler → marca el fin de la cadena de middlewares. */
 const HANDLER_RE = /async\s*\(\s*_?req\b|\(\s*_?req\b|asyncHandler\s*\(/;
-/** Cualquiera de las dos capas de autz del repo. */
-export const AUTHZ_RE = /authorize\(Roles\.[A-Z_]+\)|authorizePlatform\s*\(/;
+/**
+ * Cualquiera de las tres capas de autz del repo. `authorizeAny\s*\(` se suma
+ * acá (Bloque 5 del ADR común cancelar-con-NC, §6.5 bis, 15/09/2026) porque
+ * es una función DISTINTA de `authorize` — el literal `authorize\(Roles\.`
+ * no matchea `authorizeAny([Roles.X, Roles.Y])` (el carácter después de
+ * "authorize" es "A", no "("), así que sin esta rama una ruta protegida con
+ * `authorizeAny(...)` aparecería como sin autz para esta cerca y para
+ * `rbac-matrix-section2-sync.test.ts`, que reusa `enumerateRoutes()`. A
+ * propósito NO se suma a `rbac-matrix-sync.test.ts`: ese test cuenta
+ * call-sites de `authorize(Roles.X)` literal contra un número fijo, y
+ * `authorizeAny` es un mecanismo distinto (OR entre grupos), no otro
+ * call-site de `authorize` — ver el docblock de `authorizeAny()` en
+ * `security/auth.middleware.ts`.
+ */
+export const AUTHZ_RE = /authorize\(Roles\.[A-Z_]+\)|authorizePlatform\s*\(|authorizeAny\s*\(/;
 
 export function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

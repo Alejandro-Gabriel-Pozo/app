@@ -293,7 +293,7 @@ describe('applyTenantSchema', () => {
     // 2026-09-06.md §6.5 bis (reapertura, gatillo 1) -- credit_note_request
     // nueva (TRANSACCIÓN de workflow del escape fiscal N1.a). Solo schema.
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(57);
+    expect(CURRENT_SCHEMA_VERSION).toBe(58);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

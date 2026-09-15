@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { InvoiceService, hashIds } from './invoice.service.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
@@ -22,7 +22,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -131,6 +131,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
       ...input,
       cbteNro: null, cae: null, caeVto: null,
       status: 'PENDING', afipContacted: false, afipRequest, afipResponse: null, errorMessage: null,
+      uncertainClearedAt: null, uncertainClearedBy: null,
       paymentMethod: input.paymentMethod ?? null, cardInstallments: input.cardInstallments ?? null,
       createdAt: new Date(), issuedAt: null,
     };
@@ -166,6 +167,11 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async classifyReservationLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; }
   async listUnreconciledLiveInvoices() { return []; } // bandeja -- sin caller en este archivo
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
+    return this.markIssuedWithClient({} as SqlClient, id, data);
+  }
+  // Bloque 5 (15/09/2026) -- mismo criterio que markFailedWithClient(): el
+  // fake ignora `client` (sin transacción real en memoria).
+  async markIssuedWithClient(_client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
     const updated: Invoice = {
       ...existing, cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto,
@@ -186,6 +192,14 @@ class FakeInvoiceRepository implements InvoiceRepository {
       afipResponse: data.afipResponse ?? existing.afipResponse,
       afipContacted: data.afipContacted,
     };
+    this.invoices.set(id, updated);
+    return updated;
+  }
+  // Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1) -- mismo criterio
+  // que markFailedWithClient(): el fake ignora `client`.
+  async markUncertainClearedWithClient(_client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice> {
+    const existing = this.invoices.get(id)!;
+    const updated: Invoice = { ...existing, uncertainClearedAt: new Date(), uncertainClearedBy: data.clearedBy };
     this.invoices.set(id, updated);
     return updated;
   }
@@ -282,7 +296,7 @@ class FakeServiceItemRepository implements Pick<ServiceItemRepository, 'findById
  * Bloque 3 ya hace de verdad en `buildCreditNote()`, fuera del alcance de
  * este Fake).
  */
-class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'transitionWithClient'> {
+class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'> {
   public calls: CreateCreditNoteRequestInput[] = [];
   public transitionCalls: { id: string; transition: TransitionCreditNoteRequestInput }[] = [];
   private readonly requests = new Map<string, CreditNoteRequest>();
@@ -311,6 +325,12 @@ class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepositor
 
   async findByInvoiceId(invoiceId: string): Promise<CreditNoteRequest | null> {
     return [...this.requests.values()].find((r) => r.invoiceId === invoiceId) ?? null;
+  }
+
+  // Bloque 5 (15/09/2026, §6.5 bis) -- R2, sin filtro de estado (mismo
+  // criterio que SqlCreditNoteRequestRepository.findById()).
+  async findById(id: string): Promise<CreditNoteRequest | null> {
+    return this.requests.get(id) ?? null;
   }
 
   async transitionWithClient(
@@ -1071,7 +1091,7 @@ describe('InvoiceService', () => {
         concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5,
         moneda: 'PES', impNeto: 82.64, impIva: 17.36, impTotal: 100,
         cae: 'CAE-ORIGINAL', caeVto: '2026-09-01',
-        status: 'ISSUED', afipContacted: true, emisorCuit: '20111111112',
+        status: 'ISSUED', afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
         paymentMethod: null, cardInstallments: null,
         afipRequest: { Iva: [{ Id: 5, BaseImp: 82.64, Importe: 17.36 }] },
         afipResponse: {}, errorMessage: null,
@@ -1814,7 +1834,7 @@ describe('InvoiceService', () => {
         cbteNro: status === 'ISSUED' ? 7 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 826.45, impIva: 173.55, impTotal: 1000, cae: status === 'ISSUED' ? 'CAE-CONSOLIDADA' : null,
         caeVto: status === 'ISSUED' ? '2026-12-31' : null, status,
-        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: status === 'REJECTED' ? 'rechazado por AFIP' : null,
         createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
       });
@@ -1860,7 +1880,7 @@ describe('InvoiceService', () => {
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
         cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'PENDING',
-        afipContacted: false, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: null,
       };
       invoiceRepo.invoices.set(pendingNc.id, pendingNc);
@@ -2006,6 +2026,138 @@ describe('InvoiceService', () => {
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cbteNro).toBe(11);
       expect(invoice.cae).toBe('CAE-RECOVERED');
+    });
+  });
+
+  describe('Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1) -- retryExisting() respeta uncertainClearedAt', () => {
+    function seedUncertainInvoice(overrides: Partial<Invoice> = {}): void {
+      invoiceRepo.invoices.set('inv-uncertain', {
+        id: 'inv-uncertain', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
+        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
+        ...overrides,
+      });
+    }
+
+    it('SIN uncertainClearedAt: sigue negándose a reintentar (devuelve la fila tal cual, no llama a AFIP)', async () => {
+      seedUncertainInvoice();
+      const createNextVoucher = vi.fn();
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(createNextVoucher).not.toHaveBeenCalled();
+      expect(invoice.id).toBe('inv-uncertain');
+      expect(invoice.status).toBe('FAILED_UNCERTAIN');
+    });
+
+    it('CON uncertainClearedAt poblado (resolución manual NO_EMITIDA ya corrida): reintenta de verdad contra AFIP', async () => {
+      seedUncertainInvoice({ uncertainClearedAt: new Date(), uncertainClearedBy: 'identity-manager' });
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(50, 'CAE-RETRY', '20261231'));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(createNextVoucher).toHaveBeenCalledOnce();
+      expect(invoice.id).toBe('inv-uncertain');
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.cae).toBe('CAE-RETRY');
+    });
+  });
+
+  describe('Bloque 5 (15/09/2026, §6.5 bis) -- resolveCreditNoteRequestManually()', () => {
+    function seedManualReview(): { creditNoteRequestRepo: FakeCreditNoteRequestRepository; requestId: string; invoiceId: string } {
+      const invoiceId = 'inv-nc-manual';
+      invoiceRepo.invoices.set(invoiceId, {
+        id: invoiceId, businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
+        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
+      });
+
+      const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+      const requestId = 'cnr-manual-1';
+      creditNoteRequestRepo.seed({
+        id: requestId, businessId: 'biz-1', invoiceId, reversedInvoiceId: 'inv-original',
+        orderId: 'ord-1', reservationId: null, state: 'EN_REVISION_MANUAL',
+        resolutionOutcome: null, resolvedBy: null, resolvedAt: null, resolutionNote: null,
+        slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      return { creditNoteRequestRepo, requestId, invoiceId };
+    }
+
+    it('EMITIDA: marca la invoice ISSUED (markIssuedWithClient) y cierra la solicitud con resolutionOutcome EMITIDA', async () => {
+      const { creditNoteRequestRepo, requestId, invoiceId } = seedManualReview();
+      const service = buildService({ creditNoteRequestRepo });
+
+      const updated = await service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'EMITIDA', resolvedBy: 'identity-manager',
+        note: 'encontrado a mano en AFIP', cbteNro: 77, cae: 'CAE-MANUAL', caeVto: '2026-12-31',
+      });
+
+      expect(updated.state).toBe('CERRADA');
+      expect(updated.resolutionOutcome).toBe('EMITIDA');
+      expect(updated.resolvedBy).toBe('identity-manager');
+      expect(updated.resolutionNote).toBe('encontrado a mano en AFIP');
+
+      const invoice = invoiceRepo.invoices.get(invoiceId)!;
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.cbteNro).toBe(77);
+      expect(invoice.cae).toBe('CAE-MANUAL');
+      expect(invoice.caeVto).toBe('2026-12-31');
+    });
+
+    it('NO_EMITIDA: SOLO desbloquea la factura (markUncertainClearedWithClient) -- no queda ISSUED, no llama a AFIP', async () => {
+      const { creditNoteRequestRepo, requestId, invoiceId } = seedManualReview();
+      const service = buildService({ creditNoteRequestRepo });
+
+      const updated = await service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager',
+        note: 'confirmado que AFIP no tiene nada',
+      });
+
+      expect(updated.state).toBe('CERRADA');
+      expect(updated.resolutionOutcome).toBe('NO_EMITIDA');
+
+      const invoice = invoiceRepo.invoices.get(invoiceId)!;
+      // Sigue FAILED_UNCERTAIN -- el reintento de issue() es una acción
+      // aparte, NO se dispara automáticamente (pregunta de negocio 1,
+      // opción (b) YA RESUELTA por el dueño).
+      expect(invoice.status).toBe('FAILED_UNCERTAIN');
+      expect(invoice.uncertainClearedAt).not.toBeNull();
+      expect(invoice.uncertainClearedBy).toBe('identity-manager');
+    });
+
+    it('fila inexistente -- lanza CreditNoteRequestNotFoundError', async () => {
+      const service = buildService({ creditNoteRequestRepo: new FakeCreditNoteRequestRepository() });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: 'no-existe', outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
+      })).rejects.toThrow(CreditNoteRequestNotFoundError);
+    });
+
+    it('fila ya CERRADA (terminal, A6.4) -- transitionWithClient() rechaza (A6.2/A6.3), no se duplica la validación acá', async () => {
+      const { creditNoteRequestRepo, requestId } = seedManualReview();
+      // La fuerza a CERRADA (terminal -- ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS.CERRADA === []).
+      creditNoteRequestRepo.seed({
+        id: requestId, businessId: 'biz-1', invoiceId: 'inv-nc-manual', reversedInvoiceId: 'inv-original',
+        orderId: 'ord-1', reservationId: null, state: 'CERRADA',
+        resolutionOutcome: null, resolvedBy: null, resolvedAt: new Date(), resolutionNote: null,
+        slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
+      })).rejects.toThrow(CreditNoteRequestInvalidTransitionError);
     });
   });
 
@@ -2348,7 +2500,7 @@ describe('InvoiceService — C1-Fase C', () => {
         idempotencyKey, environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: 5, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-PREVIA', caeVto: '2026-12-31', status: 'ISSUED',
-        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
       });
       invoiceRepo.charges.set('ft-1', priorInvoiceId);
@@ -2390,7 +2542,7 @@ describe('InvoiceService — C1-Fase C', () => {
         idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: 1, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-X', caeVto: '2026-12-31', status: 'ISSUED',
-        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
       });
       invoiceRepo.charges.set('ft-1', priorInvoiceId);
@@ -2419,7 +2571,7 @@ describe('InvoiceService — C1-Fase C', () => {
           idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
           cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
           impNeto: 100, impIva: 0, impTotal: 100, cae: null, caeVto: null, status: priorStatus,
-          afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+          afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
           afipRequest: {}, afipResponse: {}, errorMessage: priorStatus === 'REJECTED' ? 'rechazado por AFIP' : null,
           createdAt: new Date(), issuedAt: null,
         });

@@ -17,6 +17,12 @@ export interface MarkFailedInput {
   afipContacted: boolean;
 }
 
+/** Bloque 5 (15/09/2026, §6.5 bis) — ver `InvoiceRepository.markUncertainClearedWithClient()`. */
+export interface MarkUncertainClearedInput {
+  /** `identity_id` (JWT sub) de quien confirmó contra AFIP que NO hay CAE. */
+  clearedBy: string;
+}
+
 /**
  * AR-FACT-NO-ISSUED-01 (05/09/2026) -- resultado de resolver qué factura
  * interna cubre un `financial_transaction_id`, distinguiendo los TRES
@@ -544,6 +550,17 @@ export interface InvoiceRepository {
     charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice>;
   markIssued(id: string, data: MarkIssuedInput): Promise<Invoice>;
+  /**
+   * Bloque 5 (15/09/2026, §6.5 bis) — versión transaccional de `markIssued()`,
+   * mismo criterio que `markFailedWithClient()` (Bloque 2): corre contra el
+   * `client` recibido para que `InvoiceService.resolveCreditNoteRequestManually()`
+   * pueda envolver este UPDATE y la transición `EN_REVISION_MANUAL -> CERRADA`
+   * de `credit_note_request` en la MISMA transacción (atomic-state-mutation,
+   * un solo commit). `markIssued()` sigue siendo el atajo sin transacción
+   * explícita que ya usan `issue()`/`reconcileAfterFailure()` vía
+   * `finalizeIssued()` — no se tocan esos call-sites.
+   */
+  markIssuedWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice>;
   /** Atajo sin transacción explícita — delega en `markFailedWithClient(this.db, ...)`. */
   markFailed(id: string, data: MarkFailedInput): Promise<Invoice>;
   /**
@@ -558,6 +575,20 @@ export interface InvoiceRepository {
    * este alcance.
    */
   markFailedWithClient(client: SqlClient, id: string, data: MarkFailedInput): Promise<Invoice>;
+  /**
+   * Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1, opción (b)) —
+   * pone `uncertain_cleared_at = NOW()` / `uncertain_cleared_by = data.clearedBy`
+   * sobre una factura `FAILED_UNCERTAIN` con `afip_contacted = true`, para
+   * que `retryExisting()` deje de negarse a reintentarla. Siempre
+   * transaccional (mismo criterio que `markFailedWithClient()`): corre
+   * DENTRO de la misma transacción que la transición
+   * `EN_REVISION_MANUAL -> CERRADA` de `credit_note_request`
+   * (`resolveCreditNoteRequestManually()`, rama `NO_EMITIDA`) — no hay un
+   * atajo `markUncertainCleared()` sin `client` porque este método SIEMPRE
+   * se llama junto a esa otra escritura, a diferencia de `markFailed()` que
+   * sí tiene call-sites sueltos.
+   */
+  markUncertainClearedWithClient(client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice>;
   /** Solo para reconciliar un FAILED_UNCERTAIN ya resuelto a mano (A8.6) — no un "editar" genérico. */
   getStatus(id: string): Promise<InvoiceStatus | null>;
   /** D8-Nivel B — líneas reales del comprobante (vacío = factura Nivel A, ver InvoicePdfService). */

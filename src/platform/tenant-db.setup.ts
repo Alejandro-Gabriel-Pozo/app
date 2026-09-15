@@ -494,7 +494,16 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // rutas, worker `CreditNoteReviewSlaWorker` y el wiring de
 // cancelOrderWithCreditNote()/cancelReservationWithCreditNote() quedan para
 // bloques separados, cada uno con su propio gate.
-export const CURRENT_SCHEMA_VERSION = 57;
+// v58 (15/09/2026): Bloque 5 del ADR común cancelar-con-NC (§6.5 bis,
+// pregunta de negocio 1, opción (b)). `invoices` gana `uncertain_cleared_at`/
+// `uncertain_cleared_by` (nullable, sin backfill, ver BLOQUE 24 en
+// schema.sql) -- el desbloqueo que `POST /api/credit-note-requests/:id/resolve`
+// con `outcome: 'NO_EMITIDA'` escribe para que `retryExisting()` deje de
+// negarse a reintentar esa factura. Acompaña el cableado real de las 3
+// rutas nuevas (`GET /api/credit-note-requests`, `GET /:id`,
+// `POST /:id/resolve`) + `authorizeAny()` + las transiciones EMITIDA/
+// NO_EMITIDA de `InvoiceService`, mismo commit.
+export const CURRENT_SCHEMA_VERSION = 58;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
