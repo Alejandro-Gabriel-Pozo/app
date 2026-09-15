@@ -938,6 +938,23 @@ decisión de diseño, no una corrida.
   en este bloque — el gate lo marcó como hallazgo separado, no como
   condición bloqueante.
 
+- **`CANCEL-WITH-NC-UI-001` — advertencia de City Ledger en un toast no
+  persistente (gate `architecture-governor`, bloque UI de cancelar con
+  Nota de Crédito, repo `appfrontend-main`).** Cuando
+  `reservationsApi.cancelWithCreditNote()`/`ordersApi.cancelWithCreditNote()`
+  devuelven `accountsReceivableWarning` (hay traspasos a cuenta corriente
+  todavía activos — plata que sigue debiéndose aunque la reserva/orden ya
+  esté cancelada), `appfrontend-main/src/app/dashboard/reservas/[id]/page.tsx::submitCancelWithCreditNote()`
+  y su espejo en `ordenes/[id]/page.tsx` lo muestran con el mismo toast
+  de 4000ms fijo que cualquier notificación trivial
+  (`appfrontend-main/src/context/ToastContext.tsx` — sin variante
+  persistente/sticky). El propio código ya trata esta información como
+  "no se puede ignorar" en su comentario, pero la UI no lo refleja.
+  Pendiente decidir: ¿un banner persistente en la propia pantalla (no
+  solo un toast), un modal de confirmación al ver la advertencia, o
+  aceptar el toast de 4s como suficiente? No se corrige en este bloque
+  — el gate lo marcó como seguimiento, no como condición bloqueante.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
