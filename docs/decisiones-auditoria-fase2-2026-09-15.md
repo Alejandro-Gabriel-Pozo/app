@@ -89,8 +89,43 @@ aviso, se marca para revisión como ya hace el camino de evaluación con
 `app-main/CLAUDE.md` ("buscar el precedente ERP antes de diseñar, no para
 validarlo después").
 
-**Estado: grounding despachado esta ronda (`auditor-circuitos-erp`);
-implementación en bloque aparte, después del grounding.**
+**✅ RESUELTO (15/09/2026, dueño, "aceptamos la recomendación"):**
+grounding completado (5 de 6 sistemas de referencia permiten crear el
+bloqueo con una reserva en conflicto; el único que bloquea, OPERA, solo
+aplica a conflictos con fecha cierta, no al caso incierto de este repo;
+ningún sistema tiene ventana sin fecha de fin, así que ninguno tiene
+análogo real del horizonte). Se adopta la recomendación **(c) con (b)
+como estado durable**, no un simple "mismo horizonte":
+
+- **Tramo cierto** — `[startDate, min(endDate, hoy + maintenanceHorizonDays)]`:
+  sigue bloqueando con `MaintenanceWindowConflictError`, igual que hoy.
+- **Tramo incierto** — solo alcanzable con `endDate === null`, más allá de
+  `hoy + horizonte`: NO bloquea. El alta devuelve en la respuesta 201 la
+  lista de reservas que quedaron fuera de horizonte y sin revisar
+  (`conflictingReservationIds`, ya calculado hoy para el error), y las
+  marca `needs_maintenance_review = true` — INSERT de la ventana + UPDATE
+  de N reservas en la MISMA transacción (`atomic-state-mutation`).
+- **El horizonte aplica SOLO a la rama `endDate === null`.** Si la ventana
+  tiene fecha de fin, sigue evaluándose completa (sin horizonte) —
+  aplicar el horizonte también ahí sería una regresión real: dejaría
+  pasar un alta con una reserva DENTRO del rango acotado sin bloquear ni
+  marcar nada, contradiciendo al motor de disponibilidad
+  (`reservation-availability.service.ts:90-98`, que no usa horizonte para
+  ventanas acotadas).
+- **`needsMaintenanceReview`: snapshot, se limpia solo al reasignar**
+  (decisión del dueño, `AskUserQuestion`, 15/09/2026) — no se recalcula
+  automáticamente si cambia la configuración del horizonte o la ventana;
+  es la extensión mínima del diseño actual (ya es snapshot al crear la
+  reserva, R14/YAGNI), sin agregar un motor de recálculo nuevo.
+
+**No resuelto acá, declarado por el grounding, no bloqueante para
+implementar:** la pantalla de revisión de `needsMaintenanceReview` sigue
+sin existir (backlog ya conocido); el límite de anticipación de una
+reserva (que haría desaparecer el caso de borde desde el otro extremo) no
+se propone, queda anotado como posible mejora futura, no una decisión de
+este bloque.
+
+**Estado: bloque de implementación, esta ronda.**
 
 ## 7. D-02 — Filtros parciales de reservas
 
@@ -120,9 +155,31 @@ fiscales que no sean CUIT/CUIL — relevante para decidir si
 ya hace el receptor, `customer_tax_profiles`) o si el emisor es CUIT-only
 por diseño.
 
-**Estado: grounding despachado esta ronda (`auditor-circuitos-erp`); la
-decisión de negocio final queda pendiente del resultado, con
-`AskUserQuestion` si el grounding no la resuelve sola.**
+**✅ RESUELTO (15/09/2026, dueño, "sí fijarlo").** Grounding: el emisor es
+CUIT-only, hoy y en cualquier corto plazo razonable — el protocolo AFIP/
+ARCA no tiene otro lugar donde poner la identidad del emisor
+(`<Auth><Cuit>`, `Long(11)`, obligatorio en toda llamada WSFEv1), y los
+ERP multi-país de referencia con integración fiscal real (Odoo l10n_ar)
+**pinean** el emisor al identificador que exige el país, no lo dejan
+condicional — la validación condicional es un patrón exclusivo del lado
+RECEPTOR en todos los sistemas revisados. Sin ambición multi-país
+verificada en `docs/` de este repo.
+
+El hallazgo real que el grounding encontró (`EMISOR-TAXIDTYPE-DECORATIVO-01`):
+`business_profile.taxIdType` no lo lee ningún camino de producción (0
+call-sites reales), el frontend lo deja como texto libre
+(`dashboard/mi-negocio/page.tsx`), y queda bajo el candado `OWNER_ONLY`
+del perfil fiscal confirmado — un dueño puede guardar "DNI" ahí mientras
+el sistema exige CUIT igual, sin que nada lo detecte.
+
+**Implementación decidida (opción (a) del grounding):** `taxIdType` del
+emisor deja de ser texto libre editable — se fija a `'CUIT'` (backend:
+`z.literal('CUIT')` o se deriva sin pedirse; frontend: el input de
+`mi-negocio` deja de ser editable, muestra "CUIT" fijo). No se borra la
+columna (mantiene el paralelismo de nombres con `customer_tax_profiles`
+que `business-profile.entities.ts` ya declara querer preservar).
+
+**Estado: bloque de implementación, esta ronda.**
 
 ## 10. D-16 — Decimales de moneda en el frontend
 
@@ -160,11 +217,66 @@ sí/no directo) cuál debería ser el contrato canónico (`page`/`limit` vs.
 por plan o por tenant. Se cruza con `PLAN_LIMITS`, todavía sin resolver en
 este repo.
 
-**Estado: grounding despachado esta ronda (`auditor-circuitos-erp`); el
-único paso de esta ronda que SÍ se implementa ahora, sin esperar el
-grounding completo, es el tope duro sobre `GET /api/reservations` (hoy
-sin cota — riesgo de lectura sin límite ya identificado en D-14), porque
-cerrar ese agujero no depende de qué contrato se elija después.**
+**✅ RESUELTO (15/09/2026, dueño, "adoptamos la recomendación").**
+Grounding completado contra 8 sistemas de referencia (Odoo, ERPNext x2,
+Dolibarr, QloApps, Cloudbeds, Mews, OPERA, Shopify). Se adopta tal cual:
+
+- **Contrato canónico: `limit`/`offset`**, envelope único
+  `{ data, limit, offset, total, hasMore }` — 6 de 8 sistemas lo usan así
+  (Odoo, Frappe v1/v2, Cloudbeds, OPERA); compone con un futuro cursor sin
+  renombrar nada; evita el off-by-one de `page` (Dolibarr es 0-based,
+  este repo era 1-based — ambigüedad que un integrador tendría que
+  adivinar). **Sin fallback a array plano**: hoy la ausencia de `page`/
+  `limit` en `GET /api/reservations` cambia el TIPO de la respuesta — eso
+  es lo que causaba el truncado silencioso en Órdenes/Productos/Turnos de
+  caja (devuelven array pelado con su default, sin `total`, sin forma de
+  saber que hay más). Con este contrato, sin parámetros → envelope con
+  los defaults, nunca un array pelado.
+- **Tope: fijo y global en el código, NO por plan ni por tenant.**
+  Unanimidad del set (ningún sistema lo ata al tier — Shopify separa
+  explícitamente cap de página, igual para todos, de rate limit, que sí
+  escala por plan). El tope protege al servidor (memoria, tiempo de
+  conexión), no es una variable de negocio.
+- **Valores: `limit` default 50, máximo 200.** Mediana de los defaults
+  observados (20–100) y el valor más alto con evidencia empírica de
+  estabilidad (`erpnext#49037`: 200 funciona, 2000/5000 produce
+  duplicados y registros faltantes). Un `limit` por encima del tope se
+  CLAMPEA y se informa el valor efectivo en el envelope — nunca se trunca
+  en silencio (mismo criterio `honest-degradation` que ya rige el repo;
+  es literalmente el bug que reportó `Dolibarr#8681`).
+- **Offset, no cursor, por ahora.** El único sistema con cursor obligado
+  (Mews) lo usa para sincronización máquina-a-máquina de gran volumen —
+  no es el patrón de un listado de panel filtrado por fecha. Cursor queda
+  reservado para un futuro canal de export/sync, no para este batch.
+- **Implementación acompañante, independiente del contrato** (ya
+  recomendada por el grounding, va en el mismo bloque): desempate
+  explícito en el `ORDER BY` de los 5 listados (`, id DESC` — causa raíz
+  real de duplicados/faltantes en paginación, ya visto en
+  `erpnext#49037`); `.max(200)` en los schemas Zod de `limit` que hoy no
+  lo tienen.
+
+**Reemplaza el tope provisorio de 100 ya commiteado** (`bf29137`,
+`DEFAULT_UNPAGINATED_LIMIT`) por el contrato definitivo — no fue
+descartado, fue el paso intermedio correcto mientras el grounding corría.
+
+**Alcance de ESTE bloque:** migrar `reservations` (el recurso con el
+contrato viejo `page`/`limit` + el bug ya identificado) al contrato
+nuevo, incluyendo el adaptador correspondiente en
+`appfrontend/src/lib/refine/dataProvider.ts` (único consumidor vivo hoy,
+cambio de 2 líneas ya anticipado por el grounding) — cambio de contrato
+entre repos, se revisan los dos lados en el mismo bloque, regla del
+`CLAUDE.md` raíz. Los otros 4 recursos (`orders`, `products`,
+`cash-register-shift`, `customers`) que hoy usan `limit`/`offset` pero
+SIN envelope (el bug de truncado silencioso) quedan para un bloque
+aparte — mismo contrato, pero no tienen consumidor vivo hoy en el
+frontend (`ordersApi.list()` se llama sin argumentos), así que el
+cambio ahí es más grande en superficie de archivos pero sin la urgencia
+de un contrato roto entre repos.
+
+**Estado: bloque de implementación, esta ronda (alcance: `reservations` +
+el desempate de `ORDER BY`/`.max()` en los 5 listados). El resto
+(`orders`/`products`/`cash-register-shift`/`customers` al envelope
+completo) queda registrado como bloque aparte en pendientes.**
 
 ## 13. D-09 — Bandeja de dead-letter para propagación de catálogo
 
