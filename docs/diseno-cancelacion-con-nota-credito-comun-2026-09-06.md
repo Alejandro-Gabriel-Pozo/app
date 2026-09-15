@@ -690,6 +690,16 @@ A6.3: transición fuera de esta tabla → error tipado nuevo (`CreditNoteRequest
 
 A6.6 — rol: **solo** la transición manual necesita `authorize()`; las otras dos las dispara código interno de `InvoiceService`, sin ruta. Se propone `Roles.EMISOR_NOTA_CREDITO` (no `MANAGEMENT` ni un grupo nuevo) — mismo grupo que ya audita/emite el escape de NC en sí (`credit-note-escape-containment.test.ts`, `ESCAPE_ROUTES`), y la resolución manual es, en sustancia, la misma responsabilidad fiscal que autorizar el escape: decidir el destino de una NC ante AFIP. Evita crear un grupo nuevo para una sola ruta.
 
+**❌ CORRECCIÓN (15/09/2026, scoping contra código real) — `markFailed()` tiene 4 call-sites, no 1.** La fila de la tabla de arriba ("Sistema — dentro de `reconcileAfterFailure()`/`markFailed()`... `invoice.service.ts:1341`") cita un solo call-site como si fuera el único disparador — no se borra, se supera acá con los 4 reales:
+
+- `markFailed()` **no es un método de servicio**, es `InvoiceRepository.markFailed(id, data)` (interfaz `invoice.repository.ts:547`, impl `sql.invoice.repository.ts:1411-1424`) — **sin** parámetro `client`, UPDATE suelto, **fuera de transacción**. El requisito propio de este diseño (misma transacción que el `UPDATE` de `invoices`, un solo commit) no se cumple hoy en ninguno de los 4.
+- **`invoice.service.ts:1269`** — `FAILED_UNCERTAIN`, `afipContacted:false` (AFIP ni respondió). **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): la fila `credit_note_request` se queda en `PENDIENTE`, sin transición** — mismo criterio que `retryExisting()` ya usa: sin contacto AFIP confirmado, no es todavía un caso de reconciliación manual.
+- **`invoice.service.ts:1284`** — `status:'REJECTED'`, `afipContacted:true` — SÍ es un disparador legítimo de `PENDIENTE → CERRADA` (automático), ya contemplado por el diseño de arriba.
+- **`invoice.service.ts:1297`** — dentro de `issue()`, `FAILED_UNCERTAIN` + `afipContacted:true` (AFIP respondió sin `CbteDesde`/`CAE`) — **disparador legítimo de `PENDIENTE → EN_REVISION_MANUAL` que la tabla de arriba NO citaba** (solo citaba `:1341`). Se agrega a la fila `PENDIENTE → EN_REVISION_MANUAL` como segundo disparador válido, mismo criterio (`afipContacted:true`, ambiguo).
+- **`invoice.service.ts:1341`** — dentro de `reconcileAfterFailure()`, el único que la tabla original citaba. Sigue siendo válido, pero no es el único.
+
+**Trabajo nuevo que esto agrega al alcance de implementación (no es parte del diseño ya cerrado):** hace falta `markFailedWithClient(client, id, data)` en `InvoiceRepository`/`SqlInvoiceRepository` (no existe hoy) y envolver en `transactionManager.run()` los 3 call-sites relevantes (`:1284`, `:1297`, `:1341` — `:1269` no transiciona nada, ver arriba) junto con el `UPDATE` de `credit_note_request` correspondiente, para que las dos escrituras sean un solo commit (atomic-state-mutation).
+
 **El consumidor real de `resolved_by` (lo que el gate 2.2 pedía):**
 
 1. `reconcileAfterFailure()` no logra confirmar el CAE (`invoice.service.ts:1338-1342`) → `invoices` queda `FAILED_UNCERTAIN`/`afip_contacted=true` Y, en la misma transacción, `credit_note_request.state` pasa a `EN_REVISION_MANUAL` (solo si la factura tiene una fila `credit_note_request` — una `FAILED_UNCERTAIN` de una Factura B normal, sin escape de por medio, sigue sin fila y sigue siendo visible solo por `GET /api/invoices?status=FAILED_UNCERTAIN`, sin acción de resolución — ver más abajo la distinción con la bandeja B3 original).
@@ -714,6 +724,15 @@ A6.6 — rol: **solo** la transición manual necesita `authorize()`; las otras d
 **Flujo end-to-end (resumen):**
 `cancelOrderWithCreditNote()`/`cancelReservationWithCreditNote()` crea el `ADJUSTMENT` + la fila `invoices` (PENDING) + esta fila `credit_note_request` (PENDIENTE) en la misma transacción de N1.a → se llama a AFIP → si todo sale bien o mal de forma NO ambigua, `credit_note_request` cierra sola (`CERRADA`, sin intervención) → si sale ambiguo Y la reconciliación automática tampoco puede confirmar, pasa a `EN_REVISION_MANUAL` y aparece en la bandeja → un operador con `EMISOR_NOTA_CREDITO` la revisa contra AFIP a mano y resuelve → `CERRADA` con el resultado real registrado.
 
+**❌ CORRECCIÓN (15/09/2026, scoping contra código real — el párrafo de arriba es falso en su primera cláusula, no se borra, se supera acá):** "crea el `ADJUSTMENT` + la fila `invoices` (PENDING) + esta fila `credit_note_request` (PENDIENTE) en la misma transacción de N1.a" **no puede ser cierto tal como está escrito.** Verificado línea por línea:
+
+- **tx1** de los dos orquestadores (`cancel-order-with-credit-note.service.ts:278-560`, `cancel-reservation-with-credit-note.service.ts:329-568`) crea **SOLO el `ADJUSTMENT`** — no toca `invoices`.
+- La fila `invoices` (PENDING) se crea en **otra transacción**, la que abre `InvoiceService.buildCreditNote()` por su cuenta (`invoice.service.ts`, `transactionManager.run(...)` ~1108-1183, `invoiceRepo.createWithClient` ~1157), disparada por `requestInvoice()` (`invoice.service.ts:477-479`) **después** de que tx1 ya commiteó — el propio comentario de cabecera de los orquestadores ya lo documenta ("AFIP: emitir la NC (fuera de toda tx, sin lock -- N10)").
+- Como `credit_note_request.invoice_id` es `NOT NULL UNIQUE REFERENCES invoices(id)`, la fila **no puede** crearse en tx1: el `invoices.id` todavía no existe ahí. El único lugar posible es DENTRO de la transacción de `buildCreditNote()`, junto a `invoiceRepo.createWithClient(...)` y `recordInvoiceAudit(...)`.
+- El gate correcto para el INSERT es `tx.type === 'ADJUSTMENT'` — discriminador que YA existe en el `if` de `requestInvoice()` (`invoice.service.ts:474`) — **no** "toda invocación de `buildCreditNote()`": `CancellationRefundService` (`src/reservas/cancellation-refund.service.ts:381`) también llama a esa misma función con `type: 'REFUND'` (flujo C2 normal, sin escape de NC), y sin el filtro se generarían filas `credit_note_request` espurias para reembolsos normales.
+
+**Flujo end-to-end corregido:** `cancelOrderWithCreditNote()`/`cancelReservationWithCreditNote()` crea SOLO el `ADJUSTMENT` en tx1 (N1.a) → tx1 commitea → `requestInvoice()` llama a `buildCreditNote()`, que abre su PROPIA transacción y ahí, en el mismo commit, crea `invoices` (PENDING) Y, gateado por `tx.type === 'ADJUSTMENT'`, esta fila `credit_note_request` (PENDIENTE) → se llama a AFIP (fuera de toda tx, N10) → si todo sale bien o mal de forma NO ambigua, `credit_note_request` cierra sola (`CERRADA`, sin intervención) → si sale ambiguo Y la reconciliación automática tampoco puede confirmar, pasa a `EN_REVISION_MANUAL` y aparece en la bandeja → un operador con `EMISOR_NOTA_CREDITO` la revisa contra AFIP a mano y resuelve → `CERRADA` con el resultado real registrado.
+
 **Preguntas de negocio nuevas — NO resueltas acá, cada una necesita su propio `AskUserQuestion` con el dueño antes de implementar (mismo criterio D5 de siempre):**
 
 1. **¿Qué pasa con la factura bloqueada cuando el humano resuelve `NO_EMITIDA`?** Hoy `retryExisting()` (`invoice.service.ts:1200-1202`) se niega a reintentar CUALQUIER factura `FAILED_UNCERTAIN` con `afip_contacted=true` — exactamente la fila que esta bandeja resuelve. Confirmar "no se emitió" no cambia ese guard por sí solo; sin un mecanismo que lo desbloquee, la resolución manual queda sin efecto práctico sobre `invoices`. Dos caminos razonables, ninguno obviamente correcto:
@@ -727,7 +746,22 @@ A6.6 — rol: **solo** la transición manual necesita `authorize()`; las otras d
    **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, hace falta alerta/escalamiento** — a diferencia del resto de este ADR (que no construye alertas en ningún otro punto), acá el dueño confirmó que la sola visibilidad en la bandeja no alcanza. **No diseñado acá**: falta definir el SLA concreto (cuánto tiempo antes de escalar), el canal (mismo mecanismo que `management-emails` ya usa en el repo, a confirmar) y el destinatario — bloque de implementación aparte, con su propio gate.
 3. **Visibilidad de la bandeja: ¿solo `EMISOR_NOTA_CREDITO`, o también `MANAGEMENT` en modo lectura?** Esta propuesta puso las 3 rutas bajo `EMISOR_NOTA_CREDITO` por simetría con quien puede resolver, pero eso significa que un dueño/gerente sin ese permiso puntual no ve que hay NC trabadas esperando reconciliación. Menor que las dos de arriba, pero es una decisión real de RBAC, no técnica.
 
-   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, `MANAGEMENT` también ve la bandeja en modo lectura.** `GET /api/credit-note-requests` y `GET /api/credit-note-requests/:id` (§6.5 bis arriba) pasan a exigir `Roles.EMISOR_NOTA_CREDITO` **O** `Roles.MANAGEMENT` (dos `authorize()` encadenados, mismo patrón ya usado en este repo para rutas con más de un grupo habilitado — ver `docs/rbac-matriz-endpoints.md` formato `` `GRUPO_A` **O** `GRUPO_B` ``); `POST /api/credit-note-requests/:id/resolve` sigue exigiendo SOLO `Roles.EMISOR_NOTA_CREDITO` — la lectura se amplía, la transición de estado no. Actualizar `EXPECTED_AUTHORIZE_CALL_SITES` (+1 respecto de lo ya contado arriba, por el segundo `authorize()` en las 2 rutas de lectura) y la matriz en el bloque de implementación real.
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, `MANAGEMENT` también ve la bandeja en modo lectura.** `GET /api/credit-note-requests` y `GET /api/credit-note-requests/:id` (§6.5 bis arriba) pasan a exigir `Roles.EMISOR_NOTA_CREDITO` **O** `Roles.MANAGEMENT`; `POST /api/credit-note-requests/:id/resolve` sigue exigiendo SOLO `Roles.EMISOR_NOTA_CREDITO` — la lectura se amplía, la transición de estado no.
+
+   **❌ CORRECCIÓN (15/09/2026, scoping contra código real):** el mecanismo citado arriba, "dos `authorize()` encadenados, mismo patrón ya usado en este repo", **es falso** — no se borra, se supera acá. `authorize()` (`src/security/auth.middleware.ts:367-387`) hace **AND**, no OR: encadenar dos `authorize()` en la misma ruta exige que el usuario tenga AMBOS grupos, no cualquiera de los dos — exactamente lo contrario de lo que el dueño pidió (`MANAGEMENT` también ve la bandeja, sin exigirle también `EMISOR_NOTA_CREDITO`). No existe ningún `authorizeAny()` ni middleware OR-based en el repo hoy — el "mismo patrón ya usado" no tiene precedente real.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`, mecanismo corregido):** se crea un middleware nuevo `authorizeAny()` reusable (no el patrón inline de `requireManagementForCompanyCharge()`) — acepta una lista de grupos y aprueba si el usuario tiene CUALQUIERA de ellos. Las 2 rutas de lectura (`GET /api/credit-note-requests`, `GET /api/credit-note-requests/:id`) usan `authorizeAny([Roles.EMISOR_NOTA_CREDITO, Roles.MANAGEMENT])`; `POST /api/credit-note-requests/:id/resolve` sigue con `authorize(Roles.EMISOR_NOTA_CREDITO)` simple. **No implementado todavía** — solo la decisión de mecanismo; `authorizeAny()` se construye como parte del bloque de implementación real (ver orden de bloques más abajo), no acá. `docs/rbac-matriz-endpoints.md` documenta esta ruta con el formato de grupo compuesto que corresponda a `authorizeAny(...)`, no con el formato `` `GRUPO_A` **O** `GRUPO_B` `` de dos `authorize()` — ese formato queda reservado para cuando de verdad describe dos calls encadenados AND, no una lista OR.
+
+**Orden de implementación propuesto (15/09/2026, scoping) — bloques chicos y reversibles, cada uno su propio gate, ninguno implica el siguiente automáticamente:**
+
+1. Repo + entidades de `credit_note_request` solo (el `CREATE TABLE` de arriba + repositorio + tests unitarios) — testeable aislado, sin tocar `InvoiceService` ni los orquestadores todavía.
+2. `markFailedWithClient()` + transaccionalizar los 3 call-sites relevantes (`:1284`, `:1297`, `:1341`) — SIN tocar `credit_note_request` todavía (la corrección de arriba deja esto separado a propósito: es trabajo de wiring transaccional, independiente de que la tabla exista).
+3. El INSERT de `credit_note_request` dentro de `buildCreditNote()`, gateado por `tx.type === 'ADJUSTMENT'` (corrección de arriba). Requiere un parámetro nuevo en `InvoiceService` para expresar el gate, lo que toca los 9 archivos que lo instancian directo — listados para que el bloque no los descubra a mitad de camino: `invoice.service.test.ts`, `cancel-order-with-credit-note.integration.test.ts`, `credit-note-pair-cap.integration.test.ts`, `reservation-cancel-invoice-toctou.integration.test.ts`, `invoice-order-reservation-item.integration.test.ts`, `order-cancel-invoice-toctou.integration.test.ts`, `cancel-reservation-with-credit-note.integration.test.ts`, `consolidated-invoice-toctou.integration.test.ts`, `credit-note-cap-service.integration.test.ts`.
+4. Enganchar las 3 transiciones automáticas (`PENDIENTE → EN_REVISION_MANUAL` vía `:1284`/`:1297`/`:1341`, `PENDIENTE → CERRADA` automático) sobre el `markFailedWithClient` ya atómico del bloque 2 — recién acá el requisito "un solo commit" se cumple de punta a punta.
+5. Rutas nuevas (`GET`/`GET :id`/`POST :id/resolve`) + `authorizeAny()` (decisión de mecanismo ya resuelta arriba) + actualización de RBAC (matriz, `EXPECTED_AUTHORIZE_CALL_SITES`, y evaluar `ESCAPE_ROUTES`).
+6. Worker de SLA/escalamiento (§6.5 bis, pregunta 2 más abajo), aparte — no bloquea ni depende de los bloques 1-5 salvo por leer `credit_note_request` (bloque 1) para el poll.
+
+**Pregunta abierta sin resolver, dejada explícitamente así (NO respondida acá):** verificación de concurrencia — dos escapes simultáneos sobre la misma orden/reserva, ¿la cadena de idempotencia existente (`invoices.idempotency_key`, `credit_note_request.invoice_id UNIQUE`) los cierra sola? "Parece que sí, no probado todavía" — queda como verificación pendiente del bloque de implementación 3 (donde el INSERT real entra en juego), no como pregunta de negocio para el dueño.
 
 **Actualización de §10 fila 1:** ver tabla de §10 — pasa de `HOLD` a `REABIERTO 15/09/2026`, referenciando esta subsección.
 
@@ -790,10 +824,20 @@ no pregunta de negocio):**
    EN_REVISION_MANUAL` es la única transición de entrada y no hay camino de
    vuelta a `PENDIENTE`, `created_at` alcanza para "hace cuánto está en esta
    bandeja" sin admitir una columna `entered_review_at` separada. Esto asume
-   que la ventana entre la creación (`PENDIENTE`, dentro de la transacción de
-   N1.a) y la transición a `EN_REVISION_MANUAL` (`reconcileAfterFailure()`/
-   `markFailed()`, línea 684) es chica frente al SLA propuesto — razonable con
-   un SLA en horas, no lo sería con un SLA en minutos. Si el bloque de
+   que la ventana entre la creación (`PENDIENTE`) y la transición a
+   `EN_REVISION_MANUAL` (`reconcileAfterFailure()`/`markFailed()`, línea 684)
+   es chica frente al SLA propuesto — razonable con un SLA en horas, no lo
+   sería con un SLA en minutos.
+
+   **❌ CORRECCIÓN (15/09/2026, gate `architecture-governor`, mismo hallazgo
+   que la Corrección 1 de arriba, eco no cerrado ahí):** este párrafo decía
+   "dentro de la transacción de N1.a" para el momento de creación — ya
+   corregido más arriba (la creación real ocurre dentro de la transacción de
+   `buildCreditNote()`, no en tx1 de N1.a). El razonamiento sobre la ventana
+   sigue valiendo en sustancia (la creación ocurre justo antes de la llamada
+   a AFIP de todos modos, la ventana sigue siendo chica) — no cambia la
+   conclusión de no agregar `entered_review_at` — pero la premisa citada
+   estaba mal. Si el bloque de
    implementación real confirma que esa ventana importa, ahí se agrega la
    columna separada; no se declara acá porque no cambia el mecanismo, solo el
    `WHERE`.
