@@ -170,9 +170,17 @@ export interface ReservationProps {
    * que se acerque la fecha. Default `false` (la inmensa mayoría de las
    * reservas no tiene nada que revisar) -- lo resuelve
    * `ReservationAvailabilityService.needsMaintenanceReview()` en
-   * `ReservationService.createReservation()`, no se recalcula después.
-   * Sin mutador todavía (R14, YAGNI): la pantalla de revisión/reasignación
-   * que lo va a limpiar queda para una sesión aparte.
+   * `ReservationService.createReservation()`.
+   *
+   * D-03 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §6) —
+   * también lo setea `MaintenanceWindowService.createWindow()` sobre las
+   * reservas del "tramo incierto" (más allá del horizonte) cuando se abre
+   * una ventana ABIERTA nueva, vía el mutador `markNeedsMaintenanceReview()`
+   * de más abajo. Snapshot, se limpia SOLO al reasignar la reserva a otro
+   * recurso (`clearNeedsMaintenanceReview()`, decisión del dueño vía
+   * `AskUserQuestion`) — no hay motor de recálculo automático si cambia el
+   * horizonte configurado o la ventana misma (R14/YAGNI, extensión mínima
+   * del diseño ya snapshot).
    */
   needsMaintenanceReview?: boolean;
   /**
@@ -225,7 +233,7 @@ export class Reservation {
   public readonly depositDueBy: Date | null;
   public readonly reservationNumber: number;
   public readonly appliedCustomerRateId: string | null;
-  public readonly needsMaintenanceReview: boolean;
+  private _needsMaintenanceReview: boolean;
   public readonly isExclusiveResource: boolean;
   private _cancellationPolicySnapshot: CancellationPolicySnapshot | null;
 
@@ -319,7 +327,7 @@ export class Reservation {
     this.depositDueBy  = depositDueBy;
     this.reservationNumber = reservationNumber;
     this.appliedCustomerRateId = appliedCustomerRateId;
-    this.needsMaintenanceReview = needsMaintenanceReview;
+    this._needsMaintenanceReview = needsMaintenanceReview;
     this.isExclusiveResource = isExclusiveResource;
     this._cancellationPolicySnapshot = cancellationPolicySnapshot;
     this._status     = initialStatus;
@@ -337,6 +345,7 @@ export class Reservation {
   }
 
   get cancellationPolicySnapshot(): CancellationPolicySnapshot | null { return this._cancellationPolicySnapshot; }
+  get needsMaintenanceReview(): boolean { return this._needsMaintenanceReview; }
 
   get requestedCheckInTime(): string | null { return this._requestedCheckInTime; }
   get requestedCheckOutTime(): string | null { return this._requestedCheckOutTime; }
@@ -409,6 +418,44 @@ export class Reservation {
       );
     }
     this._cancellationPolicySnapshot = snapshot;
+  }
+
+  /**
+   * D-03 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §6) --
+   * marca esta reserva para revisión humana: su recurso tiene una ventana
+   * de mantenimiento ABIERTA cuyo tramo incierto (más allá del horizonte
+   * configurado, `business_profile.maintenance_horizon_days`) la alcanza,
+   * pero el alta de la ventana NO se bloqueó por eso (decisión del dueño,
+   * grounding ERP -- 5 de 6 sistemas de referencia permiten crear el
+   * bloqueo con una reserva en conflicto en el tramo incierto). Llamada
+   * por `MaintenanceWindowService.createWindow()` sobre cada reserva del
+   * tramo incierto, dentro de la MISMA transacción que el INSERT de la
+   * ventana (atomic-state-mutation).
+   *
+   * Sin guard de estado: a diferencia de `freezeCancellationPolicy()`, acá
+   * no hay una única transición previa obligatoria que verificar -- el
+   * único caller real ya filtra a reservas activas
+   * (`getActiveForResourceInRange` solo devuelve PENDING/CONFIRMED), así
+   * que marcar una reserva CANCELLED/COMPLETED no debería ocurrir en
+   * producción. No se agrega un guard que ningún caller real dispara
+   * todavía (YAGNI, mismo criterio que el resto de este archivo).
+   */
+  markNeedsMaintenanceReview(): void {
+    this._needsMaintenanceReview = true;
+  }
+
+  /**
+   * D-03 (15/09/2026) -- limpia la marca. Decisión del dueño
+   * (`AskUserQuestion`, 15/09/2026): la marca es snapshot y se limpia
+   * SOLO cuando la reserva se REASIGNA a otro recurso
+   * (`ReservationService.updateReservation()` con `resourceId` distinto al
+   * actual) -- explícitamente NO al cancelarla, NO al cerrar la ventana de
+   * mantenimiento, y NO si cambia `maintenanceHorizonDays` después. No hay
+   * motor de recálculo automático -- es la extensión mínima del diseño ya
+   * snapshot (R14/YAGNI), no un mecanismo nuevo.
+   */
+  clearNeedsMaintenanceReview(): void {
+    this._needsMaintenanceReview = false;
   }
 
   /**

@@ -62,7 +62,7 @@ export function createMaintenanceWindowsRouter(service: MaintenanceWindowService
     async (req, res, next) => {
       try {
         const body = CreateMaintenanceWindowSchema.parse(req.body);
-        const window = await service.createWindow({
+        const result = await service.createWindow({
           businessId: req.user!.businessId as string,
           resourceId: body.resourceId,
           startDate: body.startDate,
@@ -70,7 +70,11 @@ export function createMaintenanceWindowsRouter(service: MaintenanceWindowService
           ...(body.reason !== undefined && { reason: body.reason }),
           createdBy: req.user!.id,
         });
-        res.status(201).json(window.toJSON());
+        // D-03 (15/09/2026) -- needsReviewReservationIds viaja junto a los
+        // campos de la ventana (spread de toJSON(), compatibilidad hacia
+        // atrás para quien ya consume esta respuesta) en vez de anidar la
+        // ventana bajo una key nueva.
+        res.status(201).json({ ...result.window.toJSON(), needsReviewReservationIds: result.needsReviewReservationIds });
       } catch (err) { next(err); }
     },
   );

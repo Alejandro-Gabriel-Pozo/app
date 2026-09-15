@@ -5,11 +5,17 @@
 
 import type { MaintenanceWindowRepository } from './maintenance-window.repository.js';
 import type { MaintenanceWindow } from './maintenance-window.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export class InMemoryMaintenanceWindowRepository implements MaintenanceWindowRepository {
   private readonly windows = new Map<string, MaintenanceWindow>();
 
   async save(window: MaintenanceWindow): Promise<void> {
+    this.windows.set(window.id, window);
+  }
+
+  /** D-03 (15/09/2026) — sin transacción real en memoria, `client` se ignora. */
+  async saveWithClient(_client: SqlClient, window: MaintenanceWindow): Promise<void> {
     this.windows.set(window.id, window);
   }
 

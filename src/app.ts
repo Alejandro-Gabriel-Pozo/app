@@ -464,6 +464,11 @@ export async function createApp(): Promise<{
         resourceRepo,
         reservationRepo,
         businessProfileRepo,
+        // D-03 (15/09/2026) — TransactionManager del TENANT (mismo builder
+        // que StayService/AccountsReceivableService más abajo), para que
+        // el INSERT de la ventana + el UPDATE de needs_maintenance_review
+        // sean atómicos.
+        buildTenantTransactionManager(req),
       );
       const router = createMaintenanceWindowsRouter(maintenanceWindowService);
       router(req, _res, next);

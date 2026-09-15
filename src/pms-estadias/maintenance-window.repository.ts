@@ -4,9 +4,20 @@
  */
 
 import type { MaintenanceWindow } from './maintenance-window.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface MaintenanceWindowRepository {
   save(window: MaintenanceWindow): Promise<void>;
+  /**
+   * D-03 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §6) —
+   * igual que `save()` pero corre sobre el `client` de una transacción ya
+   * abierta. `MaintenanceWindowService.createWindow()` la usa para que el
+   * INSERT de la ventana y el UPDATE de `needs_maintenance_review` de las
+   * reservas del tramo incierto sean una sola operación atómica
+   * (atomic-state-mutation) — mismo criterio que
+   * `ReservationRepository.saveWithClient`.
+   */
+  saveWithClient(client: SqlClient, window: MaintenanceWindow): Promise<void>;
   update(window: MaintenanceWindow): Promise<void>;
   findById(id: string, businessId: string): Promise<MaintenanceWindow | null>;
   findByResource(resourceId: string, businessId: string): Promise<MaintenanceWindow[]>;

@@ -55,8 +55,8 @@ function rowToWindow(row: Row): MaintenanceWindow {
 export class SqlMaintenanceWindowRepository implements MaintenanceWindowRepository {
   constructor(private readonly db: SqlClient) {}
 
-  async save(window: MaintenanceWindow): Promise<void> {
-    await this.db.query(
+  private async insert(client: SqlClient, window: MaintenanceWindow): Promise<void> {
+    await client.query(
       `INSERT INTO maintenance_windows
          (id, business_id, resource_id, start_date, end_date, reason,
           created_by, closed_by, closed_at, created_at, updated_at)
@@ -67,6 +67,15 @@ export class SqlMaintenanceWindowRepository implements MaintenanceWindowReposito
         window.createdAt, window.updatedAt,
       ],
     );
+  }
+
+  async save(window: MaintenanceWindow): Promise<void> {
+    await this.insert(this.db, window);
+  }
+
+  /** D-03 (15/09/2026) — ver docblock en maintenance-window.repository.ts. */
+  async saveWithClient(client: SqlClient, window: MaintenanceWindow): Promise<void> {
+    await this.insert(client, window);
   }
 
   async update(window: MaintenanceWindow): Promise<void> {

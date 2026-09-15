@@ -101,10 +101,16 @@ como estado durable**, no un simple "mismo horizonte":
   sigue bloqueando con `MaintenanceWindowConflictError`, igual que hoy.
 - **Tramo incierto** — solo alcanzable con `endDate === null`, más allá de
   `hoy + horizonte`: NO bloquea. El alta devuelve en la respuesta 201 la
-  lista de reservas que quedaron fuera de horizonte y sin revisar
-  (`conflictingReservationIds`, ya calculado hoy para el error), y las
+  lista de reservas que quedaron fuera de horizonte y sin revisar, y las
   marca `needs_maintenance_review = true` — INSERT de la ventana + UPDATE
   de N reservas en la MISMA transacción (`atomic-state-mutation`).
+  **Nombre final del campo (implementación, gate `architecture-governor`):**
+  `needsReviewReservationIds`, no `conflictingReservationIds` como decía
+  este párrafo originalmente — esas reservas ya no están en conflicto,
+  quedaron aceptadas y marcadas para revisión; reusar el nombre del
+  parámetro de `MaintenanceWindowConflictError` habría sido confuso en una
+  respuesta 201. Sin colisión de contrato real (`MaintenanceWindowConflictError`
+  no expone ese array como propiedad pública).
 - **El horizonte aplica SOLO a la rama `endDate === null`.** Si la ventana
   tiene fecha de fin, sigue evaluándose completa (sin horizonte) —
   aplicar el horizonte también ahí sería una regresión real: dejaría

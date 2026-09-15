@@ -609,6 +609,17 @@ export class ReservationService {
         cancellationPolicySnapshot: existing.cancellationPolicySnapshot,
       });
 
+      // D-03 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §6)
+      // -- única limpieza de `needsMaintenanceReview` decidida por el
+      // dueño (AskUserQuestion): se apaga SOLO cuando la reserva se
+      // reasigna a OTRO recurso. `reassigned` ya está resuelto arriba
+      // (mismo booleano que decide `isExclusiveResource`) -- no cancelar,
+      // no cerrar la ventana: ver docblock de
+      // `Reservation.clearNeedsMaintenanceReview()`.
+      if (reassigned) {
+        updated.clearNeedsMaintenanceReview();
+      }
+
       await this.reservationRepository.saveWithClient(client, updated);
     });
 

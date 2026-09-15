@@ -19,6 +19,8 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { Reservation } from '../reservas/Reservation.js';
 import type { Request, Response } from 'express';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 const BUSINESS_ID = 'biz-1';
 
@@ -30,14 +32,32 @@ class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
   async getById(id: string) { return id === 'missing' ? undefined : resource; }
 }
 
-class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange'> {
+/**
+ * D-03 (15/09/2026) — esta suite ejercita la capa de rutas, no el partido
+ * en tramos (eso lo cubre maintenance-window.service.test.ts): `conflicts`
+ * se devuelve para CUALQUIER rango, así que solo sirve para el caso
+ * "hay conflicto en el tramo cierto" que ya cubrían los tests existentes.
+ */
+class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient'> {
   conflicts: Reservation[] = [];
   async getActiveForResourceInRange(): Promise<Reservation[]> { return this.conflicts; }
+  async saveWithClient(): Promise<void> {}
 }
 
 class FakeBusinessProfileRepository implements Pick<BusinessProfileRepository, 'get'> {
   async get() {
-    return { timezone: 'America/Argentina/Buenos_Aires' } as Awaited<ReturnType<BusinessProfileRepository['get']>>;
+    return {
+      timezone: 'America/Argentina/Buenos_Aires',
+      maintenanceHorizonDays: 30,
+    } as Awaited<ReturnType<BusinessProfileRepository['get']>>;
+  }
+}
+
+/** Ejecuta el work sin transacción real — mismo criterio que maintenance-window.service.test.ts. */
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
   }
 }
 
@@ -67,7 +87,7 @@ describe('maintenance-windows.routes', () => {
     repo = new InMemoryMaintenanceWindowRepository();
     resourceRepo = new FakeResourceRepository();
     reservationRepo = new FakeReservationRepository();
-    const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository());
+    const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository(), new InMemoryTransactionManager());
     router = createMaintenanceWindowsRouter(service);
   });
 
@@ -107,7 +127,12 @@ describe('maintenance-windows.routes', () => {
       await handler(req, res, throwingNext);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ resourceId: 'room-1', createdBy: 'user-1' }));
+      // D-03 (15/09/2026) — needsReviewReservationIds viaja en la respuesta
+      // junto a los campos de la ventana; vacío acá porque la ventana tiene
+      // endDate (sin tramo incierto).
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        resourceId: 'room-1', createdBy: 'user-1', needsReviewReservationIds: [],
+      }));
     });
 
     it('rechaza con next(err) un body inválido (endDate anterior a startDate)', async () => {
@@ -157,8 +182,8 @@ describe('maintenance-windows.routes', () => {
 
   describe('POST /api/maintenance-windows/:id/close', () => {
     it('cierra la ventana', async () => {
-      const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository());
-      const window = await service.createWindow({ businessId: BUSINESS_ID, resourceId: 'room-1', startDate: '2026-08-24', createdBy: 'user-1' });
+      const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository(), new InMemoryTransactionManager());
+      const { window } = await service.createWindow({ businessId: BUSINESS_ID, resourceId: 'room-1', startDate: '2026-08-24', createdBy: 'user-1' });
 
       const handler = getHandler(router, 'post', '/:id/close');
       const req = { user: { businessId: BUSINESS_ID, id: 'user-2' }, params: { id: window.id }, body: { closeDate: '2026-08-25' } } as unknown as Request;
@@ -170,8 +195,8 @@ describe('maintenance-windows.routes', () => {
     });
 
     it('cierra sin closeDate en el body (default: hoy)', async () => {
-      const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository());
-      const window = await service.createWindow({ businessId: BUSINESS_ID, resourceId: 'room-1', startDate: '2020-01-01', createdBy: 'user-1' });
+      const service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, new FakeBusinessProfileRepository(), new InMemoryTransactionManager());
+      const { window } = await service.createWindow({ businessId: BUSINESS_ID, resourceId: 'room-1', startDate: '2020-01-01', createdBy: 'user-1' });
 
       const handler = getHandler(router, 'post', '/:id/close');
       const req = { user: { businessId: BUSINESS_ID, id: 'user-2' }, params: { id: window.id }, body: undefined } as unknown as Request;
