@@ -8,8 +8,14 @@
  *
  * ## Modelo
  * - display_name es el campo canónico (antes fullName).
- * - email es opcional: se almacena en customer_contact_methods, no en customers.
- * - Se puede crear un cliente sin email (ej: walk-in con solo nombre y teléfono).
+ * - email se almacena en customer_contact_methods, no en customers.
+ * - `CUSTOMER-EMAIL-REQUIRED-001` (15/09/2026, decisión del dueño, Fase 3
+ *   seguimiento -- docs/auditoria-integral-fase3-duplicacion-2026-09-15.md
+ *   F3-03 + grounding ERP): email es OBLIGATORIO al crear un cliente desde
+ *   `POST /customers`. Antes era opcional acá (walk-in con solo nombre y
+ *   teléfono) mientras el frontend (`dashboard/clientes/page.tsx`) ya
+ *   exigía email en el formulario -- esa divergencia quedó resuelta a
+ *   favor del frontend: se corrige el backend, no se relaja la UI.
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -72,13 +78,17 @@ const ContactMethodSchema = z.object({
 /**
  * Creación de cliente.
  * - displayName (o fullName como alias legacy) — obligatorio.
- * - email — atajo opcional: si se provee se convierte en un ContactMethod EMAIL primario.
- * - contactMethods — array completo opcional, prevalece sobre email si ambos presentes.
+ * - email — OBLIGATORIO (`CUSTOMER-EMAIL-REQUIRED-001`, ver docblock del
+ *   archivo): se convierte en un ContactMethod EMAIL primario.
+ * - contactMethods — array completo opcional, prevalece sobre email si
+ *   ambos presentes (permite agregar teléfono/WhatsApp además del email
+ *   obligatorio, o reordenar cuál queda primario) — sigue sin tener
+ *   caller en el frontend hoy, es un escape hatch de API.
  */
 const CreateCustomerSchema = z.object({
   displayName:    z.string().min(1).optional(),
   fullName:       z.string().min(1).optional(),   // alias legacy
-  email:          z.string().email().optional(),
+  email:          z.string().email(),
   contactMethods: z.array(ContactMethodSchema).optional(),
 }).superRefine((data, ctx) => {
   if (!data.displayName && !data.fullName) {
@@ -606,7 +616,10 @@ export function createCustomersRouter(container: AppContainer): Router {
         const displayName = (body.displayName ?? body.fullName)!;
         const customerId  = randomUUID();
 
-        // Construir contactMethods: prioridad al array explícito, fallback al email simple
+        // Construir contactMethods: prioridad al array explícito, fallback
+        // al email simple -- email ya es obligatorio en el schema
+        // (CUSTOMER-EMAIL-REQUIRED-001), así que esta rama siempre tiene
+        // al menos el ContactMethod EMAIL, nunca queda vacía.
         let contactMethods: ContactMethod[];
         if (body.contactMethods && body.contactMethods.length > 0) {
           contactMethods = body.contactMethods.map((cm, i) => ({
@@ -615,15 +628,13 @@ export function createCustomersRouter(container: AppContainer): Router {
             value:     cm.value,
             isPrimary: cm.isPrimary ?? i === 0,
           }));
-        } else if (body.email) {
+        } else {
           contactMethods = [{
             id:        `ccm-${customerId}`,
             channel:   'EMAIL',
             value:     body.email,
             isPrimary: true,
           }];
-        } else {
-          contactMethods = [];
         }
 
         // Verificar duplicado por email primario si hay uno

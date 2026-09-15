@@ -282,6 +282,33 @@ describe('POST /customers', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('CUSTOMER-EMAIL-REQUIRED-001 -- sin email, propaga el error de validación a next() (walk-in solo-teléfono ya no está soportado)', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = baseReq({ body: { displayName: 'Walk-in sin email' }, db: fakeDb() } as never);
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('CUSTOMER-EMAIL-REQUIRED-001 -- contactMethods explícito sin email tampoco alcanza (email es obligatorio a nivel de schema, no solo un atajo)', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = baseReq({
+      body: { displayName: 'Solo teléfono', contactMethods: [{ channel: 'PHONE', value: '+54 11 5555-5555' }] },
+      db: fakeDb(),
+    } as never);
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
   it('409 si ya existe un cliente con ese email primario', async () => {
     const handler = getHandler(router, 'post', '/');
     const db = fakeDb({

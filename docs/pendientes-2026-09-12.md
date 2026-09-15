@@ -909,6 +909,37 @@ anteriores.
 
 ---
 
+## Hallazgos de diseño abiertos, registrados por el gate (15/09/2026)
+
+No requieren entorno real — ya confirmados por lectura de código, quedan
+acá (no bajo "Verificaciones pendientes") porque lo que falta es una
+decisión de diseño, no una corrida.
+
+- **`CUSTOMER-EMAIL-REQUIRED-001` — escape hatch residual (gate
+  `architecture-governor`, bloque email obligatorio de `POST /customers`,
+  `docs/decisiones-auditoria-fase3-2026-09-15.md` §2).** La decisión del
+  dueño fue "email obligatorio, sin excepción — se elimina el alta
+  solo-teléfono". El schema (`CreateCustomerSchema.email`, ya sin
+  `.optional()`) lo cumple para el caso común. Pero
+  `customers.routes.ts:625-637` sigue dejando que `contactMethods`
+  explícito (array completo, precedencia ya existente desde antes de este
+  bloque) prevalezca sobre `email` sin exigir que incluya un canal EMAIL
+  — si un caller manda `contactMethods: [{channel:'PHONE',...}]` **junto
+  con** el `email` que el schema ya exige, ese email pasa la validación
+  pero nunca se persiste como `ContactMethod`, y el cliente queda creado
+  sin ningún email real. El alta solo-teléfono sigue técnicamente
+  alcanzable, solo que ahora exige mandar un email de relleno que el
+  sistema ignora. **Sin caller real hoy** — el dashboard
+  (`appfrontend/src/lib/clientes/api.ts::create()`) solo manda
+  `{fullName, email}`, nunca `contactMethods`; es un escape hatch de API
+  sin consumidor conocido. Pendiente decidir: ¿corregirlo (exigir un
+  canal EMAIL dentro de `contactMethods` cuando ese array viene
+  explícito) o aceptarlo como riesgo residual documentado? No se corrige
+  en este bloque — el gate lo marcó como hallazgo separado, no como
+  condición bloqueante.
+
+---
+
 ## ✅ Cerrado esta sesión (12/09/2026)
 
 **Los ítems cerrados de este bloque se movieron a `docs/resuelto.md`**
