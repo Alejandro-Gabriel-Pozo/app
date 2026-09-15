@@ -553,6 +553,184 @@ No es rechazo del diseño, es rechazo de la secuencia: casi todo el set de campo
 
 Hasta entonces: el tope N5 se implementa contra la fila `invoices` existente (bloque 2.4, `docs/pendientes-2026-09-08.md` #21), sin tabla nueva, sin bump de schema.
 
+### 6.5 bis — REABIERTO 15/09/2026: diseño de `credit_note_request` + reconciliación manual (PROPUESTA, pendiente de gate `architecture-governor`)
+
+**Gatillo activado: el dueño confirmó (15/09/2026, `AskUserQuestion` en sesión) que va a existir un flujo real de reconciliación manual de `FAILED_UNCERTAIN`** — gatillo 1 de los tres registrados arriba. Los otros dos (fan-out automático de pool mixto, portal creando solicitudes directas) siguen sin activarse y no forman parte de este bloque. Esta subsección es la **propuesta** que el HOLD del gate 2.2 pedía como precondición: tabla + su único consumidor real en el mismo diseño, no la tabla sola.
+
+**⚠️ Todo lo de acá abajo es diseño, no implementación.** No se corrió ningún `CREATE TABLE`/`ALTER TABLE`, no se tocó `src/`. Requiere: (1) gate `architecture-governor` real (esta sesión no tiene la tool `Agent`/`Task` para invocarlo — ver nota al final), (2) las preguntas de negocio marcadas abajo resueltas por el dueño vía `AskUserQuestion`, (3) autorización explícita para aplicar.
+
+**Corrección de una cita stale antes de proponer el bump:** el texto de §9 ("`CREATE TABLE IF NOT EXISTS credit_note_request` ... v47→v48") está desactualizado — `CURRENT_SCHEMA_VERSION` en `tenant-db.setup.ts:471` es **55** hoy (15/09/2026), no 47. El bump real de este bloque, si se aprueba, sería **55→56**. Mismo patrón de cita que quedó stale en `CLAUDE.md` (la corrección del 254/251 de `CONTRACT-001`) — no se arrastra el número viejo.
+
+**Clasificación `criterios-negocio` (Parte 1, `docs/criterios-datos.md`):** confirmado, no asumido — **TRANSACCIÓN**, no maestro ni documento. No tiene `code` propio, no se "desactiva" (no aplica `active`/`deleted_at` — ver más abajo), representa un hecho que ocurre una vez y evoluciona por estados hasta un terminal, exactamente el mismo trato que `financial_transactions`/`reservations`/`orders` (R9-R13) y que la tabla `cash_register_shifts` del BLOQUE 11 (`changed_by`/`opened_by`/`closed_by` como `identity_id` sin FK). La NC emitida en sí sigue siendo **DOCUMENTO** (R12, inmutable) y el `ADJUSTMENT` sigue siendo la fila financiera (A3.8) — sin cambios, `credit_note_request` es una tercera entidad, de workflow, alrededor de las otras dos.
+
+**Por qué NO lleva `entity_type`/`entity_id` polimórfico (corrección al borrador tentativo de §6.5).** La lista tentativa original (`entity_type`, `entity_id`, ...) predata la convención de este repo contra el diseño polimórfico `scope_type`/`scope_id` (`CLAUDE.md`, sección Modularidad: *"patrón CASE-based, ya usado 3 veces en este repo — no el diseño polimórfico... pierde la FK real hacia las tablas de ítem"*). `financial_transactions` ya resuelve exactamente este mismo problema (una fila que pertenece a una orden O a una reserva, nunca las dos) con dos columnas FK nullable + un CHECK CASE-based (`chk_financial_transactions_order_or_reservation`, `schema.sql:3937-3946`). `credit_note_request` copia el mismo mecanismo — mismo par de columnas, mismo tipo de constraint, para no reinventar una tercera forma de expresar "una de dos" en este schema.
+
+**`CREATE TABLE` propuesto:**
+
+```sql
+-- credit_note_request (schema v56 propuesto) -- fila-solicitud que trackea
+-- UN intento de emision de Nota de Credito dentro del escape fiscal
+-- (cancelOrderWithCreditNote / cancelReservationWithCreditNote, N1.a).
+-- No es la NC (eso es invoices, DOCUMENTO) ni el ADJUSTMENT (eso es
+-- financial_transactions, TRANSACCION de ledger, A3.8) -- es el registro
+-- de WORKFLOW alrededor de los dos, para poder reconciliar a mano el unico
+-- caso que ninguno de los otros dos resuelve: FAILED_UNCERTAIN con
+-- afip_contacted=true (invoice.service.ts:1189-1198), donde retryExisting()
+-- se niega a reintentar solo (A8.6) y hoy no existe ningun consumidor de
+-- "un humano confirmo que pasu".
+CREATE TABLE IF NOT EXISTS credit_note_request (
+  id                  VARCHAR(255)  PRIMARY KEY,
+  business_id         VARCHAR(255)  NOT NULL,
+
+  -- La factura-intento de NC que esta fila trackea. UNIQUE (no parcial):
+  -- cada invoice_id ya identifica un unico intento de emision (idempotency_key
+  -- unico en invoices, idx_invoices_idempotency_key) -- un invoice_id no
+  -- puede pertenecer a dos solicitudes, sin excepcion, en ningun estado.
+  -- Esto es lo que evita el error que tumbo el indice parcial original
+  -- (entity_type, entity_id): en pool mixto hay N invoice_id distintos,
+  -- uno por factura revertida, así que N filas conviven sin chocar.
+  invoice_id          VARCHAR(255)  NOT NULL UNIQUE REFERENCES invoices(id),
+
+  -- La factura ORIGINAL que esta NC revierte -- mismo campo que
+  -- financial_transactions.reversed_invoice_id (schema.sql:3194), duplicado
+  -- aca a proposito para no tener que hacer JOIN a financial_transactions
+  -- solo para saber que factura esta en juego al listar la bandeja.
+  reversed_invoice_id VARCHAR(255)  NOT NULL REFERENCES invoices(id),
+
+  -- Que disparo el escape -- misma forma que financial_transactions
+  -- (order_id/reservation_id nullable, CHECK CASE-based), no un par
+  -- entity_type/entity_id.
+  order_id            VARCHAR(255)  REFERENCES orders(id) ON DELETE SET NULL,
+  reservation_id       VARCHAR(255)  REFERENCES reservations(id) ON DELETE SET NULL,
+
+  -- A6.x -- maquina de estados PROPIA del workflow, nunca un espejo de
+  -- invoices.status (grounding ERP citado en el HOLD: "FAILED_UNCERTAIN no
+  -- debe reflejarse como un 5to estado de la solicitud, se delega al estado
+  -- de la Invoice vinculada"). Solo 3 valores -- ver "Maquina de estados"
+  -- mas abajo para las transiciones y por que resolution_outcome, no un 4to
+  -- estado, es lo que separa "emitida" de "no emitida".
+  state               VARCHAR(30)   NOT NULL DEFAULT 'PENDIENTE'
+                        CHECK (state IN ('PENDIENTE', 'EN_REVISION_MANUAL', 'CERRADA')),
+
+  -- Que determino el humano al resolver EN_REVISION_MANUAL -> CERRADA.
+  -- NULL cuando la fila cierra SOLA (issue()/reconcileAfterFailure()
+  -- automatico llego a ISSUED o REJECTED sin pasar por revision manual) --
+  -- NULL en ese caso es la señal de "nadie tuvo que intervenir", no un dato
+  -- faltante.
+  resolution_outcome  VARCHAR(20)   CHECK (resolution_outcome IN ('EMITIDA', 'NO_EMITIDA')),
+
+  -- Consumidor real que el gate 2.2 pedia: identity_id (JWT sub) de la
+  -- platform DB, SIN FK a `users` -- mismo criterio que audit_log.changed_by
+  -- (schema.sql:2567-2568) y stays.assigned_by. NULL para cierres
+  -- automaticos, poblado solo cuando resolution_outcome no es NULL.
+  resolved_by         VARCHAR(255),
+  resolved_at         TIMESTAMPTZ,
+
+  -- Texto libre del humano (que miro en FECompUltimoAutorizado/getVoucherInfo,
+  -- por que concluyo lo que concluyo) -- mismo rol que financial_transactions.notes
+  -- (VARCHAR(500)), un poco mas largo porque acá es la unica evidencia escrita
+  -- de una reconciliacion manual contra AFIP.
+  resolution_note     VARCHAR(1000),
+
+  created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_note_request_state
+  ON credit_note_request (state, created_at)
+  WHERE state = 'EN_REVISION_MANUAL';
+-- Índice parcial -- la bandeja SOLO lista state='EN_REVISION_MANUAL', y
+-- resolved_at (Parte 5, obligatorio) es lo que distingue "hace 3 minutos"
+-- de "hace 3 dias" ADENTRO de esa lista via created_at, no via resolved_at
+-- (que es NULL mientras sigue abierta -- el nombre en el pedido original
+-- ("resolved_at sin el B3 no distingue...") se cumple leyendo created_at
+-- de las filas todavia EN_REVISION_MANUAL, resolved_at queda para las ya
+-- CERRADA).
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_credit_note_request_order_or_reservation'
+  ) THEN
+    ALTER TABLE credit_note_request ADD CONSTRAINT chk_credit_note_request_order_or_reservation CHECK (
+      (CASE WHEN order_id       IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+    );
+  END IF;
+END $$;
+-- "= 1", no "<= 1" como en financial_transactions -- a diferencia de un
+-- CHARGE/PAYMENT suelto (que puede no pertenecer a ninguna reserva/orden),
+-- credit_note_request SOLO existe dentro del escape fiscal (N1.a), que
+-- siempre nace de una orden o una reserva -- nunca de las dos, nunca de
+-- ninguna.
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_credit_note_request_resolution_consistency'
+  ) THEN
+    ALTER TABLE credit_note_request ADD CONSTRAINT chk_credit_note_request_resolution_consistency CHECK (
+      (state = 'CERRADA' AND resolution_outcome IS NOT NULL AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)
+      OR (state != 'CERRADA' AND resolution_outcome IS NULL AND resolved_by IS NULL AND resolved_at IS NULL)
+      OR (state = 'CERRADA' AND resolution_outcome IS NULL) -- cierre automático (ISSUED/REJECTED sin pasar por revisión manual)
+    );
+  END IF;
+END $$;
+```
+
+**R2 (Parte 5):** `findCreditNoteRequestById()` sin filtro de estado, declarado — mismo criterio que el resto de repos de este dominio, ningún `WHERE state = ...` escondido en el `findById`.
+
+**Máquina de estados (A6.x):**
+
+| Transición | Disparada por | `allowedTransitions` (A6.2) |
+|---|---|---|
+| `PENDIENTE` → `EN_REVISION_MANUAL` | Sistema — dentro de `reconcileAfterFailure()`/`markFailed()` cuando el resultado es `FAILED_UNCERTAIN` con `afip_contacted=true` (`invoice.service.ts:1341`), misma transacción que el `UPDATE` de `invoices` (atomic-state-mutation: un solo commit, no dos `await` sueltos) | `['EN_REVISION_MANUAL', 'CERRADA']` |
+| `PENDIENTE` → `CERRADA` (automático, `resolution_outcome` NULL) | Sistema — `finalizeIssued()` (ISSUED) o la rama `resultado === 'R'` (REJECTED) resuelven SIN que la fila haya pasado nunca por revisión manual | (mismo set que arriba) |
+| `EN_REVISION_MANUAL` → `CERRADA` (manual, `resolution_outcome` poblado) | Humano — único endpoint nuevo, `authorize(Roles.EMISOR_NOTA_CREDITO)` | `['CERRADA']` |
+| `CERRADA` → *(nada)* | — | `[]` — terminal, A6.4, nunca se reabre |
+
+A6.3: transición fuera de esta tabla → error tipado nuevo (`CreditNoteRequestInvalidTransitionError`), mismo patrón que el resto del dominio de facturación (`AfipRequestUncertainError`, etc.), nunca un `throw` genérico.
+
+A6.6 — rol: **solo** la transición manual necesita `authorize()`; las otras dos las dispara código interno de `InvoiceService`, sin ruta. Se propone `Roles.EMISOR_NOTA_CREDITO` (no `MANAGEMENT` ni un grupo nuevo) — mismo grupo que ya audita/emite el escape de NC en sí (`credit-note-escape-containment.test.ts`, `ESCAPE_ROUTES`), y la resolución manual es, en sustancia, la misma responsabilidad fiscal que autorizar el escape: decidir el destino de una NC ante AFIP. Evita crear un grupo nuevo para una sola ruta.
+
+**El consumidor real de `resolved_by` (lo que el gate 2.2 pedía):**
+
+1. `reconcileAfterFailure()` no logra confirmar el CAE (`invoice.service.ts:1338-1342`) → `invoices` queda `FAILED_UNCERTAIN`/`afip_contacted=true` Y, en la misma transacción, `credit_note_request.state` pasa a `EN_REVISION_MANUAL` (solo si la factura tiene una fila `credit_note_request` — una `FAILED_UNCERTAIN` de una Factura B normal, sin escape de por medio, sigue sin fila y sigue siendo visible solo por `GET /api/invoices?status=FAILED_UNCERTAIN`, sin acción de resolución — ver más abajo la distinción con la bandeja B3 original).
+2. La fila aparece en `GET /api/credit-note-requests?state=EN_REVISION_MANUAL` (bandeja nueva).
+3. Un operador con `EMISOR_NOTA_CREDITO` la abre, consulta AFIP a mano (`FECompUltimoAutorizado`/`getVoucherInfo`, mismo par que ya usa `reconcileAfterFailure()` automático — el humano hace manualmente lo mismo que el código intentó solo) y llama `POST /api/credit-note-requests/:id/resolve` con uno de dos resultados:
+   - **`EMITIDA`** — encontró un CAE real. Body: `{ outcome: 'EMITIDA', cbteNro, cae, caeVto, note }`. El servicio reusa `finalizeIssued()` (`invoice.service.ts:1233`, el mismo método que ya cierra el camino automático — no se duplica lógica de "marcar ISSUED") + transición `EN_REVISION_MANUAL → CERRADA` + `resolution_outcome='EMITIDA'`, todo en una transacción.
+   - **`NO_EMITIDA`** — confirmó que AFIP no tiene nada. Body: `{ outcome: 'NO_EMITIDA', note }`. Transición `EN_REVISION_MANUAL → CERRADA` + `resolution_outcome='NO_EMITIDA'`. **Lo que pasa con la factura bloqueada queda abierto — ver pregunta de negocio 1 abajo.**
+4. Auditoría: sigue el patrón compartido `domain/audit.ts::recordFieldChanges()` (CLAUDE.md, Modularidad) para dejar rastro del cambio de `state`/`resolution_outcome`, en vez de reinventar el diff a mano — mismo criterio que `RateCatalogService`.
+
+**Distinción explícita con las otras dos "bandejas" que este ADR menciona (para no confundirlas, pedido del bloque):**
+- **Bandeja B3 original (§0/línea 91):** *cualquier* `invoices.status='FAILED_UNCERTAIN'`, sin tabla — ya resuelta por `GET /api/invoices?status=` (bloque 2.1, `fc809dc`). Cubre TODA factura ambigua, incluida una Factura B común sin ningún escape de NC de por medio.
+- **§10 fila 3 (`EXPIRED` con factura viva):** reservas que expiraron con una factura todavía viva — necesitan quedar "anotadas para revisión", mecanismo a definir en el bloque 3.4, probablemente reusando el mismo filtro `?status=`. No tiene nada que ver con NC ni con esta tabla.
+- **Esta bandeja (`credit_note_request`, `state='EN_REVISION_MANUAL'`):** el subconjunto de (2) que además es un intento de NC del escape fiscal — trae ya resuelto el `order_id`/`reservation_id`/`reversed_invoice_id` que la pantalla necesita, sin que el frontend tenga que cruzar dos fuentes.
+
+**Ruta y pantalla propuestas (forma, no implementación):**
+- `GET /api/credit-note-requests?state=EN_REVISION_MANUAL` — lista la bandeja. `authorize(Roles.EMISOR_NOTA_CREDITO)`.
+- `GET /api/credit-note-requests/:id` — detalle para la pantalla de resolución.
+- `POST /api/credit-note-requests/:id/resolve` — la transición manual, body descripto arriba. `authorize(Roles.EMISOR_NOTA_CREDITO)`.
+- Estas 3 rutas son nuevas — `EXPECTED_AUTHORIZE_CALL_SITES` (+3), `docs/rbac-matriz-endpoints.md` (3 filas nuevas), y evaluar si entran en `ESCAPE_ROUTES` de `credit-note-escape-containment.test.ts` (probablemente NO: esa cerca congela el grupo de las rutas que *disparan* el escape, `cancel-with-credit-note`, no las que reconcilian un intento ya en curso — a confirmar en el gate real, no acá).
+- `appfrontend-main`: pantalla nueva bajo `dashboard/facturacion/` (dominio existente, no crear uno nuevo) — **ruta dedicada** para la lista (es un inbox con filtro, no una confirmación de 2-4 campos, así que no aplica el nivel "modal breve" de `docs/auditoria-modales.md`) + **modal breve** para la acción de resolver (2 campos si `NO_EMITIDA`, 4 si `EMITIDA` — sí entra en ese nivel). No usa `Refine` (`useTable`/`useForm`) porque no es un CRUD list/create/update/delete 1:1 — es una acción de dominio con dos ramas, mismo criterio que ya excluye "detalle de una orden con acciones con nombre" en `CLAUDE.md` de `appfrontend-main`.
+
+**Flujo end-to-end (resumen):**
+`cancelOrderWithCreditNote()`/`cancelReservationWithCreditNote()` crea el `ADJUSTMENT` + la fila `invoices` (PENDING) + esta fila `credit_note_request` (PENDIENTE) en la misma transacción de N1.a → se llama a AFIP → si todo sale bien o mal de forma NO ambigua, `credit_note_request` cierra sola (`CERRADA`, sin intervención) → si sale ambiguo Y la reconciliación automática tampoco puede confirmar, pasa a `EN_REVISION_MANUAL` y aparece en la bandeja → un operador con `EMISOR_NOTA_CREDITO` la revisa contra AFIP a mano y resuelve → `CERRADA` con el resultado real registrado.
+
+**Preguntas de negocio nuevas — NO resueltas acá, cada una necesita su propio `AskUserQuestion` con el dueño antes de implementar (mismo criterio D5 de siempre):**
+
+1. **¿Qué pasa con la factura bloqueada cuando el humano resuelve `NO_EMITIDA`?** Hoy `retryExisting()` (`invoice.service.ts:1200-1202`) se niega a reintentar CUALQUIER factura `FAILED_UNCERTAIN` con `afip_contacted=true` — exactamente la fila que esta bandeja resuelve. Confirmar "no se emitió" no cambia ese guard por sí solo; sin un mecanismo que lo desbloquee, la resolución manual queda sin efecto práctico sobre `invoices`. Dos caminos razonables, ninguno obviamente correcto:
+   (a) el `resolve()` con `NO_EMITIDA` dispara un reintento automático de `issue()` en el momento (mismo camino que `retryExisting()` ya tiene, solo que ahora autorizado por la confirmación humana en vez del guard);
+   (b) el `resolve()` solo desbloquea (ej. agregando una columna nueva a `invoices`, algo como `uncertain_cleared_at`/`uncertain_cleared_by`, que `retryExisting()` chequea junto con `afip_contacted`) y el reintento sigue siendo una acción aparte, manual, por la vía normal.
+   (a) es menos pasos para el operador pero reintroduce sin red la misma llamada a AFIP que causó la ambigüedad original; (b) es más conservador pero dos clics en vez de uno.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): opción (b).** `resolve()` con `NO_EMITIDA` solo desbloquea (columna nueva en `invoices`, ej. `uncertain_cleared_at`/`uncertain_cleared_by`, que `retryExisting()` chequea junto con `afip_contacted`) — el reintento de `issue()` sigue siendo una acción manual aparte, por la vía normal. No implementado acá — diseño de la columna y el guard actualizado quedan para el bloque de implementación real de esta tabla.
+2. **¿Hay un límite de tiempo antes de escalar una fila `EN_REVISION_MANUAL`?** Ninguna de las 3 referencias ERP citadas en este ADR (§6.3.2) fija un SLA para reconciliación manual de comprobantes ambiguos. Sin límite, una fila puede quedar abierta indefinidamente sin que nadie además del que mira la bandeja se entere — ¿hace falta una alerta/escalamiento, o alcanza con que sea visible en la bandeja (mismo criterio que ya se usó para no construir alertas en ningún otro punto de este ADR)?
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, hace falta alerta/escalamiento** — a diferencia del resto de este ADR (que no construye alertas en ningún otro punto), acá el dueño confirmó que la sola visibilidad en la bandeja no alcanza. **No diseñado acá**: falta definir el SLA concreto (cuánto tiempo antes de escalar), el canal (mismo mecanismo que `management-emails` ya usa en el repo, a confirmar) y el destinatario — bloque de implementación aparte, con su propio gate.
+3. **Visibilidad de la bandeja: ¿solo `EMISOR_NOTA_CREDITO`, o también `MANAGEMENT` en modo lectura?** Esta propuesta puso las 3 rutas bajo `EMISOR_NOTA_CREDITO` por simetría con quien puede resolver, pero eso significa que un dueño/gerente sin ese permiso puntual no ve que hay NC trabadas esperando reconciliación. Menor que las dos de arriba, pero es una decisión real de RBAC, no técnica.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, `MANAGEMENT` también ve la bandeja en modo lectura.** `GET /api/credit-note-requests` y `GET /api/credit-note-requests/:id` (§6.5 bis arriba) pasan a exigir `Roles.EMISOR_NOTA_CREDITO` **O** `Roles.MANAGEMENT` (dos `authorize()` encadenados, mismo patrón ya usado en este repo para rutas con más de un grupo habilitado — ver `docs/rbac-matriz-endpoints.md` formato `` `GRUPO_A` **O** `GRUPO_B` ``); `POST /api/credit-note-requests/:id/resolve` sigue exigiendo SOLO `Roles.EMISOR_NOTA_CREDITO` — la lectura se amplía, la transición de estado no. Actualizar `EXPECTED_AUTHORIZE_CALL_SITES` (+1 respecto de lo ya contado arriba, por el segundo `authorize()` en las 2 rutas de lectura) y la matriz en el bloque de implementación real.
+
+**Actualización de §10 fila 1:** ver tabla de §10 — pasa de `HOLD` a `REABIERTO 15/09/2026`, referenciando esta subsección.
+
 ### 6.6 El orquestador `cancelReservationWithCreditNote()` — diseño de 3.3-b (08/09/2026, gate `architecture-governor`)
 
 **Corrección de encuadre — "subcaso 1 con N cargos en una factura directa" no existe.** `invoices.financial_transaction_id` es una columna 1:1 (`schema.sql:2701`) — una factura directa liga EXACTAMENTE un cargo, misma cardinalidad que una orden. Una reserva con N cargos está en N facturas directas (pool multi-factura → bloque 3.5) o en una consolidada (subcaso 2). Consecuencia: **el orquestador no bifurca por subcaso.** Resuelve, bajo el lock de la reserva, el conjunto de facturas vivas de sus cargos (mismo recorrido que `ReservationService.findBlockingInvoiceLinkage()`, `reservation.service.ts:864-875`); exige exactamente UNA `ISSUED` (0 → error tipado "usá la cancelación normal"; **>1 → error tipado fail-closed, SIN llamar a AFIP y SIN crear ADJUSTMENT** — eso es pool mixto, bloque 3.5, gate propio, con un parámetro explícito de factura destino). La bifurcación total/parcial la absorbe entera el predicado estructural que ya vive en `buildCreditNote()` (3.3-a).
@@ -586,7 +764,7 @@ Hasta entonces: el tope N5 se implementa contra la fila `invoices` existente (bl
 | Bloque | Contenido | Schema | Gate |
 |---|---|---|---|
 | **B-núcleo+órdenes** | Módulo del núcleo en `src/facturacion/` (predicado F4 anclado a **NC `ISSUED`** — no al ledger, Defecto B salida 1; token de autz tipado; capas i-iv); grupo de permiso nuevo (`roles.ts` + presets `platform.schema.sql` + matriz RBAC + sync tests) + ruta `POST /api/orders/:id/cancel-with-credit-note`; `cancelOrderWithCreditNote()` (en el núcleo, NO en `order.service.ts`); discriminador `invoice.service.ts:349` ampliado a `ADJUSTMENT` (F2); `buildCreditNote()` extendido (`Math.abs` por `CHECK imp_* >= 0`, líneas copiadas con `order_item_id`); **secuencia de N1.a**: `ADJUSTMENT` nace `PENDING`, y en la tx post-AFIP (solo si NC `ISSUED`) → NC `ISSUED` + `ADJUSTMENT` `SETTLED` + `UPDATE` dirigido del `CHARGE` revertido a `SETTLED` (3 restricciones: solo `status`, `WHERE status='PENDING'`, ids desde la factura no el documento) + documento → `CANCELLED`; **reescritura de la aritmética de signo en `getOutstandingForUpdate` + `getRefundableForUpdate` + `getOutstandingByCustomerId`** (whitelist por tipo, sin `ABS`, N1.b) + cerca de convención; reconciliación del residual #3 en los DOS handlers (N1/A3); texto de `OrderChargeInvoicedError` (A1). Si se elige que el predicado F4 se cablee también en `reservation.service.ts` en este bloque → hay que anclarlo a NC `ISSUED` (salida 1), no dejarlo fail-open. | No (schema SQL) — sí toca `platform.schema.sql` presets de rol | criterios-negocio + **architecture-governor re-gate ✓ (06/09/2026, APROBADO CON CONDICIONES — ver §10)** |
-| **B3** | ~~Fila-solicitud `credit_note_request`~~ **HOLD (gate 2.2, 08/09/2026 — ver §6.5/§10 fila 1)**. `?status=` en `GET /api/invoices` ✅ RESUELTO (`fc809dc`). Tope N5 se implementa aparte, contra `invoices` directo (bloque 2.4, sin schema). | No (sin fila-solicitud) | criterios-negocio + **architecture-governor gate 2.2 ✓ (08/09/2026, HOLD)** |
+| **B3** | Fila-solicitud `credit_note_request` — **REABIERTO 15/09/2026** (gatillo 1, ver §6.5 bis/§10 fila 1; diseño propuesto, sin implementar, pendiente de gate real). `?status=` en `GET /api/invoices` ✅ RESUELTO (`fc809dc`). Tope N5 se implementa aparte, contra `invoices` directo (bloque 2.4, sin schema). | Sí (ver §6.5 bis) — pendiente de gate | criterios-negocio + **architecture-governor gate 2.2 ✓ (08/09/2026, HOLD)** → **reabierto 15/09/2026, gate real pendiente sobre §6.5 bis** |
 | **B-reservas** | 6.1 (`getByReservationId()` UNION + fail-closed en `confirmRefund()` + 5 tests de caracterización actualizados); `cancelReservationWithCreditNote()`; subcasos 1 y 2; W2 (contraparte); índice nuevo. Pool mixto (6.3.3) y `EXPIRED` (6.4) → sub-bloques o diferidos según decisión del dueño. | Sí (índice) — migración + backup durable | criterios-negocio + architecture-governor |
 
 Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteriores por bloque (hallazgo A4: hoy no existe nada).
@@ -603,7 +781,7 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 - **A3.1/A3.3:** `round2`, un solo lugar redondea (ya en `resolveRefundableForPair`).
 - **A3.7:** el impuesto congelado con la transacción — la NC lo respeta (N3).
 - **A3.8:** el `ADJUSTMENT` (fila financiera, `financial_transactions`) se escribe en INSERT, nunca UPDATE — sin excepción.
-- **A6.x (corrección gate 2.2, 08/09/2026 — NO es una excepción a A3.8):** `credit_note_request`, si se construye (ver §6.5, hoy en HOLD), no es una fila financiera — es una entidad de workflow gobernada por A6.1-A6.6, que esperan el UPDATE de `state` como mecanismo normal de transición (A6.1). Máquina de estados tentativa: `PENDIENTE_CAE` → `NC_EMITIDA` / `CANCELADO` / `RECHAZADO`, con transiciones explícitas, `allowedTransitions[]` en el DTO (A6.2), error tipado en transición inválida (A6.3), terminales sin reapertura (A6.4), y **RBAC de la transición sin resolver** (A6.6 — quién puede cancelar/rechazar una solicitud abierta).
+- **A6.x (corrección gate 2.2, 08/09/2026 — NO es una excepción a A3.8):** `credit_note_request` no es una fila financiera — es una entidad de workflow gobernada por A6.1-A6.6, que esperan el UPDATE de `state` como mecanismo normal de transición (A6.1). **Máquina de estados — SUPERSEDIDA (15/09/2026, §6.5 bis, REABIERTO):** la tentativa original de este párrafo (`PENDIENTE_CAE` → `NC_EMITIDA`/`CANCELADO`/`RECHAZADO`) queda reemplazada por el diseño real de §6.5 bis: `PENDIENTE` → `EN_REVISION_MANUAL` → `CERRADA`, con `resolution_outcome` (`EMITIDA`/`NO_EMITIDA`) separado del `state` — ver §6.5 bis para las transiciones, quién dispara cada una, y por qué `state` no proyecta `invoices.status`. **A6.6 ya resuelto:** `EMISOR_NOTA_CREDITO` transiciona `EN_REVISION_MANUAL` → `CERRADA`; lectura ampliada a `MANAGEMENT` (ver §6.5 bis, pregunta 3).
 - **A8.x:** el lock sobre la fila del origen (N10); idempotencia por clave derivada server-side (N11, patrón `confirmRefund()`); el tope de N5 bajo concurrencia necesita el índice de 6.5 + relectura bajo lock.
 - **A9.4:** `confirmed_by` en la solicitud; `recordInvoiceAudit()` dentro de la transacción de la NC (ya es el patrón, `invoice.service.ts:434`, `:779`).
 - **A10.x:** decidir si la NC emitida dispara un evento de dominio (hoy no; el ADR de órdenes decía "no hay evento nuevo").
@@ -614,7 +792,7 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 ## 9. Migración y rollback (para los bloques con schema)
 
 - **Backup durable ANTES:** branch Neon de respaldo desde `production` y desde `tenant-hotel-los-alamos`, mismo procedimiento que `respaldo-pre-v44` / `respaldo-pre-fase3` (`docs/conocimiento/runbook-deploy-render.md`).
-- **Forward:** ~~`CREATE TABLE IF NOT EXISTS credit_note_request`~~ **HOLD (gate 2.2, 08/09/2026)** — solo aplica si se reabre §6.5. Para B-reservas: `CREATE INDEX IF NOT EXISTS` (con `DROP ... IF EXISTS` antes, patrón de reaplicabilidad del repo). Sin backfill (N3 confirmó 0 uso del circuito consolidado en las dos tenant).
+- **Forward:** `CREATE TABLE IF NOT EXISTS credit_note_request` — **REABIERTO 15/09/2026** (gatillo 1, §6.5 bis tiene el DDL propuesto completo; NO aplicado todavía, pendiente de gate real). Para B-reservas: `CREATE INDEX IF NOT EXISTS` (con `DROP ... IF EXISTS` antes, patrón de reaplicabilidad del repo). Sin backfill (N3 confirmó 0 uso del circuito consolidado en las dos tenant).
 - **Rollback de código:** `git revert` del commit. La tabla y el índice quedan (nullable / sin uso si el código se revierte) — no se dropean en un rollback de emergencia.
 - **Datos:** 0 filas afectadas. El discriminador nuevo del `buildCreditNote()` (`ADJUSTMENT` con `order_id` / la fila-solicitud) no tiene ningún dato preexistente que lo active.
 
@@ -624,9 +802,9 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 
 | # | Tema | Quién decide | Estado |
 |---|---|---|---|
-| 1 | Fila `credit_note_request` sí/no (§6.5) | **DECIDIDO 08/09/2026 (`architecture-governor`, gate bloque 2.2): HOLD** | No se construye por ahora — ver §6.5 para el razonamiento completo y los 3 gatillos de reapertura (consumidor real de `resolved_by` / fan-out de pool mixto / solicitudes desde el portal). El tope N5 se implementa contra `invoices` directamente (bloque 2.4), sin tabla nueva. |
+| 1 | Fila `credit_note_request` sí/no (§6.5) | **REABIERTO 15/09/2026 (dueño, gatillo 1: reconciliación manual real de `FAILED_UNCERTAIN` — ver §6.5 bis)** | HOLD del 08/09/2026 levantado: el dueño confirmó que va a existir un flujo real de reconciliación manual, que es exactamente el consumidor de `resolved_by` que el gate 2.2 pedía como condición. Diseño de la tabla + el flujo (rutas, RBAC, pantalla) propuesto en **§6.5 bis** — pendiente de gate `architecture-governor` real y de 3 preguntas de negocio nuevas antes de implementar. Los otros dos gatillos (fan-out de pool mixto, solicitudes desde el portal) siguen sin activarse. |
 | 2 | **Pool mixto** (§6.3.3): fan-out automático a N NC, o el operador resuelve factura por factura | **DECIDIDO 08/09/2026 (dueño): manual, factura por factura** | Acotado 07/09/2026 (`auditor-circuitos-erp`, N2.a descarta "una única NC multi-factura" — pool mixto = N NC, una por `reversed_invoice_id`). Decisión del dueño 08/09: **manual**, no fan-out — mismo criterio que ERPNext/QloApps (Odoo tiene fan-out pero lo tiene apagado para documentos fiscales), consistente con §0 ("la app ejecuta, no decide"). Bloque **3.5** del plan de cierre — sigue esperando que exista el orquestador (bloque 3.3) antes de poder implementarse, la decisión ya no es lo que lo bloquea. |
-| 3 | **`EXPIRED` con factura viva** (§6.4) | **DECIDIDO 08/09/2026 (dueño): expira + queda registrada para revisión** | La reserva expira (`PENDING`→`EXPIRED`) igual, pero queda anotada en algún listado operativo para que un humano la revise — ni "no expira nunca" ni "el sistema resuelve solo" (esto último hubiera contradicho §0). **Mecanismo de "registro para revisión" a definir en el bloque 3.4** — la bandeja completa (`credit_note_request`) está en HOLD (fila 1 de esta tabla); probable que reuse algo más chico, ej. el filtro `?status=` del bloque 2.1, a confirmar en el gate del bloque 3.4. |
+| 3 | **`EXPIRED` con factura viva** (§6.4) | **DECIDIDO 08/09/2026 (dueño): expira + queda registrada para revisión** | La reserva expira (`PENDING`→`EXPIRED`) igual, pero queda anotada en algún listado operativo para que un humano la revise — ni "no expira nunca" ni "el sistema resuelve solo" (esto último hubiera contradicho §0). **Mecanismo de "registro para revisión" a definir en el bloque 3.4** — distinto de la bandeja de `credit_note_request` (REABIERTA, fila 1 de esta tabla, pero acotada a intentos de NC del escape fiscal — ver la distinción explícita en §6.5 bis, "otras dos bandejas"); esta fila 3 sigue sin mecanismo propio, probable que reuse algo más chico, ej. el filtro `?status=` del bloque 2.1, a confirmar en el gate del bloque 3.4. |
 | 4 | **Set de `reason`** | **Dueño** | N7 ya lo resuelve: texto libre en `notes` (default). Solo pasa a enum si el dueño quiere reportabilidad; el set es suyo. **No bloquea B-núcleo+órdenes.** |
 | 5 | ¿Evento de dominio al emitir la NC? | **Governor** | **No** en B-núcleo+órdenes (sin consumidor; arrastra versionado de handlers sin beneficio). Diferir. |
 | 6 | Nombres | **Governor** | `cancelOrderWithCreditNote()` / `POST /api/orders/:id/cancel-with-credit-note`. Sin objeción (A5.5, evita "partial"). |
