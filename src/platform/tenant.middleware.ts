@@ -3,6 +3,10 @@
  * @description Resuelve la conexión a la BD correcta para cada request.
  *
  * ## Flujo
+ * 0. Un token CUSTOMER se rechaza acá con 403 -- este middleware es SOLO
+ *    para rutas de staff (P-01/D-03, Wave 2, 16/09/2026). El portal de
+ *    cliente resuelve su propio tenant dentro de customer.routes.ts, mount
+ *    anterior a este middleware en app.ts.
  * 1. Lee `req.user.businessId` (inyectado por authenticate())
  * 2. Busca el negocio en la BD central → obtiene db_url_encrypted
  * 2b. Compara business.schema_version contra CURRENT_SCHEMA_VERSION
@@ -191,8 +195,28 @@ export async function evictTenantPool(businessId: string): Promise<void> {
 
 export function tenantMiddleware(platformRepo: PlatformRepository) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // P-01/D-03 (Wave 2, 16/09/2026): un token CUSTOMER nunca debería llegar
+    // hasta acá -- el portal de cliente resuelve su propio tenant en
+    // customer.routes.ts (mount ANTES de este middleware, app.ts) sin pasar
+    // por req.db/req.businessId de tenantMiddleware. Si un token CUSTOMER SÍ
+    // llega hasta acá, es porque está pegándole a una ruta de STAFF (todo lo
+    // que se monta DESPUÉS de este middleware en app.ts) -- antes esto hacía
+    // next() sin fijar req.db/req.businessId, dejando pasar el request hasta
+    // el handler de la ruta de staff, que crasheaba con un 500 accidental
+    // (deref de `undefined` o throw de buildTenantTransactionManager) en vez
+    // de un 403 deliberado -- el hallazgo real de D-03 (Fase 15): CUSTOMER
+    // satisface Roles.BOOKING y alcanzaba 4 rutas mutantes de staff sin
+    // ningún guard de ownership. Rechazar acá es por ACTOR (cualquier ruta
+    // de staff, sin importar el archivo) y no por archivo, como pedía la
+    // decisión del dueño (docs/decisiones-plan-integral-2026-09-16.md,
+    // P-01/D-03) -- corrige el criterio de cierre del Hueco 1 original del
+    // ADR de RBAC, que cerró por archivo (customer.routes.ts) y grupo
+    // (CUSTOMER_ONLY), no por actor.
     if (req.user?.role === UserRole.CUSTOMER) {
-      next();
+      res.status(403).json({
+        code:    'FORBIDDEN',
+        message: 'Un token del portal de clientes no puede acceder a rutas de staff.',
+      });
       return;
     }
 

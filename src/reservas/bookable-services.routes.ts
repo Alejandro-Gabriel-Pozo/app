@@ -18,8 +18,12 @@
  *
  * ## Roles
  * - MANAGEMENT (OWNER, ADMIN): escritura — crear, editar, borrar servicios y schedules.
- * - BOOKING (OWNER, ADMIN, RECEPTIONIST, CUSTOMER): lectura — el portal del cliente
- *   necesita listar servicios disponibles para armar una reserva.
+ * - BOOKING (OWNER, ADMIN, RECEPTIONIST, CUSTOMER): lectura, para el STAFF que arma una
+ *   reserva desde el dashboard. **Ya no es el camino del portal de clientes** (Wave 2,
+ *   P-01/D-03, 16/09/2026): `tenantMiddleware` rechaza con 403 cualquier token CUSTOMER
+ *   antes de llegar acá; el portal usa `GET /api/customer/bookable-services`
+ *   (`api/routes/customer.routes.ts`) en su lugar. Que CUSTOMER siga satisfaciendo
+ *   `Roles.BOOKING` acá es irrelevante en la práctica (nunca llega), no una segunda vía viva.
  *
  * ## Validación y errores de dominio
  * ZodError se propaga con next(err) al errorHandler global (error.middleware.ts),

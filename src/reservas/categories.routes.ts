@@ -68,14 +68,21 @@ export function createCategoryRouter(container: AppContainer): Router {
 
   // ---------------------------------------------------------------------------
   // GET / y GET /:id — SIN authorize() a propósito (L, 23/08/2026,
-  // docs/rbac-matriz-endpoints.md, confirmado contra el frontend real).
-  // Cualquier identidad autenticada del tenant puede leerlas, incluido un
-  // token CUSTOMER: el portal de clientes las necesita logueado para el
-  // filtro de categoría del buscador de disponibilidad (ver
-  // appfrontend-main/src/app/portal/[businessSlug]/disponibilidad/page.tsx,
-  // comentario "El filtro de categoría solo está disponible logueado").
-  // No cerrar esto con Roles.STAFF sin verificar antes que el portal ya no
-  // lo necesita — romperías esa pantalla real, no una fuga.
+  // docs/rbac-matriz-endpoints.md). Cualquier identidad de STAFF del
+  // tenant puede leerlas sin restricción de grupo.
+  //
+  // Actualizado (Wave 2, P-01/D-03, 16/09/2026): el motivo original era
+  // "el portal de clientes las necesita logueado" (un token CUSTOMER
+  // satisface el mismo criterio que cualquier identidad autenticada acá,
+  // sin `authorize()` que lo filtre). ESO YA NO APLICA — dos cosas
+  // cambiaron: (1) el portal usa ahora el endpoint dedicado
+  // `GET /api/customer/categories` (`api/routes/customer.routes.ts`), no
+  // este; (2) `tenantMiddleware` (`platform/tenant.middleware.ts`) rechaza
+  // con 403 CUALQUIER token CUSTOMER antes de llegar a esta ruta o
+  // cualquier otra de staff, con o sin `authorize()` acá. Esta ruta queda
+  // sin `authorize()` únicamente porque STAFF (FRONT_DESK/RECEPTIONIST/
+  // etc.) sigue sin necesitar un grupo específico para leer el catálogo —
+  // no por el portal. Ver docs/rbac-matriz-endpoints.md sección 4.
   // ---------------------------------------------------------------------------
   router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

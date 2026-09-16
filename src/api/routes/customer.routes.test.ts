@@ -19,6 +19,8 @@ import type { PlatformRepository, Business } from '../../platform/platform.repos
 import { UserRole } from '../../types/enums.js';
 import type * as TenantMiddleware from '../../platform/tenant.middleware.js';
 import { ensureTenantWorker } from '../../workers/outbox.registry.js';
+import { SqlCategoryRepository } from '../../reservas/sql.category.repository.js';
+import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-service.repository.js';
 
 /** Identificable por referencia -- así un test puede confirmar que ES este objeto el que llegó a ensureTenantWorker(), no cualquier objeto con la misma forma. */
 const FAKE_TENANT_CLIENT = { __fake: 'tenant-client' } as never;
@@ -44,11 +46,27 @@ vi.mock('../../platform/tenant.middleware.js', async (importOriginal) => {
   };
 });
 
+// GET /categories y GET /bookable-services (Wave 2, P-01/D-03, 16/09/2026)
+// -- mockeados a nivel de clase, no de SQL: son pass-throughs sin lógica
+// propia (construir el repo con req.db, llamar findAll(), devolver json),
+// la corrección de la query/mapeo de filas ya la cubren
+// sql.category.repository.test.ts / sql.bookable-service.repository.test.ts.
+const findAllCategoriesMock = vi.fn();
+const findAllServicesMock = vi.fn();
+vi.mock('../../reservas/sql.category.repository.js', () => ({
+  SqlCategoryRepository: vi.fn(() => ({ findAll: findAllCategoriesMock })),
+}));
+vi.mock('../../reservas/sql.bookable-service.repository.js', () => ({
+  SqlBookableServiceRepository: vi.fn(() => ({ findAll: findAllServicesMock })),
+}));
+
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const SECRET = 'test-secret-32-characters-minimum!!';
 
 beforeEach(() => {
   process.env.JWT_SECRET = SECRET;
+  findAllCategoriesMock.mockReset();
+  findAllServicesMock.mockReset();
 });
 
 afterEach(() => {
@@ -224,5 +242,37 @@ describe('customer.routes -- resolución de req.db (CUSTOMER-PORTAL-NO-OUTBOX-WO
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(vi.mocked(ensureTenantWorker)).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/customer/categories y GET /api/customer/bookable-services (Wave 2, P-01/D-03, 16/09/2026)', () => {
+  it('GET /categories construye SqlCategoryRepository con req.db y devuelve su findAll()', async () => {
+    const categories = [{ id: 'cat-1', name: 'Habitaciones' }];
+    findAllCategoriesMock.mockResolvedValue(categories);
+
+    const router = createCustomerRouter(fakeContainer(), {} as unknown as PlatformRepository);
+    const req = { db: FAKE_TENANT_CLIENT } as unknown as Request;
+
+    const res = await runRoute(router, 'get', '/categories', req);
+
+    expect(vi.mocked(SqlCategoryRepository)).toHaveBeenCalledWith(FAKE_TENANT_CLIENT);
+    expect(findAllCategoriesMock).toHaveBeenCalledOnce();
+    expect(res.body).toBe(categories);
+    expect(res.status).not.toHaveBeenCalled(); // sin status explícito -- 200 default de res.json()
+  });
+
+  it('GET /bookable-services construye SqlBookableServiceRepository con req.db y devuelve su findAll()', async () => {
+    const services = [{ id: 'svc-1', name: 'Masaje' }];
+    findAllServicesMock.mockResolvedValue(services);
+
+    const router = createCustomerRouter(fakeContainer(), {} as unknown as PlatformRepository);
+    const req = { db: FAKE_TENANT_CLIENT } as unknown as Request;
+
+    const res = await runRoute(router, 'get', '/bookable-services', req);
+
+    expect(vi.mocked(SqlBookableServiceRepository)).toHaveBeenCalledWith(FAKE_TENANT_CLIENT);
+    expect(findAllServicesMock).toHaveBeenCalledOnce();
+    expect(res.body).toBe(services);
+    expect(res.status).not.toHaveBeenCalled();
   });
 });

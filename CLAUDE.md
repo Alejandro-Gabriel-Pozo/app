@@ -302,6 +302,13 @@ normal en `app.ts`, no dentro de un closure por-request). Mismo criterio
 que la corrección anterior: las citas de "259" de esta sección se
 corrigen en el mismo commit que produce el delta.
 
+**Corrección 16/09/2026 (Wave 2 del plan de ejecución integral, P-01/D-03
+— endpoints dedicados de catálogo para el portal): 262 → 264.**
+`docs/inventario-rutas.md` regenerado en este mismo cambio (+2 rutas de
+`api/routes/customer.routes.ts`: `GET /api/customer/categories`,
+`GET /api/customer/bookable-services`, nuevas en el árbol vivo, no
+`CLOSURE_MOUNTS`). Mismo criterio que las dos correcciones anteriores.
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -330,7 +337,7 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-18 de 262 -- corrección 15/09/2026, ver arriba). Depende de `NODE_ENV` — generado con `development`, `/` y
+18 de 264 -- corrección 16/09/2026, ver arriba). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Pendientes — revalidar antes de arrastrar

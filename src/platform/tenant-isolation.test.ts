@@ -142,4 +142,34 @@ describe('tenantMiddleware — resuelve SIEMPRE desde req.user.businessId, nunca
     expect(statusMock).toHaveBeenCalledWith(401);
     expect(platformRepo.findById).not.toHaveBeenCalled();
   });
+
+  // P-01/D-03 (Wave 2, 16/09/2026) -- antes de este bloque, un token
+  // CUSTOMER hacía next() acá sin fijar req.db/req.businessId, dejando
+  // pasar el request hasta el handler de una ruta de STAFF (que crasheaba
+  // con un 500 accidental). Rechazar por ACTOR (el rol, no el archivo de
+  // la ruta) es el fix real de D-03 -- ver
+  // src/tests/integration/customer-token-staff-route-ownership.integration.test.ts
+  // para la reproducción end-to-end contra las 4 rutas mutantes concretas.
+  it('un token CUSTOMER se rechaza con 403 -- este middleware es solo para rutas de staff', async () => {
+    const { tenantMiddleware } = await import('./tenant.middleware.js');
+    const platformRepo = fakePlatformRepo();
+    const middleware = tenantMiddleware(platformRepo);
+
+    const statusMock = vi.fn().mockReturnThis();
+    const jsonMock = vi.fn();
+    const req = {
+      user: { role: 'CUSTOMER', businessId: 'negocio-a', customerId: 'cust-1' },
+    } as unknown as Request;
+    const res = { status: statusMock, json: jsonMock } as unknown as Response;
+    const next = vi.fn() as NextFunction;
+
+    await middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(statusMock).toHaveBeenCalledWith(403);
+    expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(platformRepo.findById).not.toHaveBeenCalled();
+    expect(req.db).toBeUndefined();
+    expect(req.businessId).toBeUndefined();
+  });
 });

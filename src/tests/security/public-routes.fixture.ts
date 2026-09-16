@@ -48,10 +48,12 @@ export const PUBLIC_ROUTES: Record<string, string> = {
   'platform/business-modules.routes.ts|GET /':     'módulos contratados del propio negocio',
   'platform/business-plan-limits.routes.ts|GET /': 'límites del plan del propio negocio',
 
-  // --- STAFF/CUSTOMER-open ya documentado en rbac-matriz-endpoints.md (L,
-  //     23/08/2026): el portal de clientes las necesita logueado para el filtro
-  //     de categoría del buscador de disponibilidad.
-  'reservas/categories.routes.ts|GET /':    'listado de categorías, cualquier identidad del tenant (portal incl.)',
+  // --- STAFF-open, sin restricción de grupo (L, 23/08/2026, actualizado Wave 2
+  //     P-01/D-03 16/09/2026). Ya NO es "portal incl." -- el portal usa el
+  //     endpoint dedicado GET /api/customer/categories; tenantMiddleware
+  //     rechaza con 403 cualquier token CUSTOMER antes de llegar acá de
+  //     cualquier forma. Ver rbac-matriz-endpoints.md sección 4.
+  'reservas/categories.routes.ts|GET /':    'listado de categorías, cualquier identidad de STAFF del tenant',
   'reservas/categories.routes.ts|GET /:id': 'detalle de categoría, ídem',
 
   // --- Flujos por token: quien acepta todavía no tiene JWT; el token es la

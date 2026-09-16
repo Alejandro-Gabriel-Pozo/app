@@ -89,8 +89,8 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 
 const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docBullets: string[] }> = {
   'api/routes/customer.routes.ts': {
-    hiddenCount: 7,
-    motivo: 'Párrafo narrativo (líneas 116-124 del doc): "7 rutas de /me/*" descritas en prosa, no como bullets.',
+    hiddenCount: 9, // +2: GET /categories, GET /bookable-services (Wave 2, P-01/D-03, 16/09/2026)
+    motivo: 'Párrafo narrativo (líneas 116-124 del doc): "9 rutas" (7 de /me/* + 2 de catálogo) descritas en prosa, no como bullets.',
     docBullets: [],
   },
   'facturacion/invoices.routes.ts': {

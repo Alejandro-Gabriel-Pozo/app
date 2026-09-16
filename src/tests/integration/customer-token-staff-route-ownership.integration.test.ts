@@ -1,11 +1,20 @@
 /**
  * @file customer-token-staff-route-ownership.integration.test.ts
- * @description F5-01 (docs/auditoria-integral-fase5-2026-09-15.md, Fase 5
- * del protocolo de auditoría integral, con apéndice de verificación
- * independiente del `architecture-governor`) — reproducción/evidencia, NO
- * fix. El hallazgo: un JWT de tipo CUSTOMER (portal de clientes) puede
- * alcanzar 4 rutas mutantes de routers de STAFF sin que ningún guard
- * compare `req.user.customerId` contra el dueño real del recurso:
+ * @description F5-01 (docs/auditoria-integral-fase5-2026-09-15.md) / D-03
+ * (docs/auditoria-integral-fase15-2026-09-16.md) — **P-01/D-03 RESUELTO en
+ * este bloque (Wave 2, 16/09/2026, docs/decisiones-plan-integral-2026-09-16.md)**.
+ * Hasta acá este archivo era reproducción/evidencia, no fix: un JWT CUSTOMER
+ * alcanzaba 4 rutas mutantes de routers de STAFF y crasheaba con un 500
+ * ACCIDENTAL (dos mecanismos de crash distintos, ninguno un guard
+ * deliberado — ver `docs/pendientes-2026-09-12.md` histórico y el `git log`
+ * de este archivo para el detalle previo). El fix real (opción "a" de Fase
+ * 15, decidida por el dueño): `tenantMiddleware()`
+ * (`src/platform/tenant.middleware.ts`) ahora RECHAZA cualquier token
+ * `role === CUSTOMER` con `403 FORBIDDEN` de forma deliberada, ANTES de
+ * llegar a cualquier handler de ruta de staff — por ACTOR (el rol),
+ * no por archivo: cubre las 4 rutas de abajo Y cualquier otra ruta de
+ * staff presente o futura, sin necesidad de un guard por-ruta (opción "b",
+ * descartada por el dueño por ser más frágil — protege ruta por ruta).
  *
  *   1. POST /api/reservations                       (reservations.routes.ts:363)
  *   2. POST /api/reservations/:id/schedule-request   (reservations.routes.ts:676)
@@ -14,8 +23,8 @@
  *
  * Este test ejercita el pipeline HTTP real (authenticate → tenantMiddleware
  * → authorize → requireModule → handler) — no llama al guard como función,
- * porque lo que se está probando es precisamente si ESE pipeline compara
- * ownership o no.
+ * porque lo que se está probando es precisamente si ESE pipeline rechaza el
+ * token antes de llegar al handler.
  *
  * ## Por qué un harness Express propio y no `createApp()` de src/app.ts
  * `createApp()` (exportada) arma TODO el árbol de rutas de la aplicación,
@@ -35,106 +44,53 @@
  * - Un token CUSTOMER real (firmado con `signToken`/JWT_SECRET, igual que
  *   `CustomerAuthService.login()`) pasa por el `authenticate()` real.
  * - `tenantMiddleware()` real corre: para `req.user.role === CUSTOMER`
- *   hace `next()` sin resolver el tenant contra la BD de plataforma
- *   (tenant.middleware.ts:193-196) — ESTE es el mecanismo bajo prueba, y no
- *   necesita `PlatformRepository` real para tomar esa rama (el
- *   `platformRepo` que se le pasa nunca se invoca en este test: el guard de
- *   rol corta antes).
+ *   responde `403 FORBIDDEN` sin resolver el tenant contra la BD de
+ *   plataforma (tenant.middleware.ts, rama CUSTOMER al principio) — ESTE es
+ *   el mecanismo bajo prueba, y no necesita `PlatformRepository` real para
+ *   tomar esa rama (el `platformRepo` que se le pasa nunca se invoca en
+ *   este test: el guard de rol corta antes, igual que antes del fix).
  * - Si `unusedResolveMembershipContext()` llegara a invocarse (no debería:
  *   `auth.middleware.ts:327` la saltea para tokens CUSTOMER), su `throw` NO
  *   se propaga ruidoso al log — `auth.middleware.ts:328-333` lo envuelve en
  *   un `try/catch` que responde `401 UNAUTHORIZED` opaco. Sigue siendo un
  *   status de fallo (no un falso verde), pero el mensaje del stub no
  *   aparecería en ningún lado si ese camino llegara a activarse.
- * - `authorize(Roles.BOOKING)` real corre y evalúa `CUSTOMER_PERMISSION_GROUPS`
- *   (roles.ts:81-84), igual que en producción.
- * - `requireModule()` real corre contra el `AppContainer` de prueba.
+ * - `authorize(Roles.BOOKING)`, `requireModule()` y los 4 handlers reales
+ *   NUNCA se ejercitan para un token CUSTOMER en este test — el rechazo de
+ *   `tenantMiddleware()` corta el pipeline antes. Siguen montados en el
+ *   harness porque son los mismos routers reales de producción; lo que
+ *   cambió es que el token CUSTOMER ya no los alcanza.
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@host:5432/postgres
  * Si no está definida (y no es CI), la suite se saltea (ver helpers/db.ts).
  *
- * ## No implementa ningún fix
- * Cada caso documenta el status HTTP REAL observado en un comentario
- * `// OBSERVADO:`, mide (no infiere) que ninguna fila nueva se escribió a
- * nombre de B, y declara el objetivo de seguridad real (403 por ownership)
- * como `it.todo` — NO como un `expect` rojo. Dos motivos, condición del
- * gate `architecture-governor` (15/09/2026):
- *   - `expect(status).toBe(403)` dejaría el job `integration` de CI rojo de
- *     forma permanente. Este repo ya documentó el modo de falla simétrico
- *     ("verde silencioso") — un rojo permanente entrena a leer el rojo como
- *     ruido, y la próxima regresión real de integración se leería como "ah,
- *     es el de F5-01". El hallazgo queda igual de enterrado, con más color.
- *   - `it.fails()` tampoco sirve: pasa tanto con el 500 de hoy como con un
- *     2xx real (el bypass de escritura) — tragaría exactamente la
- *     regresión que este archivo existe para atrapar.
+ * ## Resultado real esperado tras el fix
+ * Las 4 rutas responden **403 FORBIDDEN** (`{code: 'FORBIDDEN', message:
+ * 'Un token del portal de clientes no puede acceder a rutas de staff.'}`)
+ * — NO 2xx, y NO el 500 accidental de antes. Cada caso mide (no infiere)
+ * dos cosas: el status+body exacto (criterio de aceptación F9-15: asertar
+ * también el BODY de la respuesta, no solo el status) y que ninguna fila
+ * nueva se escribió a nombre de B.
  *
- * ## Resultado real observado (corrido contra Postgres real, 15/09/2026;
- * re-verificado de forma independiente por el gate `architecture-governor`
- * con log de servidor por caso — el mecanismo NO es el mismo en los 4 casos)
- * Las 4 rutas responden **500 INTERNAL_ERROR** — NO 2xx, y NO 403. F5-01
- * describía el riesgo como "podría alcanzar" las rutas; corrido de punta a
- * punta, el pipeline SÍ deja pasar el token CUSTOMER (authenticate +
- * authorize(Roles.BOOKING) + requireModule dan next() los tres), pero cada
- * handler crashea antes de escribir nada — por DOS mecanismos distintos:
- *
- *   - **Caso 1** (`POST /api/reservations`): `TypeError: Cannot read
- *     properties of undefined (reading 'query')` en
- *     `new SqlCustomerRepository(req.db).getById(...)`
- *     (reservations.routes.ts:369) — ANTES de llegar a
- *     `buildReservationService()`. Es un deref de `undefined`, no una
- *     verificación explícita: el más frágil de los cuatro.
- *   - **Casos 2, 3, 4**: `Error: req.businessId no está disponible`, throw
- *     explícito y síncrono de `buildTenantTransactionManager(req)`
- *     (db/tenant-context.ts:78, invocado directo o vía `buildOrderService`/
- *     `buildStayService`) — fail-loud real.
- *
- * En los dos casos, la causa raíz es la misma: `tenantMiddleware` hace
- * `next()` sin fijar `req.db` NI `req.businessId` cuando
- * `req.user.role === CUSTOMER` (tenant.middleware.ts:193-196 — diseñado
- * para las rutas de `/api/customer/*`, que resuelven el tenant por su
- * cuenta; estas 4 rutas de STAFF nunca esperaban recibir un token
- * CUSTOMER). `error.middleware.ts` mapea ambos a 500 `INTERNAL_ERROR` por
- * ser un `Error`/`TypeError` genérico (no `DomainError`).
- *
- * Lectura de esto: NO hay bypass limpio de ownership hoy — el atacante no
- * logra crear ni modificar nada a nombre de otro cliente por este camino
- * puntual (medido, no solo inferido: cada caso confirma contra la BD que
- * el conteo/valor relevante no cambió), porque el proceso revienta antes de
- * tocar la BD del tenant. Pero el hallazgo de fondo de F5-01 sigue siendo
- * real y sigue sin arreglar: la cadena de middlewares deja pasar un token
- * CUSTOMER hasta el código interno de rutas de STAFF sin ningún guard de
- * autorización explícito — hoy el único motivo por el que no hay escritura
- * cruzada es un efecto colateral no diseñado para ese propósito
- * (`req.businessId` ausente, y en el caso 1 ni siquiera eso: un simple
- * deref), no un chequeo deliberado. Cualquier cambio futuro que fije
- * `req.db`/`req.businessId` para tokens CUSTOMER en el gate global (p. ej.
- * para habilitar alguna otra ruta) reabriría el bypass real de escritura
- * sin que ninguna de las 5 cercas RBAC existentes (rbac-route-coverage,
- * rbac-matrix-sync, api-auth-gate-order, customer-portal-ownership-guard,
- * credit-note-escape-containment) lo note — ninguna de esas cinco mira
- * ownership dentro de rutas de STAFF, solo dentro de `customer.routes.ts`.
- * Este test queda como regresión para ESE escenario: si algún cambio futuro
- * hace que una de estas 4 rutas devuelva 2xx para un token CUSTOMER ajeno
- * al recurso, la aserción `!res.ok` + "sin escritura" cae en rojo por el
- * motivo correcto (bypass real), y los `it.todo` señalan qué falta arreglar.
- *
- * ## Hallazgo relacionado, encontrado al gatear este bloque —
+ * ## Hallazgo relacionado, sin resolver en este bloque —
  * `CUSTOMER-TOKEN-STAFF-ROUTE-500-001` (ver docs/pendientes-2026-09-12.md)
- * El mismo token CUSTOMER alcanza, por el mismo mecanismo, 7 rutas GET con
+ * El mismo mecanismo (tenantMiddleware rechaza CUSTOMER por ACTOR, no por
+ * archivo) alcanza también, como efecto colateral, 7 rutas GET con
  * `authorize(Roles.BOOKING)` (bookable-services.routes.ts, resources.routes.ts,
- * business-hours.routes.ts) y 2 GET de `categories.routes.ts` que no tienen
- * `authorize()` en absoluto — confirmado por camino de código, no observado
- * en producción. `GET /api/bookable-services` tiene un consumidor real en
+ * business-hours.routes.ts) y 2 GET de `categories.routes.ts` que no tenían
+ * `authorize()` en absoluto — todas convierten su 500 accidental previo en
+ * un 403 deliberado, pero la PREGUNTA que ese ítem registra (¿debería un
+ * token CUSTOMER poder LEER esos catálogos vía un camino dedicado, en vez
+ * de vía una ruta de staff?) sigue sin decidir — no es parte de esta
+ * decisión (P-01/D-03 es sobre las 4 rutas MUTANTES). `GET
+ * /api/bookable-services` sigue teniendo el consumidor real en
  * `appfrontend-main` (`src/lib/customerApi.ts:221`, llamado desde
- * `app/portal/[businessSlug]/cuenta/reservas/page.tsx:112,130`) que hoy
- * recibe este mismo 500 y lo traga en silencio (`.catch(() => {})`) — el
- * selector de servicios del portal queda vacío sin ningún error visible.
- * Consecuencia de diseño: el fix "obvio" de F5-01 (poblar `req.db` para
- * CUSTOMER) arreglaría ese consumidor Y abriría el bypass de escritura de
- * las 4 rutas mutantes en el mismo cambio — el guard de ownership tiene que
- * aterrizar antes o junto con cualquier cambio que pueble `req.db` para
- * tokens CUSTOMER, no después.
+ * `app/portal/[businessSlug]/cuenta/reservas/page.tsx:112,130`) que ya
+ * tragaba el 500 en silencio (`.catch(() => {})`) — con el 403 nuevo, el
+ * comportamiento observable para ese consumidor no cambia (sigue fallando
+ * silenciosamente, el selector de servicios del portal sigue vacío), solo
+ * cambia el motivo del fallo, de accidental a deliberado.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -206,9 +162,8 @@ function buildFakeContainer(): AppContainer {
 /**
  * `PlatformRepository` de prueba para `tenantMiddleware(platformRepo)`.
  * NUNCA se invoca en este test: para `req.user.role === UserRole.CUSTOMER`,
- * `tenantMiddleware` hace `next()` en la primera línea
- * (tenant.middleware.ts:194-197) sin tocar `platformRepo` — que es
- * exactamente el mecanismo que F5-01 señala. El stub revienta si algo
+ * `tenantMiddleware` responde `403 FORBIDDEN` en la primera rama (P-01/D-03,
+ * Wave 2, 16/09/2026) sin tocar `platformRepo`. El stub revienta si algo
  * cambia y alguna vez se llega a invocarlo, en vez de fallar con un TypeError
  * opaco contra un objeto vacío.
  */
@@ -217,7 +172,7 @@ function buildUnusedPlatformRepo(): PlatformRepository {
     get(_target, prop) {
       throw new Error(
         `[buildUnusedPlatformRepo] PlatformRepository.${String(prop)} no debería invocarse ` +
-        'para un token CUSTOMER — tenantMiddleware corta antes (tenant.middleware.ts:194-197).',
+        'para un token CUSTOMER — tenantMiddleware lo rechaza con 403 antes (tenant.middleware.ts, rama CUSTOMER).',
       );
     },
   }) as PlatformRepository;
@@ -262,7 +217,7 @@ function signCustomerToken(customerId: string, businessId: string): string {
   );
 }
 
-describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de STAFF (Postgres real)', () => {
+describe.skipIf(skipIfNoDb)('F5-01/D-03 — token CUSTOMER rechazado en rutas mutantes de STAFF (Postgres real)', () => {
   let db: SqlClient;
   let dbName: string;
   let pool: pg.Pool;
@@ -337,24 +292,19 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
   }
 
   /**
-   * Cada caso separa dos aserciones distintas (condición del gate
-   * `architecture-governor`, 15/09/2026):
-   *   1. La que HOY se cumple y se MIDE (no infiere) — la request no tuvo
-   *      éxito (`!res.ok`) Y no se escribió ninguna fila nueva a nombre de
-   *      B. Esto es lo que hace que el job `integration` de CI quede verde:
-   *      el invariante real de hoy (nula escritura cruzada) sí se sostiene,
-   *      aunque por un motivo accidental (ver docblock del archivo).
-   *   2. El objetivo de seguridad real (403 por ownership) — declarado como
-   *      `it.todo`, NO como `expect` rojo. `expect(status).toBe(403)`
-   *      dejaría el job permanentemente rojo (entrena a leer el rojo como
-   *      ruido — mismo modo de falla que el "verde silencioso" que este
-   *      repo ya documentó del otro lado). `it.fails()` tampoco sirve:
-   *      pasa tanto con 500 como con un 2xx real, así que tragaría
-   *      exactamente la regresión que este archivo existe para atrapar.
+   * P-01/D-03 RESUELTO (Wave 2, 16/09/2026) — cada caso ahora assertea el
+   * objetivo de seguridad real directamente: `403 FORBIDDEN` deliberado
+   * (status Y body — criterio de aceptación F9-15) Y cero escritura cruzada
+   * a nombre de B. Ya no hace falta separar "lo que se mide hoy" de "lo que
+   * falta" — las dos cosas son la misma aserción, porque el fix es real.
    */
+  const EXPECTED_BODY = {
+    code:    'FORBIDDEN',
+    message: 'Un token del portal de clientes no puede acceder a rutas de staff.',
+  };
 
   // ── Caso 1 — POST /api/reservations, customer.id = B, auth = A ──────────
-  it('POST /api/reservations "a nombre de" B con token de A → sin éxito, sin escritura', async () => {
+  it('POST /api/reservations "a nombre de" B con token de A → 403 FORBIDDEN, sin escritura', async () => {
     const before = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM reservations WHERE customer_id = $1`,
       [customerBId],
@@ -366,17 +316,10 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
       startTime: '2031-01-01T10:00:00.000Z',
       endTime:   '2031-01-01T12:00:00.000Z',
     });
-    const bodyText = await res.text();
+    const body = await res.json();
 
-    // OBSERVADO (corrido contra Postgres real, 15/09/2026, re-verificado por
-    // el gate con log de servidor): 500 {"code":"INTERNAL_ERROR",...}. Pero
-    // NO es el mismo mecanismo que los casos 2-4 — acá el crash es un
-    // TypeError ("Cannot read properties of undefined (reading 'query')")
-    // en `new SqlCustomerRepository(req.db).getById(...)`
-    // (reservations.routes.ts:369), ANTES de llegar a
-    // `buildReservationService()`/`buildTenantTransactionManager`. Es un
-    // deref de `undefined`, no un guard explícito — el más frágil de los 4.
-    expect(res.ok, `esperado !ok, status real=${res.status} body=${bodyText}`).toBe(false);
+    expect(res.status).toBe(403);
+    expect(body).toEqual(EXPECTED_BODY);
 
     const after = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM reservations WHERE customer_id = $1`,
@@ -385,14 +328,8 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
     expect(after.rows[0]!.count).toBe(before.rows[0]!.count);
   });
 
-  it.todo(
-    'F5-01: POST /api/reservations "a nombre de" B con token de A debería dar ' +
-    '403 por ownership (no 500 accidental) — guard no implementado, ver ' +
-    'docs/auditoria-integral-fase5-2026-09-15.md §F5-01 y docs/pendientes-2026-09-12.md',
-  );
-
   // ── Caso 2 — POST /api/reservations/:id/schedule-request sobre reserva de B, auth = A ──
-  it('POST /reservations/:id/schedule-request sobre reserva de B con token de A → sin éxito, sin escritura', async () => {
+  it('POST /reservations/:id/schedule-request sobre reserva de B con token de A → 403 FORBIDDEN, sin escritura', async () => {
     const before = await db.query<{ requested_check_in_time: string | null }>(
       `SELECT requested_check_in_time::text FROM reservations WHERE id = $1`,
       [reservationDeB],
@@ -401,17 +338,10 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
     const res = await postAsA(`/api/reservations/${reservationDeB}/schedule-request`, {
       requestedCheckInTime: '15:00',
     });
-    const bodyText = await res.text();
+    const body = await res.json();
 
-    // OBSERVADO (corrido y re-verificado por el gate con log de servidor,
-    // 15/09/2026): 500, throw explícito de
-    // `buildTenantTransactionManager` (db/tenant-context.ts:78,
-    // "req.businessId no está disponible") — fail-loud real, a diferencia
-    // del caso 1. `tenantMiddleware()` (platform/tenant.middleware.ts:193-196)
-    // hace `next()` sin fijar `req.db`/`req.businessId` para
-    // `req.user.role === CUSTOMER` (rama diseñada para `/api/customer/*`,
-    // no para que un token CUSTOMER llegue a una ruta de STAFF). NO 2xx.
-    expect(res.ok, `esperado !ok, status real=${res.status} body=${bodyText}`).toBe(false);
+    expect(res.status).toBe(403);
+    expect(body).toEqual(EXPECTED_BODY);
 
     const after = await db.query<{ requested_check_in_time: string | null }>(
       `SELECT requested_check_in_time::text FROM reservations WHERE id = $1`,
@@ -420,14 +350,8 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
     expect(after.rows[0]!.requested_check_in_time).toBe(before.rows[0]!.requested_check_in_time);
   });
 
-  it.todo(
-    'F5-01: POST /reservations/:id/schedule-request sobre reserva de B con token de A debería dar ' +
-    '403 por ownership (no 500 accidental) — guard no implementado, ver ' +
-    'docs/auditoria-integral-fase5-2026-09-15.md §F5-01 y docs/pendientes-2026-09-12.md',
-  );
-
   // ── Caso 3 — POST /api/orders, customerId = B, auth = A ──────────────────
-  it('POST /api/orders "a nombre de" B con token de A → sin éxito, sin escritura', async () => {
+  it('POST /api/orders "a nombre de" B con token de A → 403 FORBIDDEN, sin escritura', async () => {
     const before = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM orders WHERE customer_id = $1`,
       [customerBId],
@@ -437,13 +361,10 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
       customerId: customerBId,
       items: [],
     });
-    const bodyText = await res.text();
+    const body = await res.json();
 
-    // OBSERVADO (re-verificado por el gate con log de servidor, 15/09/2026):
-    // 500, mismo throw explícito de tenant-context.ts:78 que el caso 2 —
-    // `buildOrderService()` invoca `buildTenantTransactionManager(req)`
-    // antes de tocar cualquier tabla. NO 2xx.
-    expect(res.ok, `esperado !ok, status real=${res.status} body=${bodyText}`).toBe(false);
+    expect(res.status).toBe(403);
+    expect(body).toEqual(EXPECTED_BODY);
 
     const after = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM orders WHERE customer_id = $1`,
@@ -452,14 +373,8 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
     expect(after.rows[0]!.count).toBe(before.rows[0]!.count);
   });
 
-  it.todo(
-    'F5-01: POST /api/orders "a nombre de" B con token de A debería dar ' +
-    '403 por ownership (no 500 accidental) — guard no implementado, ver ' +
-    'docs/auditoria-integral-fase5-2026-09-15.md §F5-01 y docs/pendientes-2026-09-12.md',
-  );
-
   // ── Caso 4 — POST /api/orders/:id/items sobre orden de B, auth = A ──────
-  it('POST /orders/:id/items sobre orden de B con token de A → sin éxito, sin escritura', async () => {
+  it('POST /orders/:id/items sobre orden de B con token de A → 403 FORBIDDEN, sin escritura', async () => {
     const before = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM order_items WHERE order_id = $1`,
       [orderDeB],
@@ -470,12 +385,10 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
       productId,
       quantity: 1,
     });
-    const bodyText = await res.text();
+    const body = await res.json();
 
-    // OBSERVADO (re-verificado por el gate con log de servidor, 15/09/2026):
-    // 500, mismo mecanismo que el caso 3 — `buildOrderService()` crashea
-    // antes de llegar a `OrderService.addItem()`. NO 2xx.
-    expect(res.ok, `esperado !ok, status real=${res.status} body=${bodyText}`).toBe(false);
+    expect(res.status).toBe(403);
+    expect(body).toEqual(EXPECTED_BODY);
 
     const after = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM order_items WHERE order_id = $1`,
@@ -483,10 +396,4 @@ describe.skipIf(skipIfNoDb)('F5-01 — token CUSTOMER contra rutas mutantes de S
     );
     expect(after.rows[0]!.count).toBe(before.rows[0]!.count);
   });
-
-  it.todo(
-    'F5-01: POST /orders/:id/items sobre orden de B con token de A debería dar ' +
-    '403 por ownership (no 500 accidental) — guard no implementado, ver ' +
-    'docs/auditoria-integral-fase5-2026-09-15.md §F5-01 y docs/pendientes-2026-09-12.md',
-  );
 });

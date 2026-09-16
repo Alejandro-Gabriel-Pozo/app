@@ -115,13 +115,20 @@ puede", son dos preguntas distintas).
 
 **`customer.routes.ts`** — portal de clientes. Un solo call-site
 (`router.use(authenticate(), authorize(Roles.CUSTOMER_ONLY))`) gatea de
-una sola vez las 7 rutas de `/me/*`: GET `/me`, POST `/refresh`,
+una sola vez 9 rutas: las 7 de `/me/*` (GET `/me`, POST `/refresh`,
 DELETE `/me`, GET `/me/reservations`, POST `/me/reservations`,
-PATCH `/me/reservations/:id`, POST `/me/reservations/:id/cancel`. 6 de
-esas 7 además chequean `requireCustomerId()` a mano y ownership del
-recurso (`existing.customer.id !== customerId`) — ver sección 5. El resto
-del archivo (registro/login/disponibilidad del portal) es público, ver
-sección 4.
+PATCH `/me/reservations/:id`, POST `/me/reservations/:id/cancel`) más
+GET `/categories` y GET `/bookable-services` (Wave 2, P-01/D-03,
+16/09/2026 — catálogo de solo lectura para el wizard "Nueva reserva" del
+portal; reemplaza el camino roto de leer las rutas de STAFF
+`GET /api/categories`/`GET /api/bookable-services` vía `Roles.BOOKING`,
+ver fila de `categories.routes.ts` en sección 4). 6 de las 7 rutas de
+`/me/*` además chequean `requireCustomerId()` a mano y ownership del
+recurso (`existing.customer.id !== customerId`) — ver sección 5; las 2
+rutas de catálogo nuevas NO tienen `:id` de recurso ni ownership que
+chequear (son lectura de catálogo del negocio, no datos personales). El
+resto del archivo (registro/login/disponibilidad del portal) es público,
+ver sección 4.
 
 **`me.routes.ts`** — sin `authorize()`, ver sección 4.
 
@@ -426,7 +433,7 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 | `me.routes.ts` GET `/me`, POST `/logout`, POST `/refresh` | Solo `authenticate()` — sobre uno mismo, no aplica chequeo de rol |
 | `business-modules.routes.ts` GET `/` | Solo `authenticate()` — cualquier usuario ve los módulos de SU PROPIO negocio |
 | `business-plan-limits.routes.ts` GET `/` (nuevo, L 23/08/2026) | Solo `authenticate()`, mismo criterio — cualquier usuario ve los límites de plan de SU PROPIO negocio (lo necesita el gating visual del CRUD de roles propios) |
-| **`categories.routes.ts` GET `/`, GET `/:id`** | **✅ Confirmado intencional (sesión posterior, 23/08/2026) — no es un bug.** El portal de clientes (`appfrontend-main/.../portal/[businessSlug]/disponibilidad/page.tsx:37-41`) llama a este endpoint logueado, con su propio comentario explícito: *"El filtro de categoría solo está disponible logueado: GET /api/categories requiere autenticación aunque no exija un rol específico"* — un cliente necesita leer las categorías para filtrar el buscador de disponibilidad. `authorize(Roles.STAFF)` rompería esa pantalla real. Se agregó el comentario espejo del lado del backend (`categories.routes.ts`) para que no se "corrija" por error en el futuro. Sin cambio de código — se queda tal como está. |
+| **`categories.routes.ts` GET `/`, GET `/:id`** | **Actualizado (Wave 2, P-01/D-03, 16/09/2026) — el motivo original del 23/08/2026 ya no aplica.** Decía intencional porque el portal de clientes leía este endpoint logueado (mismo mecanismo que `authorize(Roles.BOOKING)`, que CUSTOMER satisface). Dos cosas cambiaron: (1) esa ruta estaba rota (500) para el portal desde el 03/07/2026, sin que nadie lo notara — `tenantMiddleware` nunca fijaba `req.db` para tokens CUSTOMER en rutas de staff; (2) el fix de D-03 (rechazo por ACTOR en `tenantMiddleware`, `src/platform/tenant.middleware.ts`) ahora responde 403 deliberado para CUALQUIER token CUSTOMER en cualquier ruta de staff, con o sin `authorize()`. El portal ya NO llama a esta ruta — usa el endpoint dedicado `GET /api/customer/categories` (ver sección 2, prosa de `customer.routes.ts`). Sigue sin `authorize()` porque el resto de STAFF (FRONT_DESK/RECEPTIONIST/etc.) todavía la necesita sin restricción de grupo — eso no cambió. |
 | `platform.routes.ts` (resto) | **Resuelto 23/08/2026** — ver sección 2, ahora exige `authorizePlatform([SUPERADMIN])` |
 | `app.ts` GET `/health`, `/health/db` | Infraestructura, públicos a propósito. `/health/db` agregado el 01/09/2026 al separar liveness de readiness |
 | `app.ts` GET `/`, `/openapi.json`, `/docs` | **Ya NO se montan en producción** (01/09/2026, `api/docs-exposure.ts`). Eran públicos por default de armado, no por decisión: exponían la superficie completa de la API y, hasta ese día, credenciales en texto plano dentro del propio spec — en la descripción, en los `examples` del login que Swagger precarga, y en el `example` del campo `password`. Con `NODE_ENV=production` no se montan y Express responde 404. En desarrollo siguen igual |

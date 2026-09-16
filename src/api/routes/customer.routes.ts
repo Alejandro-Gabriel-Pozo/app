@@ -588,6 +588,58 @@ export function createCustomerRouter(
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/customer/categories
+  // GET /api/customer/bookable-services
+  //
+  // P-01/D-03 (Wave 2, 16/09/2026, docs/decisiones-plan-integral-2026-09-16.md).
+  // Antes, el portal leía este mismo catálogo pegándole directo a las rutas
+  // de STAFF (`GET /api/categories`, `GET /api/bookable-services`,
+  // `authorize(Roles.BOOKING)` — CUSTOMER satisface BOOKING). Eso está roto
+  // (500) desde el 03/07/2026 (`tenantMiddleware` no fijaba `req.db` para
+  // tokens CUSTOMER en rutas de staff -- ver `d2da231`) y el fix real
+  // de D-03 (rechazo por ACTOR en `tenantMiddleware`, ver ese archivo) lo
+  // vuelve 403 deliberado en vez de 500 accidental -- pero no lo arregla:
+  // el wizard "Nueva reserva" del portal (categoría → servicio →
+  // disponibilidad) necesita este catálogo para funcionar, con o sin D-03.
+  // Camino dedicado, mismo patrón que `/me/reservations` (no reabrir el
+  // paso por rutas de staff, `CUSTOMER-TOKEN-STAFF-ROUTE-500-001`): repos
+  // instanciados sobre `req.db` (ya resuelto arriba), solo lectura, sin
+  // `authorize()` adicional -- el `router.use(authorize(Roles.CUSTOMER_ONLY))`
+  // de más arriba ya cubre todo este router.
+  //
+  // Divergencia deliberada y CONDICIONADA (gate `architecture-governor`,
+  // ronda 2, 16/09/2026, DEFENSIVE_DEVELOPING.md §5/§6): estas 2 rutas
+  // instancian el repo directo, salteando CategoryService/BookableServiceService
+  // (que el resto del repo sí usa). Hoy es equivalente byte a byte --
+  // ambos servicios son wrappers de una línea sobre `repo.findAll()`, sin
+  // auditoría ni `TransactionManager` de por medio -- pero es un SEGUNDO
+  // camino de lectura para la misma responsabilidad. Gatillo de revisión:
+  // si `listCategories()`/`listServices()` alguna vez gana lógica propia
+  // (filtro por módulo/plan, mapper distinto, lo que sea), este camino
+  // queda desincronizado en silencio -- ahí hay que pasar estas 2 rutas
+  // por el servicio real, no seguir duplicando el `findAll()` a mano.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/categories',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const categories = await new SqlCategoryRepository(req.db!).findAll();
+        res.json(categories);
+      } catch (err) { next(err); }
+    },
+  );
+
+  router.get(
+    '/bookable-services',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const services = await new SqlBookableServiceRepository(req.db!).findAll();
+        res.json(services);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // GET /api/customer/me
   //
   // `?businessSlug=X` opcional (19/08/2026, portal a cookie httpOnly): la
