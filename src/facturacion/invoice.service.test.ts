@@ -23,7 +23,7 @@ import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError } from '../domain/errors.js';
-import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
+import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO, DOC_TIPO_CONSUMIDOR_FINAL } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { logger } from '../logger.js';
@@ -565,6 +565,29 @@ describe('InvoiceService', () => {
       const service = buildService({ credentials: null });
       await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
+    });
+  });
+
+  describe('D-25 (16/09/2026, Wave 3, docs/auditoria-integral-fase15-2026-09-16.md) -- resolver fiscal desbloqueado por decisión del dueño pero todavía sin conectar', () => {
+    // Fija el estado ACTUAL, a propósito -- no es la protección deseada, es
+    // la ausencia de una todavía sin construir. Cae con roja RUIDOSA (no
+    // silenciosa) el día que el resolver de perfil fiscal (Wave 14,
+    // docs/decisiones-plan-integral-2026-09-16.md:199-206) empiece a mandar
+    // `input.buyer` -- esa caída es el objetivo, no un bug: hay que
+    // actualizar/retirar este test como parte de ese bloque, no "arreglarlo"
+    // sin leer por qué se puso acá.
+    it('requestInvoice() sin buyer: sigue saliendo CbteTipo=FACTURA_B / DocTipo=CONSUMIDOR_FINAL', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121 }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      const sentRequest = createNextVoucher.mock.calls[0]![0] as { CbteTipo: number; DocTipo: number };
+      expect(sentRequest.CbteTipo).toBe(CBTE_TIPO_FACTURA_B);
+      expect(sentRequest.DocTipo).toBe(DOC_TIPO_CONSUMIDOR_FINAL);
     });
   });
 
@@ -2448,6 +2471,19 @@ describe('InvoiceService — C1-Fase C', () => {
       const { service } = buildConsolidatedService({ pending: [], txs: new Map() });
       await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
         .rejects.toThrow(NothingToInvoiceError);
+    });
+
+    it('D-25 (16/09/2026, Wave 3) -- sin buyer, la consolidada de una EMPRESA también sale a Consumidor Final (el caso más caro del hallazgo: sin CUIT no sirve como crédito fiscal) -- cae ruidoso cuando el resolver fiscal se conecte (Wave 14)', async () => {
+      const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+      const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })]]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(99));
+      const { service } = buildConsolidatedService({ pending, txs, createNextVoucher });
+
+      await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+      const sentRequest = createNextVoucher.mock.calls[0]![0] as { CbteTipo: number; DocTipo: number };
+      expect(sentRequest.CbteTipo).toBe(CBTE_TIPO_FACTURA_B);
+      expect(sentRequest.DocTipo).toBe(DOC_TIPO_CONSUMIDOR_FINAL);
     });
 
     it('un comprobante cubre N cargos: suma los montos y marca las N filas FACTURADO con el mismo comprobante', async () => {

@@ -97,6 +97,25 @@ export const DOC_TIPO_DNI = 96;
 export const DOC_TIPO_CONSUMIDOR_FINAL = 99;
 
 /**
+ * D-25 (16/09/2026, docs/auditoria-integral-fase15-2026-09-16.md,
+ * docs/decisiones-plan-integral-2026-09-16.md:199-206 P-16) -- sin
+ * consumidor de producción hoy. NO es código abandonado ni "en HOLD": el
+ * dueño ya decidió desbloquear el resolver fiscal ("mantener en HOLD
+ * indefinido" está entre las alternativas DESCARTADAS de esa decisión),
+ * dirigido por el "perfil fiscal del cliente" (qué campos, cómo se
+ * relaciona con esta función) -- ese diseño es Wave 14 del plan de
+ * ejecución integral, todavía sin escribir. Hasta que `invoice.service.ts`
+ * empiece a pasar un `buyer` resuelto desde ese perfil, sigue faltando el
+ * llamador: `resolveDocTipo()` está probada (su propio test) pero no
+ * conectada, y `requestInvoice()`/`requestConsolidatedInvoice()` siguen
+ * facturando siempre a Consumidor Final -- congelado a propósito por
+ * `src/facturacion/invoice.service.test.ts` (describe "D-25"), que cae
+ * ruidoso el día que eso cambie. No borrar esta función ni sus
+ * constantes A/C mientras tanto -- es el catálogo ya construido que Wave
+ * 14 va a conectar, no deuda a limpiar.
+ */
+
+/**
  * Resuelve el `DocTipo` de AFIP a partir del `taxIdType` cargado por el
  * negocio para ese cliente (texto libre, ver Fase 1). Si no matchea nada
  * conocido, cae a "Consumidor Final" — es el único DocTipo que no exige
