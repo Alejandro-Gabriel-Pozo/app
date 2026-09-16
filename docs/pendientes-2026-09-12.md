@@ -1226,6 +1226,43 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   misma clase de consulta de diagnóstico de solo lectura que ya se corrió
   para `customer_rates` (ver `docs/inventario-dml-schema-2026-09-16.md`
   para el detalle del riesgo de cada una).
+- **`MIGRATE-TENANTS-CONCURRENT-DDL-001` — `applyTenantSchema()` sin
+  advisory lock, ahora corre en el 100% de los deploys en vez de ~0%
+  (Wave 6 / D-09, gate `architecture-governor`, 16/09/2026, `aa8e369`).**
+  Antes de D-09, un redeploy con `CURRENT_SCHEMA_VERSION` sin cambios
+  ejecutaba cero DDL contra cada tenant; ahora cada deploy reaplica
+  `schema.sql` completo. `grep` de `pg_advisory` en `src/` da un solo
+  call-site de producción (`payment-application.ts:49`, no relacionado —
+  los otros 3 hits del grep son aserciones de test) — no hay lock. Los
+  guards de D-08 (`DO $$ IF NOT EXISTS (SELECT 1 FROM pg_constraint ...)
+  THEN ALTER`) son check-then-act, el patrón que corre carrera. Mitigante
+  ya existente, no agregado por este bloque: `client.query(schemaSQL)`
+  manda todo el archivo como una sola query multi-statement, que Postgres
+  envuelve en una transacción implícita — el perdedor de la carrera
+  revierte entero (no a medias) y falla ruidoso (`exit(1)`, Render no
+  promueve). Riesgo real: dos builds de Render solapados sobre el mismo
+  tenant. Bloque no decidido: agregar `pg_advisory_lock` (o
+  `pg_try_advisory_lock` con reintento) a `applyTenantSchema()`.
+- **`MIGRATE-TENANTS-DEPLOY-AVAILABILITY-001` — un tenant inalcanzable
+  ahora tumba el deploy de TODOS (Wave 6 / D-09, gate
+  `architecture-governor`, 16/09/2026, `aa8e369`).** Antes de D-09, un
+  tenant con la BD caída pero `schema_version` al día ni se contactaba —
+  el deploy pasaba igual. Ahora **todo** tenant se conecta en cada
+  deploy, con `connectionTimeoutMillis: 10_000`
+  (`tenant-db.setup.ts`, bloque `applyTenantSchema()`). Un branch Neon en
+  scale-to-zero lento para despertar, o un tenant genuinamente
+  inalcanzable, sube de severidad: pasa de "ese tenant queda sin
+  reparar" a "nadie recibe el deploy". El comentario de `render.yaml`
+  junto a `migrate:tenants` ya declaraba ese acoplamiento como "riesgo
+  bajo con un solo tenant real" — esa premisa ya está stale: son **2**
+  tenants reales medidos esta misma sesión
+  (`docs/decisiones-plan-integral-2026-09-16.md:681`,
+  `tenant-hotel-los-alamos` + `production`/Demo), sin que el comentario
+  se haya actualizado — D-09 sube la probabilidad de que el
+  acoplamiento importe sobre una base ya mayor de lo que el texto dice.
+  Bloque no decidido: ¿timeout por
+  tenant más corto + seguir con el resto en vez de abortar todo, o
+  aceptar el acoplamiento mientras haya pocos tenants reales?
 
 ---
 
@@ -3901,12 +3938,23 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   línea nueva en la Fase 0 del runbook nombrando `admin.routes.ts:63`
   (`set-tenant-url`) y `:124` (`repair-tenant-db`) como los 2 endpoints
   que el freeze de rotación tiene que cubrir y que hoy nada hace cumplir.
-  **Hallazgo de paso, no de este bloque**: `migrate-tenants.ts:58` hace
-  `continue` ANTES de descifrar cuando el schema ya está al día -- o sea
-  que `npm run migrate:tenants` en cada deploy de Render NO es una
-  prueba de descifrado real para los tenants ya al día (que son la
-  mayoría, casi siempre). La red de seguridad implícita que la Fase 1
-  del runbook parecía dar por cierta no existe.
+  **Cerrado por D-09 (Wave 6 del plan de ejecución integral, 16/09/2026,
+  commit `aa8e369`).** El hallazgo original decía: `migrate-tenants.ts`
+  hacía `continue` ANTES de descifrar cuando `business.schemaVersion`
+  ya coincidía con `CURRENT_SCHEMA_VERSION` -- o sea que
+  `npm run migrate:tenants` en cada deploy de Render NO era una prueba
+  de descifrado real para los tenants ya al día (que son la mayoría,
+  casi siempre), y la red de seguridad implícita que la Fase 1 del
+  runbook parecía dar por cierta no existía. D-09 retiró ese atajo por
+  otro motivo (no confiar en `schema_version` cacheado) -- `migrateBusiness()`
+  ahora conecta y descifra la connection string de **todo** tenant en
+  **cada** deploy, sin excepción. Efecto de rebote: la red de seguridad
+  que el runbook asumía ahora existe de verdad. Contracara, agregada al
+  propio runbook (§4 Fase 1): durante una ventana de rotación con
+  `DB_ENCRYPTION_KEY_OLD` mal cargada, esto ahora **tumba el build
+  entero** en vez de fallar en silencio para los tenants ya al día
+  (fail-loud correcto, pero antes de D-09 el radio de esa falla era
+  menor).
 - **`CONCIL-INCONSIST-01`** (absorbe `INV-ORF-01` + pt1 `ORDER-13`) --
   diseño ya grounded contra ERPNext/Odoo (cron que NO emite + query
   on-demand + contador junto a `countDeadLettered()`). 0 filas huérfanas

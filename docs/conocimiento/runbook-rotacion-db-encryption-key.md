@@ -109,6 +109,23 @@ Verificar en runtime (sesión real, sin mutar): un request a cualquier ruta
 `/api/*` de un tenant existente responde (usa `db_url_encrypted` viejo,
 descifrado con fallback); facturar en homologación descifra el certificado.
 
+**Actualización 16/09/2026 (D-09, Wave 6 del plan de ejecución integral,
+commit `aa8e369`).** Hasta este bloque, `npm run migrate:tenants` (cada
+deploy de Render) NO era una prueba de descifrado real para los tenants
+que ya tenían `schema_version` al día (la mayoría, casi siempre) — un
+atajo por versión cacheada los saltaba sin conectarse. Desde `aa8e369`,
+`migrateBusiness()` conecta y descifra la connection string de **todo**
+tenant en **cada** deploy, sin excepción — la prueba de descifrado
+implícita que esta sección parecía asumir ahora existe de verdad.
+**Contracara, nueva a partir de este mismo cambio:** si durante una
+ventana de rotación (Fase 1, `DB_ENCRYPTION_KEY_OLD` recién cargada o mal
+cargada) el descifrado de un solo tenant falla, ese fallo ahora **tumba
+el build entero** (`exit(1)` en `migrate-tenants.ts` → Render no
+promueve) en vez de fallar solo para ese tenant en silencio. Correcto
+(fail-loud), pero cambia el radio de la ventana de rotación: probar la
+Fase 1 en un tenant de prueba antes del deploy real a producción importa
+más que antes de este cambio.
+
 ### Fase 2 — barrido de re-cifrado (script de §7, una sola vez)
 
 Por cada fila, en transacción propia, idempotente y reanudable (mismo patrón

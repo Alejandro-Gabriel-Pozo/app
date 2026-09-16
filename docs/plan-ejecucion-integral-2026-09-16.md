@@ -687,3 +687,123 @@ ahorro a esa escala, no.
 
 **No pusheado.** Push de `13630cf` (`app-main`) y de este commit de docs
 requiere autorización explícita y nueva del dueño.
+
+## Apéndice H — Wave 6 ejecutada: `D-09` + investigación `D-22`/`P-13`
+
+**16/09/2026, gate `architecture-governor` (APPROVED WITH CONDITIONS,
+condición C1 aplicada antes de commitear), commit `aa8e369` (código,
+`D-09`) + este mismo commit de docs (local, sin pushear).**
+
+`:53` (fila 6 de la tabla de oleadas) queda ejecutado en su parte de
+código (`D-09`); su parte de versión de Postgres (`D-22`/`P-13`) queda
+**investigada, no ejecutada** — ver más abajo, es la decisión correcta
+según el propio gatillo de `P-13`.
+
+### `D-09` — `migrate-tenants.ts` deja de confiar en `schema_version` cacheado
+
+`main()` ya no hace `continue` cuando `business.schemaVersion ===
+CURRENT_SCHEMA_VERSION` — ese atajo saltaba el tenant entero sin
+conectarse, tratando una columna cacheada de la BD de plataforma como
+autoridad cuando la fuente real es `schema_migrations` dentro de cada
+tenant. Si los dos números divergían (snapshot restaurado,
+`updateSchemaVersion()` fallido después de un `applyTenantSchema()`
+exitoso, `set-tenant-url` a medio camino), el tenant quedaba sin migrar
+para siempre y en silencio — ya pasó una variante real con
+`orders.served_at` en `biz-demo-01`. `migrateBusiness()` (extraída de
+`main()` para poder probarla con Postgres real) ahora conecta y reaplica
+`schema.sql` en el 100% de los deploys, para el 100% de los tenants —
+seguro recién a partir de D-08 (Wave 5, `13630cf`): sin los guards de
+`pg_constraint`, esto costaría ~50 s por tenant por deploy en vez de
+~96 ms.
+
+**Condición C1 del gate, aplicada antes de commitear:** el guard
+"¿me ejecutaron directo o me importaron?" comparaba
+`` import.meta.url === `file://${process.argv[1]}` `` directo — el gate
+reprodujo, medido, que esa comparación da `false` cuando el path del
+proyecto tiene espacios (`import.meta.url` viene percent-encoded,
+`process.argv[1]` no — y el contenedor real de este repo se llama
+"App - frontend") y siempre en Windows (separador `\`). El script quedaba
+en no-op silencioso con `exit 0` al correrlo a mano
+(`npm run migrate:tenants`) — exactamente la clase de falla que este
+bloque existe para eliminar, reintroducida en el mismo commit. Corregido
+con `fileURLToPath(import.meta.url) === resolve(process.argv[1])`
+(mismo idioma que ya usa `generate-route-inventory.ts`), reproducido
+antes y después del fix (`false`→`true` con espacios en el path,
+`true`→`true` sin ellos). Cambio opcional del gate también aplicado:
+el wording del resumen pasa de `'verificado, vN (sin cambios)'` a
+`'verificado contra la BD real, vN'`, más preciso sobre qué fue lo que
+realmente se confirmó.
+
+**Verificado, la corrida completa post-fix, no solo la pre-fix que vio
+el gate:** `tsc` limpio; 174 archivos/2443 tests unitarios verdes
+(incluida `schema-line-anchor-drift.test.ts`, la cerca que el docblock
+nuevo de este archivo tuvo que satisfacer citando `orders.served_at` por
+nombre, no por línea); 49 archivos/383 tests de integración verdes
+contra PostgreSQL 16.13 real (servidor local de esta sesión), incluidos
+los 2 tests nuevos de `migrate-tenants-schema-divergence.integration.test.ts`
+— el caso estrella (schema_version ya al día, columna borrada a mano
+contra la tenant DB real, `migrateBusiness()` la repara igual) y la
+regresión del camino con versión vieja; lint y lint:arch limpios.
+
+**Tres residuos que el gate señaló y no se resuelven en este bloque**,
+registrados en `docs/pendientes-2026-09-12.md` con su propia ancla:
+1. `MIGRATE-TENANTS-CONCURRENT-DDL-001` — sin advisory lock, dos deploys
+   solapados ahora corren DDL concurrente sobre el mismo tenant (antes,
+   con el atajo, la mayoría de las corridas eran no-ops). Mitigante
+   existente: `applyTenantSchema()` manda `schema.sql` como una sola
+   transacción implícita, así que el perdedor revierte entero y falla
+   ruidoso — no es una carrera silenciosa, pero tampoco está resuelta.
+2. `MIGRATE-TENANTS-DEPLOY-AVAILABILITY-001` — un tenant inalcanzable
+   ahora tumba el deploy de todos (antes, si `schema_version` estaba al
+   día, ni se contactaba). Sube la probabilidad de que el acoplamiento
+   que `render.yaml` ya declaraba como "riesgo bajo con un solo tenant
+   real" importe de verdad.
+3. El wording `'verificado contra la BD real, vN'` sigue sin poder
+   distinguir "reparé una divergencia estructural real" de "no había
+   nada que reparar" — reportar reparación de verdad exigiría un
+   fingerprint estructural antes/después, bloque aparte no decidido.
+
+**Cerrado de rebote, no buscado por este bloque:** el hallazgo de
+`docs/pendientes-2026-09-12.md` sobre que `migrate:tenants` no era una
+prueba de descifrado real para los tenants ya al día queda resuelto —
+ahora cada deploy descifra la connection string de todo tenant, sin
+excepción. Contracara agregada al runbook de rotación
+(`docs/conocimiento/runbook-rotacion-db-encryption-key.md` §4 Fase 1):
+una `DB_ENCRYPTION_KEY_OLD` mal cargada durante una ventana de rotación
+ahora tumba el build entero, no solo ese tenant.
+
+### `D-22`/`P-13` — investigación de versión real de Postgres (sin ejecutar ningún cambio)
+
+Alcance de este bloque, según el propio gatillo de `P-13`
+(`docs/decisiones-plan-integral-2026-09-16.md:169`): *"al planificar el
+bloque, confirmar costo/tiempo"* — investigación y propuesta, no
+ejecución de ninguna migración de versión de Postgres. Detalle completo,
+método de verificación de identidad de cada proyecto Neon/servicio
+Render contra este repo real, y la propuesta no ejecutada:
+`docs/investigacion-postgres-version-2026-09-16.md`.
+
+**Resultado medido (Neon/Render MCP reales, no inferido):** plataforma
+(Neon `pdb-ppms`, `morning-unit-50056927`) = **PG18**. Tenants (Neon
+`DB-APP-PPMS`, `ancient-king-17098519`, un branch por negocio) =
+**PG18**. CI (`.github/workflows/ci.yml`) = **PG16**
+(`postgres:16-alpine`). Entorno local de esta sesión = **PG16.13**.
+
+**Corrección a la cita previa de `P-13`:**
+`docs/decisiones-plan-integral-2026-09-16.md:41,163` citan *"Tests en
+PG16, producción en PG17 (tenants) / PG18 (plataforma)"* — esa cita ya
+no coincide con el estado real medido hoy: los tenants están en PG18,
+no PG17. No se investigó cuándo cambió (fuera de alcance de este
+bloque). Consecuencia práctica: la mitad de `P-13` que pedía *"unificar
+plataforma y tenants entre sí"* ya está cumplida en producción, sin que
+nadie lo haya planeado como tal — no queda trabajo ahí. La divergencia
+real y accionable es otra: CI/dev (PG16) contra producción (PG18), dos
+versiones mayores de diferencia.
+
+**No ejecutado en este bloque, a propósito:** ningún cambio de versión
+de Postgres, en ningún entorno. Propuesta registrada para decidir en qué
+Wave entra (candidato natural: junto con `D-13`/`P-09` en Wave 7, que ya
+toca `.github/workflows/ci.yml`): alinear `ci.yml` a `postgres:18-alpine`.
+
+**Push:** el estado lo responde `git log origin/main --oneline | grep aa8e369`
+(y el hash de este commit de docs); requiere autorización explícita y
+nueva del dueño en cualquier caso.
