@@ -297,8 +297,12 @@ describe('applyTenantSchema', () => {
     // 58 -> 59 el 15/09/2026: F2-13 (docs/decisiones-auditoria-fase2-2026-09-15.md
     // #2) -- índice único parcial uq_resources_name sobre upper(btrim(name)),
     // WHERE active = TRUE AND deleted_at IS NULL (BLOQUE 25, schema.sql).
+    // 59 -> 60 el 16/09/2026: D-07(c) -- gatean los 3 DML de schema.sql con
+    // condición de disparo abierta (customer_rates fixed_price->%,
+    // invoices.afip_contacted, reservation_lines), mismo número de versión
+    // para los 3. Ver docs/inventario-dml-schema-2026-09-16.md.
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(59);
+    expect(CURRENT_SCHEMA_VERSION).toBe(60);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

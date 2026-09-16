@@ -610,6 +610,18 @@ CREATE INDEX IF NOT EXISTS idx_reservation_lines_reservation
 -- forma de saber retroactivamente si una estadía vieja tuvo tarifa
 -- distinta por noche. Para todo lo demás (1 noche o sin varias unidades)
 -- es exacto: una sola línea con el total_price real, sin aproximar nada.
+--
+-- GATEADO por schema_migrations version=60 (F10-17, D-07(c), 16/09/2026,
+-- docs/inventario-dml-schema-2026-09-16.md) -- el `NOT EXISTS` de arriba
+-- encuentra CUALQUIER reserva sin líneas, no solo las legacy de antes de
+-- este backfill: una reserva restaurada desde un backup viejo, o creada
+-- por un camino que hoy salta `syncLines()` (`sql.reservation.repository.ts`
+-- documenta ese caso), recibiría en el próximo deploy un reparto de precio
+-- FABRICADO que nadie pidió, sin pasar por `audit_log`. Después de este
+-- gateo, una reserva sin líneas es una señal de bug real a investigar, no
+-- algo que un redeploy deba tapar en silencio -- mismo criterio que
+-- `honest-degradation` (fallar visible en vez de una respuesta plausible
+-- y mal).
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -619,34 +631,36 @@ DECLARE
   last_unit DECIMAL(10,2);
   i INT;
 BEGIN
-  FOR r IN
-    SELECT id, total_price, start_time, end_time
-    FROM reservations
-    WHERE NOT EXISTS (
-      SELECT 1 FROM reservation_lines WHERE reservation_id = reservations.id
-    )
-  LOOP
-    nights := GREATEST(1, (r.end_time::date - r.start_time::date));
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+    FOR r IN
+      SELECT id, total_price, start_time, end_time
+      FROM reservations
+      WHERE NOT EXISTS (
+        SELECT 1 FROM reservation_lines WHERE reservation_id = reservations.id
+      )
+    LOOP
+      nights := GREATEST(1, (r.end_time::date - r.start_time::date));
 
-    IF nights <= 1 THEN
-      INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
-      VALUES (r.id || '-L1', r.id, r.start_time::date, r.total_price)
-      ON CONFLICT DO NOTHING;
-    ELSE
-      per_unit  := ROUND(r.total_price / nights, 2);
-      last_unit := r.total_price - per_unit * (nights - 1);
-      FOR i IN 0..nights - 1 LOOP
+      IF nights <= 1 THEN
         INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
-        VALUES (
-          r.id || '-L' || (i + 1),
-          r.id,
-          r.start_time::date + i,
-          CASE WHEN i = nights - 1 THEN last_unit ELSE per_unit END
-        )
+        VALUES (r.id || '-L1', r.id, r.start_time::date, r.total_price)
         ON CONFLICT DO NOTHING;
-      END LOOP;
-    END IF;
-  END LOOP;
+      ELSE
+        per_unit  := ROUND(r.total_price / nights, 2);
+        last_unit := r.total_price - per_unit * (nights - 1);
+        FOR i IN 0..nights - 1 LOOP
+          INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
+          VALUES (
+            r.id || '-L' || (i + 1),
+            r.id,
+            r.start_time::date + i,
+            CASE WHEN i = nights - 1 THEN last_unit ELSE per_unit END
+          )
+          ON CONFLICT DO NOTHING;
+        END LOOP;
+      END IF;
+    END LOOP;
+  END IF;
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -830,26 +844,50 @@ ALTER TABLE customer_rates
 -- fijo ya cargado es MAYOR o igual al precio base (no hay descuento real,
 -- sería un % negativo) quedan sin tocar -- "legacy fixed" a propósito, no
 -- se fuerza un dato sin sentido dentro de `discount_percentage`.
+--
+-- GATEADO por schema_migrations version=60 (D-07/F10-02, D-07(c),
+-- 16/09/2026, docs/inventario-dml-schema-2026-09-16.md) -- hasta acá el
+-- filtro `created_at < '2026-08-22'` era el ÚNICO límite, y un UPDATE de
+-- catálogo normal (`resources.base_price` cambia después de haber estado
+-- en 0) podía volver a matchear una fila en CUALQUIER deploy futuro
+-- (reproducido: fixed_price=800/base_price=0 -> deploy sin cambios ->
+-- sube base_price -> deploy siguiente -> fixed_price se pisa a NULL).
+-- Restaurar un backup anterior al 22/08/2026, o una fila con `created_at`
+-- retroactivo, rearma el mismo riesgo -- el guard de versión lo cierra a
+-- partir del SEGUNDO deploy con este cambio en adelante (applyTenantSchema()
+-- corre este archivo Y RECIÉN DESPUÉS registra la versión -- el primer
+-- deploy con este bloque todavía ejecuta el UPDATE una última vez), mismo
+-- patrón que el backfill de `is_exclusive`
+-- (schema_migrations version=42, más arriba en este archivo). Medido
+-- contra los 2 tenants reales antes de gatear (Apéndices B/D de
+-- docs/decisiones-plan-integral-2026-09-16.md, vía MCP Neon `run_sql`,
+-- solo lectura): 0 filas candidatas y 0 filas ya convertidas en
+-- `customer_rates` en el 100% de los tenants existentes -- gatear no deja
+-- ninguna corrección pendiente sin aplicar.
 -- ---------------------------------------------------------------------------
-WITH base AS (
-  SELECT
-    cr.id,
-    CASE WHEN cr.resource_id IS NOT NULL THEN r.base_price ELSE bs.price END AS base_price
-  FROM customer_rates cr
-  LEFT JOIN resources r          ON r.id  = cr.resource_id
-  LEFT JOIN bookable_services bs ON bs.id = cr.service_id
-  WHERE cr.fixed_price IS NOT NULL
-    AND cr.discount_percentage IS NULL
-    AND cr.rate_catalog_id IS NULL
-    AND cr.created_at < '2026-08-22T00:00:00Z'::timestamptz
-)
-UPDATE customer_rates cr
-SET discount_percentage = ROUND((1 - cr.fixed_price / base.base_price) * 100, 2),
-    fixed_price = NULL
-FROM base
-WHERE cr.id = base.id
-  AND base.base_price > 0
-  AND (1 - cr.fixed_price / base.base_price) * 100 > 0;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+    WITH base AS (
+      SELECT
+        cr.id,
+        CASE WHEN cr.resource_id IS NOT NULL THEN r.base_price ELSE bs.price END AS base_price
+      FROM customer_rates cr
+      LEFT JOIN resources r          ON r.id  = cr.resource_id
+      LEFT JOIN bookable_services bs ON bs.id = cr.service_id
+      WHERE cr.fixed_price IS NOT NULL
+        AND cr.discount_percentage IS NULL
+        AND cr.rate_catalog_id IS NULL
+        AND cr.created_at < '2026-08-22T00:00:00Z'::timestamptz
+    )
+    UPDATE customer_rates cr
+    SET discount_percentage = ROUND((1 - cr.fixed_price / base.base_price) * 100, 2),
+        fixed_price = NULL
+    FROM base
+    WHERE cr.id = base.id
+      AND base.base_price > 0
+      AND (1 - cr.fixed_price / base.base_price) * 100 > 0;
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- deposit_policies (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
@@ -2955,10 +2993,23 @@ CREATE INDEX IF NOT EXISTS idx_invoices_customer
 -- ambigüedad posible, sea cual sea la fila.
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS afip_contacted BOOLEAN NOT NULL DEFAULT TRUE;
 
-UPDATE invoices SET afip_contacted = FALSE
-  WHERE status = 'FAILED_UNCERTAIN'
-    AND afip_contacted = TRUE
-    AND error_message LIKE 'no se pudo consultar FECompUltimoAutorizado%';
+-- GATEADO por schema_migrations version=60 (F10-16, D-07(c), 16/09/2026,
+-- docs/inventario-dml-schema-2026-09-16.md) -- `afip_contacted` es un
+-- BOOLEAN normal, sin guía estructural (NOT NULL/CHECK) que impida que
+-- este UPDATE vuelva a matchear una fila en el futuro: si alguna vez algo
+-- pone `afip_contacted = TRUE` en una fila FAILED_UNCERTAIN con este
+-- error_message exacto (hoy inalcanzable por código, no por schema), un
+-- deploy cualquiera lo revertiría en silencio, sin pasar por
+-- `domain/audit.ts` ni por decisión humana. Mismo patrón de gateo que el
+-- backfill de `customer_rates` de arriba.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+    UPDATE invoices SET afip_contacted = FALSE
+      WHERE status = 'FAILED_UNCERTAIN'
+        AND afip_contacted = TRUE
+        AND error_message LIKE 'no se pudo consultar FECompUltimoAutorizado%';
+  END IF;
+END $$;
 
 -- invoices.emisor_cuit (schema v26) -- el CUIT con el que se autenticó
 -- contra AFIP en el momento de crear ESTE comprobante (R9: una

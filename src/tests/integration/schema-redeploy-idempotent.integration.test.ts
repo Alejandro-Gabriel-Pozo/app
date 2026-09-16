@@ -38,6 +38,8 @@ import pg from 'pg';
 
 import { skipIfNoDb, requireTestDatabaseUrl } from './helpers/db.js';
 import { PgSqlClient } from '../../repositories/sql.client.js';
+import { applyTenantSchema } from '../../platform/tenant-db.setup.js';
+import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -195,4 +197,175 @@ describe.skipIf(skipIfNoDb)('schema.sql -- redeploy con datos reales ya cargados
       }
     }
   }, 60_000);
+});
+
+/**
+ * D-07(c) (16/09/2026, docs/auditoria-integral-fase15-2026-09-16.md,
+ * docs/inventario-dml-schema-2026-09-16.md) -- las 3 sentencias DML de
+ * schema.sql con "condición de disparo abierta" (D-07/F10-02, F10-16,
+ * F10-17) ahora se gatean por `schema_migrations version = 60`. Este
+ * bloque usa `applyTenantSchema()` real (no `db.query(schemaSql, [])` a
+ * secas como el resto del archivo) porque es la función que ADEMÁS
+ * inserta la fila de `schema_migrations` -- sin eso, el gate nunca vería
+ * la versión ya aplicada y el DML de abajo correría en cada reapply igual
+ * que antes del fix, dejando el test en falso verde.
+ */
+describe.skipIf(skipIfNoDb)('D-07(c) -- las 3 sentencias DML de schema.sql con disparo abierto quedan gateadas', () => {
+  async function withIsolatedTestDb<T>(
+    prefix: string,
+    fn: (db: PgSqlClient, url: string) => Promise<T>,
+  ): Promise<T> {
+    const baseUrl = requireTestDatabaseUrl();
+    const dbName = `test_${prefix}_${randomUUID().replace(/-/g, '')}`;
+    const adminPool = new Pool({ connectionString: baseUrl });
+    try {
+      await adminPool.query(`CREATE DATABASE "${dbName}"`);
+    } finally {
+      await adminPool.end();
+    }
+
+    const url = new URL(baseUrl);
+    url.pathname = `/${dbName}`;
+    const pool = new Pool({ connectionString: url.toString(), max: 5 });
+    const db = new PgSqlClient(pool);
+    try {
+      return await fn(db, url.toString());
+    } finally {
+      await pool.end();
+      const cleanupPool = new Pool({ connectionString: baseUrl });
+      try {
+        await cleanupPool.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+          [dbName],
+        );
+        await cleanupPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+      } finally {
+        await cleanupPool.end();
+      }
+    }
+  }
+
+  /**
+   * Reproduce la Evidencia de F10-02 (fase15:230) tal cual: fixed_price=800,
+   * base_price=0 -> deploy sin cambios (base_price=0 no matchea) -> sube
+   * base_price -> ANTES del gateo, el redeploy pisaba fixed_price a NULL.
+   */
+  it(
+    'customer_rates: una tarifa fija legacy (base_price=0 al momento del primer deploy) NO se convierte en el redeploy tras subir el precio base',
+    async () =>
+      withIsolatedTestDb('d07_customer_rates', async (db, url) => {
+        // 1) Deploy inicial -- crea las tablas Y registra schema_migrations
+        //    version=60 (a diferencia del resto de este archivo, acá importa).
+        await applyTenantSchema(url);
+
+        // 2) Estado legacy: cliente + recurso con base_price=0 (el catálogo
+        //    real no tenía precio cargado todavía) + tarifa fija creada
+        //    ANTES del 22/08/2026 (created_at explícito, retroactivo a
+        //    propósito). Usa los seeds compartidos de helpers/seed.ts para
+        //    customer_number/location_id (NOT NULL sin default, ver su
+        //    propio docblock) -- no repite esas columnas a mano acá.
+        const customer = await seedCustomer(db);
+        const category = await seedCategory(db);
+        const resource = await seedResource(db, category.id, { basePrice: 0 });
+        await db.query(
+          `INSERT INTO customer_rates (id, business_id, customer_id, resource_id, fixed_price, created_at)
+           VALUES ('cr-d07-1', 'biz-d07-1', $1, $2, 800, '2026-01-01T00:00:00Z')`,
+          [customer.id, resource.id],
+        );
+
+        // 3) Operación normal de catálogo: el precio base pasa a tener valor real.
+        await db.query(`UPDATE resources SET base_price = 1000 WHERE id = $1`, [resource.id]);
+
+        // 4) Redeploy -- MISMO CURRENT_SCHEMA_VERSION, schema_migrations ya
+        //    tiene la fila de la versión 60 (paso 1). Antes del gateo, este
+        //    paso convertía fixed_price=800 -> discount_percentage=20, NULL.
+        await applyTenantSchema(url);
+
+        const { rows } = await db.query<{ fixed_price: string | null; discount_percentage: string | null }>(
+          `SELECT fixed_price, discount_percentage FROM customer_rates WHERE id = 'cr-d07-1'`,
+        );
+        expect(rows[0]?.fixed_price).toBe('800.00');
+        expect(rows[0]?.discount_percentage).toBeNull();
+      }),
+    60_000,
+  );
+
+  it(
+    'invoices.afip_contacted: una fila FAILED_UNCERTAIN creada DESPUÉS del primer deploy no se revierte en el redeploy (F10-16)',
+    async () =>
+      withIsolatedTestDb('f10_16_invoices', async (db, url) => {
+        // 1) Deploy inicial -- registra schema_migrations version=60. Nada
+        //    para tocar todavía (la tabla invoices está vacía).
+        await applyTenantSchema(url);
+
+        // 2) Fila creada DESPUÉS del primer deploy, con el mismo estado que
+        //    el backfill original corregía: FAILED_UNCERTAIN,
+        //    afip_contacted=TRUE, error_message que matchea el patrón.
+        //    seedCustomer() resuelve customer_number (NOT NULL sin default).
+        const customer = await seedCustomer(db);
+        await db.query(
+          `INSERT INTO financial_transactions (id, business_id, customer_id, type, amount)
+           VALUES ('ft-f1016-1', 'biz-f1016-1', $1, 'CHARGE', 100)`,
+          [customer.id],
+        );
+        await db.query(
+          `INSERT INTO invoices (
+             id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
+             pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
+             imp_neto, imp_iva, imp_total, status, afip_contacted, error_message
+           ) VALUES (
+             'inv-f1016-1', 'biz-f1016-1', 'ft-f1016-1', $1, 'idem-f1016-1', 'homologacion',
+             1, 6, 1, 99, '0', 5,
+             100, 21, 121, 'FAILED_UNCERTAIN', TRUE, 'no se pudo consultar FECompUltimoAutorizado: timeout'
+           )`,
+          [customer.id],
+        );
+
+        // 3) Redeploy -- antes del gateo, esto pisaba afip_contacted a FALSE
+        //    (habilitando un reintento automático) sin que nadie lo pidiera.
+        await applyTenantSchema(url);
+
+        const { rows } = await db.query<{ afip_contacted: boolean }>(
+          `SELECT afip_contacted FROM invoices WHERE id = 'inv-f1016-1'`,
+        );
+        expect(rows[0]?.afip_contacted).toBe(true);
+      }),
+    60_000,
+  );
+
+  it(
+    'reservation_lines: una reserva sin líneas creada DESPUÉS del primer deploy no recibe líneas fabricadas en el redeploy (F10-17)',
+    async () =>
+      withIsolatedTestDb('f10_17_reservation_lines', async (db, url) => {
+        // 1) Deploy inicial -- registra schema_migrations version=60. No hay
+        //    reservas todavía, el loop del backfill no encuentra nada.
+        await applyTenantSchema(url);
+
+        // 2) Reserva creada DESPUÉS del primer deploy, sin reservation_lines
+        //    -- mismo estado que el docblock del backfill describe para una
+        //    reserva legacy restaurada o un camino que salta syncLines().
+        //    seedReservation() resuelve reservation_number/deposit_amount
+        //    (NOT NULL sin default) y NO inserta reservation_lines -- ese es
+        //    justo el estado que este test necesita reproducir.
+        const customer = await seedCustomer(db);
+        const category = await seedCategory(db);
+        const resource = await seedResource(db, category.id, { basePrice: 500 });
+        const reservation = await seedReservation(db, resource.id, customer.id, {
+          startTime: new Date('2026-09-20T10:00:00Z'),
+          endTime: new Date('2026-09-22T10:00:00Z'),
+          totalPrice: 1000,
+        });
+
+        // 3) Redeploy -- antes del gateo, esto fabricaba 2 reservation_lines
+        //    (una aproximación por noche) que nadie pidió.
+        await applyTenantSchema(url);
+
+        const { rows } = await db.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM reservation_lines WHERE reservation_id = $1`,
+          [reservation.id],
+        );
+        expect(rows[0]?.count).toBe('0');
+      }),
+    60_000,
+  );
 });

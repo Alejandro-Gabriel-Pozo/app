@@ -516,7 +516,27 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // como 409 desde antes, hasta ahora fantasma), el case 409 en
 // `error.middleware.ts::domainErrorStatus()`, y el catch de la violación
 // real `23505` en `resources.routes.ts` (POST y PUT), mismo commit.
-export const CURRENT_SCHEMA_VERSION = 59;
+// v60 (16/09/2026): D-07(c) (docs/auditoria-integral-fase15-2026-09-16.md,
+// opción (c) del dueño) -- inventario completo de las 21 sentencias DML de
+// schema.sql (docs/inventario-dml-schema-2026-09-16.md): 18 son
+// auto-limitantes por diseño (columna que pasa a NOT NULL, CHECK
+// equivalente, columna dropeada, o `ON CONFLICT`/`NOT EXISTS` sobre una
+// clave natural) y quedan sin tocar. Las 3 con condición de disparo
+// abierta -- el backfill de `customer_rates` (D-07/F10-02: tarifa fija ->
+// %), el de `invoices.afip_contacted` (F10-16) y el de
+// `reservation_lines` (F10-17) -- se gatean por esta versión, mismo
+// patrón que el backfill de `is_exclusive`/`is_exclusive_resource`
+// (schema_migrations version=42, más arriba). Los 3 comparten un único
+// número de versión a propósito,
+// mismo precedente que v42. Medido antes de gatear, vía MCP Neon
+// `run_sql` (solo lectura, Apéndices B/D de
+// docs/decisiones-plan-integral-2026-09-16.md): 0 filas candidatas y 0
+// filas ya convertidas en `customer_rates`, en el 100% de los 2 tenants
+// reales existentes -- gatear D-07 no deja ninguna corrección pendiente
+// sin aplicar. F10-16/F10-17 no se midieron contra Postgres real (severidad
+// Baja, sin decisión de negocio pendiente) -- residuo registrado en
+// docs/pendientes-2026-09-12.md.
+export const CURRENT_SCHEMA_VERSION = 60;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
