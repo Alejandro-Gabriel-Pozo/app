@@ -33,6 +33,30 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
+- **`5fb2487`** (Wave 1 / D-21, plan de ejecución integral, 16/09/2026) —
+  `seedResource()` (`src/tests/integration/helpers/seed.ts:93`) ya no
+  defaultea a `'Habitación 101'` fijo (colisionaba con
+  `uq_resources_name`, schema v59) — ahora usa
+  `` `Habitación ${randomUUID().slice(0, 8)}` ``, único por llamada.
+  Gateado (`architecture-governor`, APPROVED WITH CONDITIONS, ambas
+  cumplidas en el commit), típecheck/lint/lint:arch/suite unitaria
+  verdes — pero **sin `TEST_DATABASE_URL` en este entorno, la corrida
+  real contra Postgres (objetivo 382/0 — 380 del baseline de Fase 15 +
+  2 tests nuevos de `helpers/seed.test.ts`) no se ejecutó.** Acción
+  puntual: `TEST_DATABASE_URL=... npm run test:integration` y confirmar
+  `Test Files … / Tests …` en 0 fallos. Si algo queda rojo, distinguir
+  si es una falla NUEVA o una de las 227 que D-21 (Fase 15) ya advertía
+  que nadie puede asegurar hoy (`seedResource()` tapaba el resto del
+  `beforeAll` en 145/153 fallas medidas). **Relacionado con el ítem
+  `073a8d4` de más abajo** (el mismo `uq_resources_name` nunca corrió
+  contra Postgres real) — esta corrida, si sale verde, confirma también
+  el `23505`/409 `RESOURCE_NAME_CONFLICT` de ese ítem en el camino feliz
+  del seed, pero NO cubre el escenario que `073a8d4` pide (dos recursos
+  con nombres normalizados iguales insertados a propósito) — no cerrar
+  `073a8d4` solo con esta corrida, son pruebas distintas del mismo
+  índice. Tampoco cubre F13-02 (una BD por archivo de test, resultados
+  potencialmente order-dependent) — finding separado, sin bloque
+  asignado todavía.
 - **Fase 2 de la auditoría, 5 bloques (15/09/2026) — verificaciones contra
   Postgres real, ninguna corrida en este entorno (sin `TEST_DATABASE_URL`)**:
   - **`089ca3e`** (limpieza SSL/migraciones/PDF) — el cambio de SSL en los 3

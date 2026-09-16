@@ -299,3 +299,51 @@ lo que esta tabla propone."*
    enumera fuera de su orden ~35 🔍 + 5 🟢 + ~9 cosmético ≈ 49. Marcarlo como
    estimación, o citar cómo se contó — mismo criterio que el repo ya aplicó al
    incidente 251/253/254 de `CLAUDE.md`.
+
+---
+
+## Apéndice B — Wave 1 (`D-21`) ejecutada: código fijo, corrida real pendiente
+
+**16/09/2026, gate `architecture-governor`, commit `5fb2487` (local, sin pushear).**
+
+`:27` y `:48` (Wave 1) quedan corregidas otra vez, en el mismo sentido que ya
+fijó el A.1: `D-21` sigue **sin poder marcarse "resuelta" a secas**. Lo que
+cambió en este bloque es que el fix de una línea que A.1 pedía **ya se
+aplicó** — `src/tests/integration/helpers/seed.ts:93`, `seedResource()` ahora
+defaultea a `` `Habitación ${randomUUID().slice(0, 8)}` `` en vez de
+`'Habitación 101'` fijo — y quedó anclado con un test nuevo
+(`src/tests/integration/helpers/seed.test.ts`, 2 casos, mismo patrón
+`describe.skipIf(skipIfNoDb)` del resto de `src/tests/integration/`).
+
+**Verificado en este bloque:** `tsc --noEmit`, `eslint --max-warnings 0`,
+`lint:arch` (dependency-cruiser) y la suite unitaria completa (173 archivos,
+2432 tests) — todos verdes. Cero call sites de `seedResource()` (55 en
+`src/tests/integration/`) pasan `name` explícito, así que el default nuevo
+alcanza a todos. Los 3 archivos que mencionan el literal viejo
+(`reservations.routes.test.ts`, `resources.routes.test.ts`,
+`email.handlers.test.ts`) usan fakes/fixtures propios, confirmados
+independientes de este helper.
+
+**No verificado, y no verificable en este entorno:** el objetivo real de
+`D-21` — 380/0 tests de integración contra Postgres real (382/0 contando los
+2 tests nuevos) — porque este entorno no tiene `TEST_DATABASE_URL`. Residuo
+registrado en `docs/pendientes-2026-09-12.md`, bullet `5fb2487` bajo
+`## 🔍 Verificaciones pendientes`, con la acción puntual que lo cierra y la
+distinción explícita frente al ítem `073a8d4` (mismo índice
+`uq_resources_name`, pregunta distinta: `073a8d4` pide sembrar dos nombres
+iguales a propósito y confirmar el `23505`/409, esta corrida solo confirma
+que el *camino feliz* del seed no colisiona más consigo mismo).
+
+**Efecto sobre lo que `D-21` bloqueaba (A.3):** las Waves 5, 6, 9 (parcial),
+10, 8 (`D-11`) y 15 (`D-12`) quedan desbloqueadas para **arrancar** — el gate
+de esta Wave 1 es lo que las habilitaba, no la corrida verde de Postgres. Pero
+ninguna de ellas puede darse por **finalizada** citando `D-21` como evidencia
+de que la suite de integración corre limpia — esa evidencia todavía no existe.
+Cuando alguien corra `TEST_DATABASE_URL=... npm run test:integration` y
+confirme 382/0 (o triage lo que quede rojo, distinguiendo falla nueva de una
+de las 227 que Fase 15 ya advertía sin diagnosticar), el bullet se corta de
+`pendientes-2026-09-12.md` y pasa a `docs/resuelto.md` con esa evidencia —
+recién ahí `D-21` puede citarse como cerrada sin matices.
+
+**No pusheado.** Push de `5fb2487` (y de este commit de docs) requiere
+autorización explícita y nueva del dueño, igual que el resto de esta sesión.
