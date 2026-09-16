@@ -431,6 +431,22 @@ CREATE TABLE IF NOT EXISTS reservations (
   customer_email VARCHAR(255),
   start_time     TIMESTAMPTZ     NOT NULL,
   end_time       TIMESTAMPTZ     NOT NULL,
+  -- D-08 (16/09/2026, gate `architecture-governor`, docs/inventario-guards-
+  -- schema-2026-09-16.md, condición C1): este CHECK inline es el SEGUNDO
+  -- sitio que define esta lista de valores -- Postgres le pone
+  -- automáticamente el nombre `reservations_status_check` (mismo nombre
+  -- que el `ALTER TABLE ... ADD CONSTRAINT reservations_status_check` más
+  -- abajo en este archivo, ya gateado por `pg_constraint`). En un tenant
+  -- NUEVO, este `CREATE TABLE` crea la constraint PRIMERO -- el guard de
+  -- más abajo la ve ya existente y nunca vuelve a correr el `ALTER`. Hoy
+  -- las dos definiciones son idénticas (verificado), pero si el día de
+  -- mañana se agrega un valor nuevo a `status`, hay que agregarlo ACÁ
+  -- **y** en el `ALTER` de más abajo -- olvidar uno de los dos deja un
+  -- tenant nuevo con una lista distinta a la de un tenant viejo, en
+  -- silencio. Mismo tipo de riesgo que `chk_stock_movements_movement_type`
+  -- (ver ese comentario), con la diferencia de que acá el segundo sitio
+  -- es el propio `CREATE TABLE`, no otro `ALTER` -- no se puede "excluir
+  -- del guard" sin dejar de gatear también el de más abajo.
   status         VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
                    CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'EXPIRED')),
   party_size     INTEGER         NOT NULL DEFAULT 1 CHECK (party_size >= 1),
@@ -477,11 +493,21 @@ END $$;
 ALTER TABLE reservations ADD COLUMN IF NOT EXISTS adultos INTEGER;
 ALTER TABLE reservations ADD COLUMN IF NOT EXISTS ninos   INTEGER;
 
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_adultos;
-ALTER TABLE reservations ADD CONSTRAINT chk_reservations_adultos CHECK (adultos IS NULL OR adultos >= 1);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_adultos'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_adultos CHECK (adultos IS NULL OR adultos >= 1);
+  END IF;
+END $$;
 
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_ninos;
-ALTER TABLE reservations ADD CONSTRAINT chk_reservations_ninos CHECK (ninos IS NULL OR ninos >= 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_ninos'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_ninos CHECK (ninos IS NULL OR ninos >= 0);
+  END IF;
+END $$;
 
 -- rate_plan_id (18/08/2026, spec de mejoras PMS, punto M) — qué tarifa se
 -- eligió al reservar. NULL = no se eligió una tarifa explícita (sigue
@@ -513,24 +539,43 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_approval_status VARCH
 ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_approved_by     VARCHAR(255);
 ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_charge_amount   DECIMAL(10,2);
 
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_schedule_approval_status;
-ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_approval_status
-  CHECK (schedule_approval_status IS NULL OR schedule_approval_status IN ('PENDING', 'APPROVED', 'REJECTED'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_schedule_approval_status'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_approval_status
+      CHECK (schedule_approval_status IS NULL OR schedule_approval_status IN ('PENDING', 'APPROVED', 'REJECTED'));
+  END IF;
+END $$;
 
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_schedule_charge_amount;
-ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_charge_amount
-  CHECK (schedule_charge_amount IS NULL OR schedule_charge_amount >= 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_schedule_charge_amount'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_charge_amount
+      CHECK (schedule_charge_amount IS NULL OR schedule_charge_amount >= 0);
+  END IF;
+END $$;
 
 -- EXPIRED (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
 -- C1-Fase A) — estado terminal nuevo, distinto de CANCELLED: una reserva
 -- que venció su hold sin cobrar la seña (worker nuevo,
 -- reservation-hold-expiry.worker.ts), no una decisión de cancelar. Para
 -- tenant DBs creadas antes de este cambio, el CHECK del CREATE TABLE de
--- arriba no se re-ejecuta (CREATE TABLE IF NOT EXISTS) -- hace falta el
--- ALTER explícito.
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS reservations_status_check;
-ALTER TABLE reservations ADD CONSTRAINT reservations_status_check
-  CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'EXPIRED'));
+-- arriba no se re-ejecuta (CREATE TABLE IF NOT EXISTS) -- hace falta este
+-- ALTER explícito, gateado por `pg_constraint` desde D-08 (16/09/2026,
+-- ver el comentario junto al CHECK inline del CREATE TABLE de arriba: ese
+-- es el SEGUNDO sitio que define esta misma lista de valores, para
+-- tenants nuevos -- agregar un valor nuevo acá sin agregarlo también ahí
+-- deja las dos definiciones divergentes en silencio).
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'reservations_status_check'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT reservations_status_check
+      CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'EXPIRED'));
+  END IF;
+END $$;
 
 -- deposit_amount/deposit_due_by (C1-Fase A) — seña/depósito. deposit_amount
 -- se resuelve UNA VEZ al crear la reserva (jerarquía ítem>categoría>bucket>
@@ -560,9 +605,14 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_due_by TIMESTAMPTZ;
 UPDATE reservations SET deposit_amount = 0 WHERE deposit_amount IS NULL;
 ALTER TABLE reservations ALTER COLUMN deposit_amount SET NOT NULL;
 
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_deposit_amount;
-ALTER TABLE reservations ADD CONSTRAINT chk_reservations_deposit_amount
-  CHECK (deposit_amount >= 0 AND deposit_amount <= total_price);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_deposit_amount'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_deposit_amount
+      CHECK (deposit_amount >= 0 AND deposit_amount <= total_price);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_reservations_deposit_due_by
   ON reservations (deposit_due_by) WHERE deposit_due_by IS NOT NULL AND status = 'PENDING';
@@ -821,18 +871,28 @@ ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS rate_catalog_id VARCHAR(255)
 --   A) fixed_price       -- monto fijo ad hoc
 --   B) discount_percentage -- % ad hoc, propio de la fila
 --   C) rate_catalog_id   -- % resuelto en vivo desde el catálogo
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_pricing_mode;
-ALTER TABLE customer_rates
-  ADD CONSTRAINT chk_customer_rate_pricing_mode CHECK (
-    (CASE WHEN fixed_price          IS NOT NULL THEN 1 ELSE 0 END +
-     CASE WHEN discount_percentage  IS NOT NULL THEN 1 ELSE 0 END +
-     CASE WHEN rate_catalog_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
-  );
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_customer_rate_pricing_mode'
+  ) THEN
+    ALTER TABLE customer_rates
+      ADD CONSTRAINT chk_customer_rate_pricing_mode CHECK (
+        (CASE WHEN fixed_price          IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN discount_percentage  IS NOT NULL THEN 1 ELSE 0 END +
+         CASE WHEN rate_catalog_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
+      );
+  END IF;
+END $$;
 
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_discount_percentage;
-ALTER TABLE customer_rates
-  ADD CONSTRAINT chk_customer_rate_discount_percentage
-    CHECK (discount_percentage IS NULL OR (discount_percentage > 0 AND discount_percentage <= 100));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_customer_rate_discount_percentage'
+  ) THEN
+    ALTER TABLE customer_rates
+      ADD CONSTRAINT chk_customer_rate_discount_percentage
+        CHECK (discount_percentage IS NULL OR (discount_percentage > 0 AND discount_percentage <= 100));
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- Backfill: tarifas fijas cargadas ANTES de que existiera el % (decisión
@@ -1167,39 +1227,59 @@ ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFER
 ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
 ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
 
-ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_bucket;
-ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_bucket
-  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_rate_catalog_bucket'
+  ) THEN
+    ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_bucket
+      CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+  END IF;
+END $$;
 
 -- Reemplaza chk_rate_catalog_target (2 vías) -- ya no tiene sentido con
 -- 5 columnas de scope posibles.
 ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_target;
-ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_scope;
-ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_scope CHECK (
-  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
-);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_rate_catalog_scope'
+  ) THEN
+    ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_scope CHECK (
+      (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+    );
+  END IF;
+END $$;
 
 ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
 ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
 ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
 
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_bucket;
-ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_bucket
-  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_customer_rate_bucket'
+  ) THEN
+    ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_bucket
+      CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+  END IF;
+END $$;
 
 ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_target;
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_scope;
-ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_scope CHECK (
-  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
-);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_customer_rate_scope'
+  ) THEN
+    ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_scope CHECK (
+      (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+    );
+  END IF;
+END $$;
 
 -- Un único override ACTIVO por cliente+valor exacto de scope -- mismo
 -- criterio que los 2 índices de resource/service ya existentes arriba,
@@ -1250,9 +1330,14 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS product_type VARCHAR(20);
 UPDATE products SET product_type = 'RETAIL' WHERE product_type IS NULL;
 ALTER TABLE products ALTER COLUMN product_type SET NOT NULL;
 ALTER TABLE products ALTER COLUMN product_type SET DEFAULT 'RETAIL';
-ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_product_type;
-ALTER TABLE products ADD CONSTRAINT chk_products_product_type
-  CHECK (product_type IN ('RAW_MATERIAL', 'COMPOSITE', 'RETAIL'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_product_type'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_product_type
+      CHECK (product_type IN ('RAW_MATERIAL', 'COMPOSITE', 'RETAIL'));
+  END IF;
+END $$;
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS assemble_on_demand BOOLEAN NOT NULL DEFAULT FALSE;
 
@@ -1261,9 +1346,14 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS assemble_on_demand BOOLEAN NOT NUL
 -- confiar solo en la validación de RecipeService (defensa en profundidad,
 -- mismo criterio que chk_products_assemble_on_demand con recipe_items más
 -- abajo).
-ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_assemble_on_demand;
-ALTER TABLE products ADD CONSTRAINT chk_products_assemble_on_demand
-  CHECK (assemble_on_demand = FALSE OR product_type = 'COMPOSITE');
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_assemble_on_demand'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_assemble_on_demand
+      CHECK (assemble_on_demand = FALSE OR product_type = 'COMPOSITE');
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_products_type ON products (product_type) WHERE product_type != 'RETAIL';
 
@@ -1463,16 +1553,26 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS company_product_id VARCHAR(255);
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS price_override_status VARCHAR(24)
   NOT NULL DEFAULT 'INACTIVO';
-ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_price_override_status;
-ALTER TABLE products ADD CONSTRAINT chk_products_price_override_status
-  CHECK (price_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_price_override_status'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_price_override_status
+      CHECK (price_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+  END IF;
+END $$;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS price_pending_master_value DECIMAL(10,2);
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS recipe_override_status VARCHAR(24)
   NOT NULL DEFAULT 'INACTIVO';
-ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_recipe_override_status;
-ALTER TABLE products ADD CONSTRAINT chk_products_recipe_override_status
-  CHECK (recipe_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_recipe_override_status'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_recipe_override_status
+      CHECK (recipe_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+  END IF;
+END $$;
 -- snapshot de la receta canónica nueva a revisar -- mismo patrón que
 -- order_items.stock_snapshot (Fase 3 del carve-out de inventario, BLOQUE
 -- 17): una lista completa es más simple de guardar como JSON que modelar
@@ -1830,16 +1930,21 @@ UPDATE stock_movements SET location_id = 'loc-default'
 -- Mismo espíritu polimórfico que chk_order_item_polymorphic (BLOQUE 4):
 -- TRANSFER usa el par origen/destino y nunca location_id; el resto de los
 -- tipos usa location_id y nunca el par.
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_location;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_location CHECK (
-  (movement_type = 'TRANSFER'
-    AND location_id IS NULL
-    AND from_location_id IS NOT NULL AND to_location_id IS NOT NULL
-    AND from_location_id != to_location_id)
-  OR (movement_type != 'TRANSFER'
-    AND location_id IS NOT NULL
-    AND from_location_id IS NULL AND to_location_id IS NULL)
-);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_stock_movements_location'
+  ) THEN
+    ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_location CHECK (
+      (movement_type = 'TRANSFER'
+        AND location_id IS NULL
+        AND from_location_id IS NOT NULL AND to_location_id IS NOT NULL
+        AND from_location_id != to_location_id)
+      OR (movement_type != 'TRANSFER'
+        AND location_id IS NOT NULL
+        AND from_location_id IS NULL AND to_location_id IS NULL)
+    );
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_stock_movements_location ON stock_movements (location_id) WHERE location_id IS NOT NULL;
 
@@ -1856,10 +1961,15 @@ ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS waste_reason_id VARCHAR(255
 
 -- (CHECK de movement_type consolidado más abajo, ver nota "Fase 3".)
 
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_waste_requires_reason;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_waste_requires_reason CHECK (
-  movement_type != 'WASTE' OR waste_reason_id IS NOT NULL
-);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_waste_requires_reason'
+  ) THEN
+    ALTER TABLE stock_movements ADD CONSTRAINT chk_waste_requires_reason CHECK (
+      movement_type != 'WASTE' OR waste_reason_id IS NOT NULL
+    );
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_stock_movements_waste_reason
   ON stock_movements (waste_reason_id) WHERE waste_reason_id IS NOT NULL;
@@ -1942,14 +2052,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution_varia
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS consumption_destination_id VARCHAR(255)
   REFERENCES consumption_destinations(id) ON DELETE RESTRICT;
 
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_consumption_requires_destination;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_consumption_requires_destination CHECK (
-  movement_type != 'CONSUMPTION' OR consumption_destination_id IS NOT NULL
-);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_consumption_requires_destination'
+  ) THEN
+    ALTER TABLE stock_movements ADD CONSTRAINT chk_consumption_requires_destination CHECK (
+      movement_type != 'CONSUMPTION' OR consumption_destination_id IS NOT NULL
+    );
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_stock_movements_consumption_destination
   ON stock_movements (consumption_destination_id) WHERE consumption_destination_id IS NOT NULL;
 
+-- EXCLUIDA a propósito del guard `pg_constraint` de D-08 (16/09/2026,
+-- docs/inventario-guards-schema-2026-09-16.md) -- a diferencia de toda
+-- otra CHECK de este archivo, esta se redefinió bajo el MISMO nombre 3
+-- veces desde que se creó (verificado con `git log -L` sobre este rango
+-- de línea: el enum creció de 5 a 9 valores según se agregaron TRANSFER,
+-- WASTE, PRODUCTION y CONSUMPTION). El comentario de arriba (28/08/2026)
+-- ya narra el incidente real que produjo esa última redefinición -- un
+-- guard `IF NOT EXISTS (SELECT ... WHERE conname = ...)` acá dejaría a
+-- cualquier tenant que todavía tenga una versión vieja de esta constraint
+-- (con menos valores permitidos) atascado para siempre, sin volver a
+-- recibir la definición nueva. Si algún día se necesita otro valor de
+-- movement_type, mismo criterio que v56: nombre nuevo, no reusar este.
 ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
 ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
   CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE', 'PRODUCTION', 'CONSUMPTION'));
@@ -2799,13 +2926,23 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_out_time TIM
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_deposit_percentage DECIMAL(5,2);
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS deposit_hold_hours INTEGER;
 
-ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_default_deposit_percentage;
-ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_default_deposit_percentage
-  CHECK (default_deposit_percentage IS NULL OR (default_deposit_percentage > 0 AND default_deposit_percentage <= 100));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_business_profile_default_deposit_percentage'
+  ) THEN
+    ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_default_deposit_percentage
+      CHECK (default_deposit_percentage IS NULL OR (default_deposit_percentage > 0 AND default_deposit_percentage <= 100));
+  END IF;
+END $$;
 
-ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_deposit_hold_hours;
-ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_deposit_hold_hours
-  CHECK (deposit_hold_hours IS NULL OR deposit_hold_hours > 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_business_profile_deposit_hold_hours'
+  ) THEN
+    ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_deposit_hold_hours
+      CHECK (deposit_hold_hours IS NULL OR deposit_hold_hours > 0);
+  END IF;
+END $$;
 
 -- Perfil fiscal del negocio (18/08/2026, Facturación Electrónica AFIP,
 -- Fase 1 -- pendientes-2026-08-18.md). Exactamente el ALTER TABLE que el
@@ -3154,8 +3291,13 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS reservation_number_prefix 
 -- CondicionIvaReceptorId (afip-catalog.constants.ts): confirmar en vivo
 -- contra el SDK antes de usarlo en un comprobante real.
 ALTER TABLE products ADD COLUMN IF NOT EXISTS iva_rate NUMERIC(5,2);
-ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_iva_rate;
-ALTER TABLE products ADD CONSTRAINT chk_products_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_iva_rate'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+  END IF;
+END $$;
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS unit VARCHAR(20);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS arca_unit_code SMALLINT;
@@ -3171,8 +3313,13 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS arca_unit_code SMALLINT;
 -- default del negocio vigente EN ESE MOMENTO, igual que hoy (ver
 -- InvoiceService.resolveIvaGroups()).
 ALTER TABLE order_items ADD COLUMN IF NOT EXISTS iva_rate NUMERIC(5,2);
-ALTER TABLE order_items DROP CONSTRAINT IF EXISTS chk_order_items_iva_rate;
-ALTER TABLE order_items ADD CONSTRAINT chk_order_items_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_order_items_iva_rate'
+  ) THEN
+    ALTER TABLE order_items ADD CONSTRAINT chk_order_items_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- D7 (22/08/2026, pendientes-2026-08-19.md sección D) -- reportes POS/CRM.
@@ -3583,9 +3730,14 @@ END $$;
 -- negocio como el resto de esta tabla.
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS maintenance_horizon_days INTEGER NOT NULL DEFAULT 30;
 
-ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_maintenance_horizon_days;
-ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_maintenance_horizon_days
-  CHECK (maintenance_horizon_days >= 0);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_business_profile_maintenance_horizon_days'
+  ) THEN
+    ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_maintenance_horizon_days
+      CHECK (maintenance_horizon_days >= 0);
+  END IF;
+END $$;
 
 -- reservations.needs_maintenance_review -- una reserva nueva cuyo recurso
 -- tiene una maintenance_window ABIERTA pero la fecha pedida cae MÁS ALLÁ
@@ -3683,12 +3835,38 @@ END $$;
 --     AND tstzrange(r1.start_time, r1.end_time, '[)') && tstzrange(r2.start_time, r2.end_time, '[)')
 --   JOIN resources res ON res.id = r1.resource_id
 --   JOIN resource_categories rc ON rc.id = res.category_id AND rc.is_exclusive;
-ALTER TABLE reservations DROP CONSTRAINT IF EXISTS reservations_no_overlap_exclusive;
-ALTER TABLE reservations ADD CONSTRAINT reservations_no_overlap_exclusive
-  EXCLUDE USING gist (
-    resource_id WITH =,
-    tstzrange(start_time, end_time, '[)') WITH &&
-  ) WHERE (status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource);
+--
+-- Guard `pg_constraint` (D-08, 16/09/2026, docs/auditoria-integral-fase15-
+-- 2026-09-16.md; docs/inventario-guards-schema-2026-09-16.md) en vez del
+-- `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` incondicional de antes --
+-- mismo patrón que v51 (ver `chk_cancellation_policy_policy_resolution_timing`
+-- más arriba en este archivo), extendido acá a un `EXCLUDE` en vez de un
+-- `CHECK`: el `SELECT 1 FROM pg_constraint` funciona igual para cualquier
+-- `contype`. Medido (F10-01, PostgreSQL 16.13, 200 000 reservas): el
+-- `DROP+ADD` incondicional de este único `EXCLUDE` tardaba ~16 de los
+-- ~50 s que tarda reaplicar `schema.sql` entero contra un tenant grande --
+-- el mayor costo individual de todo el archivo. Verificado con
+-- `git log -L <línea>,<línea+N>:src/db/schema.sql` (sigue el contenido
+-- real de ese rango de línea a través de la historia -- un
+-- `git log -p | grep` sobre el archivo entero mezcla contexto de hunks no
+-- relacionados y da falsos positivos, ver docs/inventario-guards-schema-
+-- 2026-09-16.md) que la definición de este `EXCLUDE` nunca cambió desde
+-- que se introdujo: todas las apariciones son adiciones, nunca una
+-- redefinición bajo el mismo nombre -- guardarlo no deja ningún tenant
+-- con una versión vieja sin actualizar. Si algún día hace falta cambiar
+-- la definición, mismo criterio que v56: nombre nuevo, no reusar
+-- `reservations_no_overlap_exclusive`.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'reservations_no_overlap_exclusive'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT reservations_no_overlap_exclusive
+      EXCLUDE USING gist (
+        resource_id WITH =,
+        tstzrange(start_time, end_time, '[)') WITH &&
+      ) WHERE (status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- reservations.cancellation_policy_snapshot (14/09/2026,
@@ -3803,9 +3981,14 @@ ALTER TABLE customers ALTER COLUMN full_name SET NOT NULL;
 -- también en la base (A8.2), para que ningún otro camino de escritura
 -- pueda saltearla. Cero violaciones verificado contra la BD real.
 -- ---------------------------------------------------------------------------
-ALTER TABLE bookable_services DROP CONSTRAINT IF EXISTS chk_bookable_services_slot_duration;
-ALTER TABLE bookable_services ADD CONSTRAINT chk_bookable_services_slot_duration
-  CHECK (booking_mode <> 'slot' OR duration_minutes IS NOT NULL);
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_bookable_services_slot_duration'
+  ) THEN
+    ALTER TABLE bookable_services ADD CONSTRAINT chk_bookable_services_slot_duration
+      CHECK (booking_mode <> 'slot' OR duration_minutes IS NOT NULL);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- product_variants.sku -- la variante es la unidad real que se vende y se
@@ -3885,13 +4068,23 @@ ALTER TABLE products ALTER COLUMN sku SET NOT NULL;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 ALTER TABLE rate_plans DROP CONSTRAINT IF EXISTS uq_rate_plans_service_name;
-ALTER TABLE rate_plans DROP CONSTRAINT IF EXISTS excl_rate_plans_overlapping_validity;
-ALTER TABLE rate_plans ADD CONSTRAINT excl_rate_plans_overlapping_validity
-  EXCLUDE USING gist (
-    service_id WITH =,
-    upper(btrim(name)) WITH =,
-    daterange(valid_from, valid_to + 1, '[)') WITH &&
-  ) WHERE (active = TRUE);
+
+-- Guard `pg_constraint` (D-08, 16/09/2026, mismo criterio que
+-- `reservations_no_overlap_exclusive` más arriba -- ver ese comentario
+-- para el razonamiento completo). Verificado contra la historia completa
+-- de git que esta definición tampoco cambió nunca desde que se introdujo.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'excl_rate_plans_overlapping_validity'
+  ) THEN
+    ALTER TABLE rate_plans ADD CONSTRAINT excl_rate_plans_overlapping_validity
+      EXCLUDE USING gist (
+        service_id WITH =,
+        upper(btrim(name)) WITH =,
+        daterange(valid_from, valid_to + 1, '[)') WITH &&
+      ) WHERE (active = TRUE);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- resource_categories.is_exclusive / bookable_services.booking_mode --
