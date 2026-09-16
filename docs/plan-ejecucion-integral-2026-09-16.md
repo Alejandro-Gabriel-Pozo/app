@@ -347,3 +347,72 @@ recién ahí `D-21` puede citarse como cerrada sin matices.
 
 **No pusheado.** Push de `5fb2487` (y de este commit de docs) requiere
 autorización explícita y nueva del dueño, igual que el resto de esta sesión.
+
+---
+
+## Apéndice C — Wave 2 (`P-01/D-03`) ejecutada: rechazo por actor + endpoints
+## dedicados de catálogo, capa 2 (cerca RBAC) declarada bloque siguiente
+
+**16/09/2026, gate `architecture-governor` en 2 rondas, commits `668e16c`
+(código) + este mismo commit de docs (local, sin pushear).**
+
+`:49` (Wave 2 en la tabla de `§3`) queda ejecutada, con una condición que la
+tabla original no anticipaba. Resumen de las 2 rondas de gate:
+
+**Ronda 1 — HOLD.** El diff inicial implementaba solo la capa 1 (rechazo por
+actor en `tenantMiddleware`, opción "a" de Fase 15) sin la capa 2 que la
+decisión del dueño pedía explícitamente (*"las dos capas, no una sola"*,
+`decisiones-plan-integral-2026-09-16.md:51`), y el análisis de impacto no
+había detectado que `GET /api/categories`/`GET /api/bookable-services`
+(rutas de STAFF alcanzables por `Roles.BOOKING`, que CUSTOMER satisface)
+tenían un consumidor real en el portal — roto (500) desde el 03/07/2026,
+independiente de este fix.
+
+**Entre rondas — investigación más profunda, a pedido explícito del dueño**
+("Siento que estamos parados en una decisión de diseño del negocio. Sé más
+profundo" — no eligió ninguna de las 3 opciones ofrecidas vía
+`AskUserQuestion`, pidió resolver la pregunta de fondo en vez de tratarla
+como una elección arbitraria). Se confirmó que la pregunta no era ambigua:
+el wizard "Nueva reserva" del portal necesita ese catálogo para funcionar.
+Se construyeron 2 endpoints dedicados bajo `/api/customer/*`, mismo patrón
+que `/me/reservations`, y se migró el único consumidor real. El gate, en
+su ronda 2, verificó independientemente que el payload de los 2 endpoints
+nuevos es idéntico campo por campo al que las rutas de staff ya devolvían
+— cero datos nuevos cruzan el borde de actor CUSTOMER, lo que confirma que
+esto era un camino técnico faltante, no una decisión de negocio pendiente.
+
+**Ronda 2 — APPROVED WITH CONDITIONS**, las 3 cumplidas en `668e16c` y en
+el commit de docs que lo acompaña: (1) declarar en el código la divergencia
+deliberada de saltear `CategoryService`/`BookableServiceService` en los 2
+endpoints nuevos (hecho, comentario en `customer.routes.ts`); (2) registrar
+el residuo de verificación real — el test de integración reescrito y el
+wizard del portal nunca corrieron contra un entorno real (hecho, ver
+`docs/resuelto.md` y `## 🔍 Verificaciones pendientes` de
+`pendientes-2026-09-12.md`); (3) fortalecer 2 unit tests para assertar el
+argumento del constructor de los repos (hecho,
+`src/api/routes/customer.routes.test.ts`).
+
+**No ejecutado en esta Wave, declarado bloque siguiente obligatorio — NO
+retirado de la decisión del dueño:** la capa 2 (cerca RBAC molde
+`ESCAPE_ROUTES` que congele el rechazo por actor de `tenantMiddleware` +
+el invariante de que ningún mount `/api/*` de staff se registre antes de
+ese middleware sin allowlist con motivo). El gate, en la ronda 2, amplió
+el alcance real de esa capa 2 con un hallazgo que la matriz de impacto
+original no tenía: 4 mounts `/api/*` viven hoy entre `authenticate()` y
+`tenantMiddleware`, y 2 de ellos (`/api/business/modules`,
+`/api/business/plan-limits`) no tienen ningún `authorize()` y SÍ son
+alcanzables por un token CUSTOMER hoy (`CUSTOMER-STAFF-MOUNT-PRE-TENANT-001`,
+`pendientes-2026-09-12.md`) — preexistente, no introducido por esta Wave,
+pero material de alcance obligatorio para diseñar la capa 2. Ese diseño
+(¿`authorize()` en esos 2 endpoints, o un allowlist explícito tipo
+`PRE_AUTH_API_MOUNTS`?) queda pendiente, junto con la cerca en sí.
+
+**Efecto sobre lo que dependía de Wave 2:** ninguna wave posterior de este
+plan citaba a P-01/D-03 como bloqueante directo, así que no hay
+desbloqueos que declarar acá (a diferencia de la Wave 1/D-21). La Wave 2
+en sí queda "código resuelto, capa 2 pendiente, verificación real
+pendiente" — no "cerrada sin matices".
+
+**No pusheado.** Push de `668e16c` (y de este commit de docs) requiere
+autorización explícita y nueva del dueño, igual que el resto de esta
+sesión.

@@ -57,6 +57,31 @@ cuando se pushea.
   índice. Tampoco cubre F13-02 (una BD por archivo de test, resultados
   potencialmente order-dependent) — finding separado, sin bloque
   asignado todavía.
+- **`668e16c`** (Wave 2 / P-01/D-03, plan de ejecución integral,
+  16/09/2026) — `tenantMiddleware()` rechaza con 403 tokens CUSTOMER en
+  rutas de staff, y 2 endpoints dedicados de catálogo
+  (`GET /api/customer/categories`, `GET /api/customer/bookable-services`)
+  reemplazan el camino roto que usaba el portal. Gate-aprobado en 2
+  rondas, tsc/lint/lint:arch/suite unitaria verdes (incluidas las 7
+  cercas RBAC/arquitectura). **2 verificaciones sin correr en este
+  entorno:**
+  - `TEST_DATABASE_URL=... npx vitest run src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`
+    — confirmar los 4 casos en verde: 403 FORBIDDEN + body exacto
+    (`{code: 'FORBIDDEN', message: '...'}`) + cero escritura cruzada a
+    nombre de B, para las 4 rutas mutantes originales de F5-01.
+  - Abrir el wizard "Nueva reserva" del portal
+    (`/portal/{businessSlug}/cuenta/reservas`) logueado como un cliente
+    real, contra un negocio con categorías y servicios agendables
+    cargados, y confirmar que el `<select>` de categoría se llena y el
+    flujo completo (categoría → servicio → disponibilidad → confirmar)
+    funciona de punta a punta. Sin esta corrida, "el wizard vuelve a
+    funcionar" es lectura de código (repos + queries verificados,
+    contrato de respuesta idéntico al de las rutas de staff que
+    reemplaza), no un hecho observado.
+  Relacionado, no bloqueante: la "capa 2" (cerca RBAC molde
+  `ESCAPE_ROUTES`) que la decisión del dueño pedía junto con el rechazo
+  por actor sigue sin implementar — bloque siguiente declarado, no una
+  verificación de esta corrida.
 - **Fase 2 de la auditoría, 5 bloques (15/09/2026) — verificaciones contra
   Postgres real, ninguna corrida en este entorno (sin `TEST_DATABASE_URL`)**:
   - **`089ca3e`** (limpieza SSL/migraciones/PDF) — el cambio de SSL en los 3
@@ -935,13 +960,78 @@ anteriores.
 
 ## Hallazgos de diseño abiertos, registrados por el gate (15/09/2026)
 
-La mayoría no requiere entorno real — ya confirmados por lectura de código,
-quedan acá (no bajo "Verificaciones pendientes") porque lo que falta es una
-decisión de diseño, no una corrida. **Excepción, desde F5-01 (15/09/2026):**
-esa entrada SÍ tiene corrida real confirmada (suite de integración contra
-Postgres, ver la entrada) — queda igual en esta sección porque lo que falta
-después de esa corrida sigue siendo una decisión de diseño (cuál de los 3
-caminos de fix tomar), no otra verificación.
+Ninguno requiere entorno real — ya confirmados por lectura de código, quedan
+acá (no bajo "Verificaciones pendientes") porque lo que falta es una
+decisión de diseño, no una corrida. **`F5-01` (que sí tuvo corrida real
+confirmada) ya no está en esta lista — resuelto en código en Wave 2 del
+plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
+
+- **`CUSTOMER-STAFF-MOUNT-PRE-TENANT-001` — 2 de los 4 mounts `/api/*`
+  entre `authenticate()` y `tenantMiddleware` son alcanzables hoy por un
+  token CUSTOMER sin ningún `authorize()` (gate `architecture-governor`,
+  Wave 2 / P-01/D-03, ronda 2, 16/09/2026 — encontrado al mapear el
+  alcance real de la "capa 2" pendiente, ver más abajo).** `app.ts` monta
+  `/api/companies`, `/api/auth` (`me.routes.ts`),
+  `/api/business/modules` y `/api/business/plan-limits` ANTES de
+  `tenantMiddleware` — ninguno pasa por el rechazo-por-actor de D-03.
+  `/api/companies` está cubierto (`authorize(Roles.MANAGEMENT)` en las 3
+  rutas). `/api/auth` es deliberado — `me.routes.ts:61` ramifica
+  explícito sobre `role !== UserRole.CUSTOMER`. Pero
+  `/api/business/modules` y `/api/business/plan-limits` **no tienen
+  ningún `authorize()`** y hoy responden con los módulos/límites de plan
+  del negocio del token a CUALQUIER identidad autenticada, incluido
+  CUSTOMER (`docs/rbac-matriz-endpoints.md:427-428` ya los documenta como
+  "cualquier usuario ve los de SU PROPIO negocio" — frase escrita
+  pensando en STAFF, nunca evaluada para el actor CUSTOMER). Preexistente,
+  **no introducido por D-03** — D-03 no cambia nada acá, solo lo hizo
+  visible al mapear qué mounts quedan fuera del rechazo-por-actor.
+  Riesgo: bajo (son GETs de solo lectura de datos ya no sensibles del
+  propio negocio del cliente — módulos contratados, límites de plan — no
+  de otro tenant, el aislamiento entre negocios sigue intacto), pero es
+  exactamente el tipo de hueco que la "capa 2" (ítem siguiente) tiene que
+  cubrir con una cerca, no dejarlo a que alguien lo note leyendo código.
+  Pendiente decidir junto con esa capa 2: ¿agregar `authorize()` a estos
+  2 endpoints, o declararlos deliberadamente abiertos con un allowlist
+  con motivo (mismo criterio que `PRE_AUTH_API_MOUNTS`)?
+
+- **`CUSTOMER-RBAC-ACTOR-FENCE-001` — falta la "capa 2" que la decisión
+  del dueño pidió junto con el rechazo por actor de D-03 (gate
+  `architecture-governor`, Wave 2 / P-01/D-03, ronda 1+2, 16/09/2026).**
+  `docs/decisiones-plan-integral-2026-09-16.md:51`, textual: *"rechazar
+  tokens CUSTOMER en rutas de staff (opción 'a') **y** extender la cerca
+  por actor (molde `ESCAPE_ROUTES` de
+  `credit-note-escape-containment.test.ts`) — las dos capas, no una
+  sola"*. La capa 1 (el rechazo real en `tenantMiddleware`) está
+  implementada y gateada (`668e16c`, ver `docs/resuelto.md`). La capa 2
+  — una cerca de arquitectura que congele (i) que `tenantMiddleware`
+  siga rechazando `role === CUSTOMER`, y (ii) que ningún mount `/api/*`
+  que requiera contexto de staff se registre antes de `tenantMiddleware`
+  sin allowlist con motivo — **no se implementó todavía**. Sin ella, un
+  cambio futuro que reordene mounts en `app.ts`, o que agregue un router
+  de staff nuevo montado antes de `tenantMiddleware` (como ya pasa con
+  `CUSTOMER-STAFF-MOUNT-PRE-TENANT-001`, ítem anterior), puede dejar una
+  ruta de staff nueva fuera del rechazo-por-actor sin que ninguna de las
+  7 cercas RBAC existentes lo note. Alcance sugerido por el gate:
+  incluir en la matriz de impacto los 4 mounts pre-`tenantMiddleware`
+  reales (no solo las 4 rutas mutantes originales de F5-01). Bloque
+  siguiente declarado, no decisión abierta — la capa 2 es obligatoria,
+  falta implementarla.
+
+- **`deleted_at` faltante en `SqlBookableServiceRepository.findAll()`**
+  (gate `architecture-governor`, Wave 2 / P-01/D-03, ronda 2,
+  16/09/2026, observación menor no bloqueante).**
+  `findAll()` (`src/reservas/sql.bookable-service.repository.ts:72-73`)
+  filtra `WHERE active = TRUE` pero no `deleted_at IS NULL`, a
+  diferencia de `SqlCategoryRepository.findAll()` que filtra los dos
+  (`active = TRUE AND deleted_at IS NULL`). Preexistente — no introducido
+  por este bloque — pero ahora tiene un consumidor de cara al cliente
+  (`GET /api/customer/bookable-services`), no solo de staff. Confirmado
+  (`src/db/schema.sql:218`): `bookable_services` SÍ tiene `deleted_at`
+  (agregado por `ALTER TABLE`, mismo criterio que los otros 2 maestros).
+  Verificar si un servicio borrado (no solo desactivado) puede seguir
+  apareciendo hoy en el listado que ve un cliente del portal — y, si
+  puede, si eso ya pasaba para STAFF (mismo `findAll()`) o es nuevo por
+  tener ahora un consumidor de cara al cliente.
 
 - **`CUSTOMER-EMAIL-REQUIRED-001` — escape hatch residual (gate
   `architecture-governor`, bloque email obligatorio de `POST /customers`,
@@ -1006,63 +1096,56 @@ caminos de fix tomar), no otra verificación.
   No se corrige en este bloque — registrado como hallazgo, no como
   condición bloqueante de ningún commit ya hecho.
 
-- **`F5-01` — token CUSTOMER del portal alcanza 4 rutas mutantes de STAFF
-  sin guard de ownership (`docs/auditoria-integral-fase5-2026-09-15.md`
-  §F5-01 + apéndice del gate; reproducido con corrida real contra
-  Postgres, `src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`,
-  gate `architecture-governor` 15/09/2026).** Verificado en código y en
-  runtime: `authenticate()` acepta un JWT CUSTOMER (cookie o header
-  `Authorization: Bearer`, el login del portal devuelve el token en el
-  body — `api/routes/customer.routes.ts:393,427,464`), `authorize(Roles.BOOKING)`
-  lo deja pasar (`CUSTOMER_PERMISSION_GROUPS` incluye `BOOKING`,
-  `security/roles.ts:81-84`), y `requireModule()` también. Las 4 rutas
-  (`POST /api/reservations`, `POST /api/reservations/:id/schedule-request`,
-  `POST /api/orders`, `POST /api/orders/:id/items`) no comparan
-  `req.user.customerId` contra el dueño del recurso en ningún punto —
-  `requireOwnReservation()` vive solo en `customer.routes.ts`, y ninguna
-  de las 5 cercas RBAC existentes mira ownership dentro de routers de
-  staff. Consecuencia si se explotara: un cliente del portal podría crear
-  reservas y órdenes a nombre de otro cliente del mismo negocio, y agregar
-  consumos a la orden de otro huésped.
-  **Corrida real (15/09/2026, re-verificada por el gate con log de
-  servidor):** hoy NO hay bypass de escritura — las 4 rutas devuelven 500
-  antes de tocar la BD del tenant, por dos mecanismos distintos (caso 1:
-  `TypeError` al derefenciar `req.db` indefinido en
-  `reservations.routes.ts:369`; casos 2-4: throw explícito de
-  `buildTenantTransactionManager`, `db/tenant-context.ts:78`, porque
-  `tenantMiddleware` no fija `req.db`/`req.businessId` para tokens
-  CUSTOMER — `platform/tenant.middleware.ts:193-196`, rama pensada para
-  `/api/customer/*`). El test mide (no infiere) que ninguna fila nueva se
-  escribe a nombre del cliente víctima, y deja el objetivo real (403 por
-  ownership) como 4 `it.todo` — el 500 de hoy es un efecto colateral no
-  diseñado, no una protección deliberada.
-  Pendiente: decisión del dueño entre los 3 caminos de
-  `docs/auditoria-integral-fase5-2026-09-15.md` §F5-01 punto 5 (guard de
-  actor en el borde / guard de pertenencia por ruta / partir el grupo
-  `BOOKING`) — **con la matriz de impacto ampliada** que apareció al
-  gatear este bloque (ver ítem siguiente) cerrada primero, porque el fix
-  obvio (poblar `req.db` para CUSTOMER) reabre el bypass de escritura en
-  el mismo cambio que arreglaría el hallazgo de abajo.
-
 - **`CUSTOMER-TOKEN-STAFF-ROUTE-500-001` — el mismo token CUSTOMER
-  alcanza 9 rutas GET más por el mismo mecanismo, una con consumidor real
-  roto en producción (encontrado por el gate `architecture-governor` al
-  verificar F5-01, 15/09/2026, confirmado por camino de código — no
-  observado corriendo contra producción).** 7 rutas GET con
-  `authorize(Roles.BOOKING)` (`bookable-services.routes.ts:129,146,171,208,266`,
-  `resources.routes.ts:342`, `business-hours.routes.ts:27`) y 2 GET de
-  `categories.routes.ts` que no tienen `authorize()` en absoluto reciben
-  el mismo token y el mismo 500 accidental que F5-01. `GET /api/bookable-services`
-  tiene un consumidor real en `appfrontend-main`
-  (`src/lib/customerApi.ts:221`, llamado desde
-  `app/portal/[businessSlug]/cuenta/reservas/page.tsx:112,130`) que hoy
-  recibe ese 500 y lo traga en silencio (`.catch(() => {})`) — el
-  selector de servicios del portal de clientes queda vacío sin ningún
-  error visible al usuario. Pendiente decidir junto con F5-01: el fix
-  que arregla este consumidor (poblar `req.db` para tokens CUSTOMER en
-  rutas de staff) es el mismo cambio que reabriría el bypass de escritura
-  de F5-01 si se hace sin el guard de ownership antes o en el mismo
-  commit — no se corrige en este bloque.
+  alcanza 9 rutas GET más por el mismo mecanismo (encontrado por el gate
+  `architecture-governor` al verificar F5-01, 15/09/2026, confirmado por
+  camino de código).** Las 9: `GET /api/bookable-services` (:129),
+  `GET /api/bookable-services/:id` (:146), `GET
+  /api/bookable-services/:id/schedules` (:171), y 2 más de
+  `bookable-services.routes.ts` (:208, :266) con `authorize(Roles.BOOKING)`;
+  `GET /api/resources` (`resources.routes.ts:342`, ídem);
+  `GET /api/business-hours` (`business-hours.routes.ts:27`, ídem); y 2 GET
+  de `categories.routes.ts` (`GET /`, `GET /:id`) sin `authorize()` en
+  absoluto.
+  **Actualización 1 (Wave 2 del plan de ejecución integral, 16/09/2026,
+  `docs/resuelto.md` — F5-01 resuelto):** `tenantMiddleware()` rechaza
+  CUALQUIER token CUSTOMER con 403 deliberado antes de llegar a una ruta
+  de staff, por actor, no por archivo (`src/platform/tenant.middleware.ts`)
+  — las 9 pasan de 500 accidental a 403 deliberado.
+  **Actualización 2, misma Wave 2 — investigación más profunda, a
+  pedido del dueño ("estamos parados en una decisión de diseño, sé más
+  profundo"):** de las 9, solo 2 (`GET /api/categories`,
+  `GET /api/bookable-services`, ambas la variante LIST, sin `:id`) tenían
+  un consumidor real en el portal — verificado por grep en los dos
+  frontends, no solo inferido. Para esas 2, la pregunta de fondo SÍ se
+  resolvió: **sí, el cliente necesita leer ese catálogo** (es lo que
+  llena el selector de categoría/servicio del wizard "Nueva reserva" del
+  portal — sin él, el cliente no puede reservar por ese camino, venía
+  roto desde el 03/07/2026) — la decisión de diseño no era realmente
+  ambigua, lo que faltaba era el camino correcto. Se construyeron 2
+  endpoints dedicados (`GET /api/customer/categories`,
+  `GET /api/customer/bookable-services`,
+  `src/api/routes/customer.routes.ts`, mismo patrón que
+  `/me/reservations` — repos instanciados sobre `req.db`, ya resuelto por
+  el router del portal, sin pasar por rutas de staff) y se migró el único
+  consumidor real (`appfrontend-main/src/lib/customerApi.ts`,
+  `disponibilidad/page.tsx`, `cuenta/reservas/page.tsx`) a usarlos. **Esas
+  2 rutas quedan resueltas EN CÓDIGO, no solo con el 403** — gate-aprobado
+  (`architecture-governor`, ronda 2), tsc/lint/lint:arch/suite unitaria
+  verdes. **Sin confirmar todavía:** ni el test de integración reescrito
+  (`customer-token-staff-route-ownership.integration.test.ts`) corrió
+  contra Postgres real (sin `TEST_DATABASE_URL` en este entorno), ni se
+  abrió el wizard "Nueva reserva" del portal con un cliente real para
+  confirmar que el selector de categoría se llena — la frase "el wizard
+  vuelve a funcionar" es la lectura de código, no una corrida observada.
+  Residuo registrado en `## 🔍 Verificaciones pendientes` (arriba en este
+  archivo). Las otras 7 (sub-rutas de
+  `bookable-services.routes.ts`, `resources.routes.ts`,
+  `business-hours.routes.ts`) siguen sin consumidor real conocido — quedan
+  con el 403 deliberado de la Actualización 1 nada más, sin decisión de
+  diseño pendiente sobre ellas (nadie las necesita hoy). Si en el futuro
+  el portal necesita alguna, mismo patrón: endpoint dedicado bajo
+  `/api/customer/*`, no reabrir el paso por rutas de staff.
 
 ---
 

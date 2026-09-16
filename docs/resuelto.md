@@ -1544,3 +1544,69 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   fullName: input.fullName, email: input.email }` tras el alta -- eco de
   input, pero fila única sin loop, blast radius chico.
   Origen: `pendientes-2026-09-12.md`.
+
+- **`F5-01`/`D-03` — token CUSTOMER del portal alcanzaba 4 rutas mutantes
+  de STAFF sin guard de ownership** (`docs/auditoria-integral-fase5-2026-09-15.md`
+  §F5-01, `docs/auditoria-integral-fase15-2026-09-16.md` D-03) — ✅
+  **RESUELTO EN CÓDIGO, gate-aprobado en 2 rondas por
+  `architecture-governor` (16/09/2026), commit `668e16c`.**
+  Decisión del dueño (P-01/D-03, `docs/decisiones-plan-integral-2026-09-16.md`):
+  opción (a) de Fase 15 — rechazar tokens CUSTOMER en rutas de staff, **y**
+  extender la protección por ACTOR, no por archivo. `tenantMiddleware()`
+  (`src/platform/tenant.middleware.ts`) ahora responde `403 FORBIDDEN`
+  deliberado para `role === CUSTOMER` ANTES de llegar a cualquier ruta de
+  staff — cubre las 4 rutas del hallazgo original
+  (`POST /api/reservations`, `POST /api/reservations/:id/schedule-request`,
+  `POST /api/orders`, `POST /api/orders/:id/items`) y cualquier otra ruta
+  de staff presente o futura montada después de ese middleware, sin
+  necesidad de un guard por-ruta (opción "b" de Fase 15, descartada por el
+  dueño por más frágil).
+  **Investigación más profunda, a pedido explícito del dueño** ("estamos
+  parados en una decisión de diseño, sé más profundo" — el gate, ronda 1,
+  había encontrado que el mismo rechazo también afectaba a
+  `GET /api/categories`/`GET /api/bookable-services`, rutas de staff con
+  consumidor real en el portal, rotas 500 desde el 03/07/2026
+  independientemente de este fix): la pregunta de fondo no era ambigua —
+  el wizard "Nueva reserva" del portal necesita ese catálogo para
+  funcionar. Se construyeron 2 endpoints dedicados
+  (`GET /api/customer/categories`, `GET /api/customer/bookable-services`,
+  `src/api/routes/customer.routes.ts`, mismo patrón ya establecido de
+  `/me/reservations`) y se migró el único consumidor real
+  (`appfrontend-main/src/lib/customerApi.ts`) a usarlos — el motivo
+  original del 23/08/2026 que dejaba esas 2 rutas de staff sin
+  `authorize()` para el portal ("el portal las necesita logueado") quedó
+  reconciliado en los 3 artefactos que lo describían
+  (`docs/rbac-matriz-endpoints.md:429`, comentario espejo de
+  `categories.routes.ts`, `public-routes.fixture.ts`).
+  **Verificado en este commit:** `tsc --noEmit`, `eslint --max-warnings 0`,
+  `lint:arch`, suite unitaria completa (173 archivos, 2435 tests, incluidas
+  las 7 cercas RBAC/arquitectura del repo — ninguna necesitó tocarse salvo
+  el `hiddenCount` de `rbac-matrix-section2-sync.test.ts`, 7→9, esperado).
+  **2 residuos NO resueltos acá — evidencia de runtime pendiente, no
+  código pendiente:** (a) el test de integración reescrito
+  (`src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`,
+  4 casos, assertan 403 + body exacto + cero escritura) nunca corrió
+  contra Postgres real — sin `TEST_DATABASE_URL` en este entorno; (b) el
+  wizard "Nueva reserva" del portal nunca se abrió con un cliente real
+  para confirmar que el selector de categoría/servicio se llena — la
+  afirmación "el wizard vuelve a funcionar" es lectura de código, no una
+  corrida observada (mismo tipo de brecha que el caso real D6 ya citado
+  en `CLAUDE.md` de este repo: "UI pura" declarado 3 veces sin haber
+  mirado el runtime). Ambos residuos, con ancla y acción puntual, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`.
+  **No resuelto en este commit, declarado explícitamente como bloque
+  siguiente obligatorio, no retirado:** la "capa 2" que la decisión del
+  dueño pedía junto con el rechazo por actor — una cerca RBAC molde
+  `ESCAPE_ROUTES` (`credit-note-escape-containment.test.ts`) que congele
+  (i) que `tenantMiddleware` siga rechazando `role === CUSTOMER`, y (ii)
+  que ningún mount `/api/*` que requiera contexto de staff se registre
+  antes de `tenantMiddleware` sin allowlist con motivo — el gate (ronda 2)
+  encontró que hoy hay 4 mounts así entre `authenticate()` y
+  `tenantMiddleware` (`/api/companies`, `/api/auth`,
+  `/api/business/modules`, `/api/business/plan-limits`), dos de los
+  cuales (`/api/business/modules`, `/api/business/plan-limits`) no tienen
+  ningún `authorize()` y SÍ son alcanzables hoy por un token CUSTOMER —
+  hallazgo preexistente, no introducido por este cambio, registrado en
+  `docs/pendientes-2026-09-12.md` como material de alcance para esa capa 2.
+  Origen: `pendientes-2026-09-12.md`.
