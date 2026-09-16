@@ -1166,6 +1166,35 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   diseño pendiente sobre ellas (nadie las necesita hoy). Si en el futuro
   el portal necesita alguna, mismo patrón: endpoint dedicado bajo
   `/api/customer/*`, no reabrir el paso por rutas de staff.
+- **`route-consumer-coverage` nunca corre en la CI de este repo — propiedad
+  permanente, no una verificación pendiente (Wave 3 / D-23(1), gate
+  `architecture-governor`, 16/09/2026, `2f2a3e7`).**
+  `src/tests/architecture/route-consumer-coverage.test.ts` cruza
+  `docs/inventario-rutas.md` contra el `src/` real de `appfrontend-main` —
+  necesita el código del repo hermano en disco, y
+  `.github/workflows/ci.yml` de este repo solo hace `checkout` de sí
+  mismo (6 ocurrencias, 0 `repository:` a otro repo). No es una corrida
+  que falte por falta de entorno (como las de `## 🔍 Verificaciones
+  pendientes`, arriba) — es una restricción estructural que no se resuelve
+  corriendo algo una vez: la cerca solo corre de verdad en una sesión con
+  los 2 repos clonados lado a lado (`npx vitest run
+  src/tests/architecture/route-consumer-coverage.test.ts`, reproducible en
+  cualquier sesión así, confirmado en esta misma sesión: 3/3 verde). Su
+  allowlist `NO_CONSUMER_ROUTES` puede pudrirse sin que ninguna CI se
+  entere. Decisión pendiente, no encarada en Wave 3: si conviene un job de
+  CI con doble `checkout` (este repo + `appfrontend-main`) para que corra
+  de verdad en automático, o si queda como cerca "de sesión" a propósito.
+- **`GET /platform/businesses/:id` sin consumidor — hallazgo nuevo, no
+  estaba en los 29 de F14-01 (Wave 3 / D-23(1), gate
+  `architecture-governor`, 16/09/2026, `2f2a3e7`).** El panel superadmin
+  lista negocios (`GET /platform/businesses`) y muta por id
+  (`status`/`provision`/`plan`, `appfrontend-main/src/lib/platformApi.ts:104,108,114,120`)
+  pero no tiene pantalla de detalle que pida un negocio puntual — el grep
+  original de F14-01 agrupaba `/platform/businesses/:id/*` sin distinguir
+  la ruta pelada del resto. Registrado en `NO_CONSUMER_ROUTES` de la
+  cerca nueva con motivo, no borrado — la decisión de qué hacer con cada
+  huérfano (incluido este) es "familia por familia", explícitamente
+  diferida por D-23, no una decisión de esta Wave.
 
 ---
 

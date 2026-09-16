@@ -462,3 +462,75 @@ contra un cliente real) y los 2 hallazgos de arriba (ninguno de los 4 es
 
 **No pusheado.** Push de `c1777e5` (y de este commit de docs) requiere
 autorización explícita y nueva del dueño.
+
+---
+
+## Apéndice E — Wave 3 ejecutada: `D-23(1)`/`D-24(1)`/`D-25(1)(2)`
+
+**16/09/2026, gate `architecture-governor` (APPROVED WITH CONDITIONS,
+ambas cumplidas antes de commitear), commits `6edf27d` (D-25) + `2f2a3e7`
+(D-23(1)/D-24(1), código) + este mismo commit de docs (local, sin
+pushear).**
+
+`:50` (fila de la tabla de oleadas, arriba) queda ejecutado -- **pero con
+el encuadre del Apéndice A.4, no el que la fila misma dice.** La fila
+describe D-25(1)(2) como "comentario+cerca HOLD", texto escrito antes de
+que el dueño decidiera desbloquear el resolver fiscal
+(`decisiones-plan-integral-2026-09-16.md:199-206`, P-16 -- "mantener en
+HOLD indefinido" quedó entre las alternativas descartadas). El Apéndice
+A.4 (`:209-228`) ya corregía esto por escrito antes de ejecutar; este
+Apéndice deja constancia de que la ejecución siguió A.4, no `:50` --
+mismo criterio de esta sección: los Apéndices corrigen sin reescribir el
+cuerpo.
+
+**D-25(1)(2):** comentario en `afip-catalog.constants.ts` sobre
+`resolveDocTipo()` con el encuadre correcto ("desbloqueado, todavía sin
+conectar", Wave 14 como destino de la conexión) + 2 tests de
+caracterización en `invoice.service.test.ts` que fijan el comportamiento
+ACTUAL (siempre Consumidor Final) como tripwire, no como cerca de texto
+sobre el fuente -- desviación deliberada de lo que A.4 pedía
+literalmente ("cerca"), decidida porque un test sobre el payload real de
+AFIP es más fuerte que un test sobre un string del código.
+
+**D-23(1):** `src/tests/architecture/route-consumer-coverage.test.ts`
+(nuevo) -- tercer artefacto de la superficie HTTP (qué existe / quién
+puede / quién usa), molde `CLOSURE_MOUNTS`/`PUBLIC_ROUTES`/
+`EXCLUDED_FILES`, documentado en `app-main/CLAUDE.md` sección "Consumo —
+qué ruta usa quién" (undécimo artefacto manual del repo). Corrida real
+contra `appfrontend-main` (los 2 repos están clonados lado a lado en esta
+sesión) encontró 1 hallazgo nuevo no capturado por F14-01:
+`GET /platform/businesses/:id` sin consumidor -- registrado en el
+allowlist de la cerca y en `docs/pendientes-2026-09-12.md`, decisión
+"familia por familia" diferida, no tomada en esta Wave.
+
+**D-24(1):** sección `## Caja (arqueo de efectivo)` nueva en
+`docs/roadmap-pms-multirubro.md` -- el circuito de Caja (backend completo
+desde `672dda5`, cero UI) deja de estar invisible para el roadmap.
+Decisión del dueño (P-15) de completar, no retirar, ya registrada ahí con
+su cita exacta.
+
+**Dos condiciones del gate, ambas cumplidas antes de commitear (no
+después):** (1) el comentario "8 exclusiones" del allowlist de la cerca
+describía mal el conteo (8 familias, 12 paths) -- corregido en el mismo
+texto antes del commit `2f2a3e7`. (2) la cerca solo verificaba 2
+direcciones (huérfano sin declarar / entrada stale con consumidor nuevo)
+-- se agregó una tercera aserción (entrada del allowlist cuya ruta ya no
+existe en el inventario) antes de commitear, mismo criterio que el gate
+exige para todo allowlist manual del repo.
+
+**Verificado antes de cada commit:** `tsc --noEmit` limpio; suite
+completa 174 archivos / 2443 tests verde; `eslint --max-warnings 0`
+limpio; `lint:arch` limpio; la cerca nueva corre (no saltea) en este
+entorno, 3/3.
+
+**Residuos, ninguno bloqueante, registrados en
+`docs/pendientes-2026-09-12.md` (sección "Hallazgos de diseño abiertos"):**
+1. `route-consumer-coverage` nunca corre en la CI de este repo -- propiedad
+   permanente (`ci.yml` no clona `appfrontend-main`), no una verificación
+   pendiente. Decisión no tomada: job de CI con doble `checkout`, o cerca
+   "de sesión" a propósito.
+2. `GET /platform/businesses/:id` sin consumidor -- decisión "familia por
+   familia" diferida por D-23, no de esta Wave.
+
+**No pusheado.** Push de `6edf27d`/`2f2a3e7` (y de este commit de docs)
+requiere autorización explícita y nueva del dueño.

@@ -340,6 +340,45 @@ forma del request/response (`spec.ts` sigue siendo el único con eso, para
 18 de 264 -- corrección 16/09/2026, ver arriba). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
+## Consumo — qué ruta usa quién
+
+Tercera pregunta, distinta de las dos de arriba: `docs/inventario-rutas.md`
+dice qué existe, `docs/rbac-matriz-endpoints.md` + 7 cercas dicen quién
+puede pegarle — hasta el 16/09/2026 nada decía quién la usa de verdad.
+Nació de `docs/auditoria-integral-fase14-2026-09-16.md` F14-01: 35 de 262
+endpoints medidos sin un solo consumidor conocido en `appfrontend-main`,
+sin ningún mecanismo del repo capaz de detectarlo (ni de detectar que la
+lista se desactualice).
+
+**`route-consumer-coverage.test.ts` (Wave 3 / D-23(1), 16/09/2026, gate
+`architecture-governor`, `2f2a3e7`).** Camina el `src/` del repo hermano
+(`appfrontend`/`appfrontend-main`, localizado por convención de path junto
+a este repo, override por `FRONTEND_REPO_DIR`), extrae literales de path
+`/api/...`/`/platform/...` y los cruza contra `docs/inventario-rutas.md`.
+`NO_CONSUMER_ROUTES` es el **undécimo** artefacto manual del repo -- mismo
+criterio que los diez anteriores: allowlist chico, motivo por entrada,
+verificado en tres direcciones (huérfano sin declarar; entrada stale con
+consumidor nuevo; entrada cuya ruta ya no existe en el inventario).
+
+**No corre en la CI de este repo, y es una propiedad permanente, no una
+verificación pendiente.** `.github/workflows/ci.yml` solo hace `checkout`
+de sí mismo -- nunca clona `appfrontend-main`, y un cruce
+inventario×consumidores necesita ese código en disco. `describe.skipIf`
+lo saltea limpio en vez de mentir con un verde vacío (mismo criterio que
+`skipIfNoDb` de `src/tests/integration/helpers/db.ts` para
+`TEST_DATABASE_URL`). Corre de verdad en cualquier sesión con los dos
+repos clonados lado a lado -- el layout que el `CLAUDE.md` raíz de
+"App - frontend/" describe. Sin ese entorno, su allowlist puede pudrirse
+sin que ninguna CI se entere -- residuo registrado en
+`docs/pendientes-2026-09-12.md`.
+
+**Lo que NO garantiza:** cruza por PATH normalizado, no por método HTTP
+(`/api/foo` con GET+POST y el frontend usando solo GET cuenta como "con
+consumidor" igual); no ve clientes fuera de `appfrontend-main` (mismo
+límite ya declarado por F14-01); un literal de path armado por
+concatenación dinámica no trivial es invisible (mismo criterio que
+`api-auth-gate-order.test.ts` declara para sus propios mounts).
+
 ## Pendientes — revalidar antes de arrastrar
 
 **Auditoría del 01/09/2026:** de 28 ítems abiertos de
