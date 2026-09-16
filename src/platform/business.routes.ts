@@ -26,7 +26,7 @@
  * **Fail-open a propósito:** si el aprovisionamiento falla (rate limit de
  * Neon, API caída), el negocio queda PENDING — el mismo estado que era el
  * único resultado posible antes de este cambio, no un modo de falla nuevo.
- * `set-tenant-url`/`repair-tenant-db` (admin.routes.ts) siguen andando
+ * `set-tenant-url` (admin.routes.ts) sigue andando
  * igual que siempre como red de seguridad manual, y
  * POST /platform/businesses/:id/provision permite reintentar desde el
  * panel de superadmin sin tocar la base.

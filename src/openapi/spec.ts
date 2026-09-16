@@ -150,41 +150,6 @@ export const openApiSpec = {
     },
 
     // -------------------------------------------------------------------------
-    // Admin — mantenimiento
-    // -------------------------------------------------------------------------
-    '/api/admin/repair-tenant-db': {
-      post: {
-        summary: 'Activar BD del negocio (uso único)',
-        description:
-          'Cifra la `DATABASE_URL` del proceso con `DB_ENCRYPTION_KEY` y la ' +
-          'persiste en la BD central, activando el negocio del usuario autenticado.\n\n' +
-          '⚠️ **Uso único** — ejecutar una sola vez para negocios sembrados por SQL. No requiere body.',
-        tags: ['Admin'],
-        security: [{ BearerAuth: [] }],
-        responses: {
-          '200': {
-            description: 'Negocio activado correctamente',
-            content: {
-              'application/json': {
-                example: { message: 'Negocio biz-demo-01 activado y apuntado a DATABASE_URL.' },
-              },
-            },
-          },
-          '401': { $ref: '#/components/responses/Unauthorized' },
-          '403': { $ref: '#/components/responses/Forbidden' },
-          '500': {
-            description: 'DATABASE_URL o DB_ENCRYPTION_KEY no definidas',
-            content: {
-              'application/json': {
-                example: { code: 'MISSING_DATABASE_URL', message: 'DATABASE_URL no está definida en este proceso.' },
-              },
-            },
-          },
-        },
-      },
-    },
-
-    // -------------------------------------------------------------------------
     // Recursos
     // -------------------------------------------------------------------------
     '/api/resources': {

@@ -130,9 +130,10 @@ mismo. Crea la identity (o reusa una existente si el email/password
 coinciden), el negocio, el rol OWNER "sistema", y la membership, todo en
 una transacción con rollback si algo falla. **Pero el negocio queda en
 estado `PENDING`** — el aprovisionamiendo real de la base de datos del
-tenant (completar `db_url_encrypted`) sigue siendo un paso manual (los
-endpoints admin `repair-tenant-db`/`set-tenant-url` mencionados en
-`pendientes-2026-08-14.md` sección F2). Hay variables `SUPABASE_ACCESS_TOKEN`/
+tenant (completar `db_url_encrypted`) sigue siendo un paso manual (el
+endpoint admin `set-tenant-url` mencionado en
+`pendientes-2026-08-14.md` sección F2 -- esa sección también citaba
+`repair-tenant-db`, retirado 16/09/2026, D-06/P-04, Wave 7). Hay variables `SUPABASE_ACCESS_TOKEN`/
 `SUPABASE_ORG_ID` en `render.yaml` para automatizar esto pero, igual que
 pasó con el `render.yaml` del frontend, **no hay código real que las
 use** — quedaron aspiracionales. Automatizar esto sería el siguiente paso

@@ -277,8 +277,8 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         // SUSPENDED/CANCELLED seguía operando con normalidad (req.db se
         // seguía resolviendo del cache) hasta que el proceso reiniciara o el
         // pool cayera del LRU — en la práctica, indefinidamente. Mismo
-        // mecanismo, mismo fix, que admin.routes.ts (repair-tenant-db /
-        // set-tenant-url) ya aplica tras cambiar la connection string de un
+        // mecanismo, mismo fix, que admin.routes.ts (set-tenant-url) ya
+        // aplica tras cambiar la connection string de un
         // tenant. Va DESPUÉS de que `runInTransaction` resuelva (commit
         // durable): si el UPDATE hubiera fallado, no hay pool que desalojar
         // — el estado en BD central no cambió y el pool cacheado sigue

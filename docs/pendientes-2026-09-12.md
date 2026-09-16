@@ -969,6 +969,40 @@ anteriores.
   branch de Neon con ese volumen si existe) y comparar el tiempo de
   reaplicar `schema.sql` contra el mismo tenant antes/después de este
   commit.
+- **D-13/P-09 (Wave 7 del plan de ejecución integral, 16/09/2026)** —
+  `render.yaml` `buildCommand`: `npm install` → `npm install --include=dev`.
+  Verificado en clean-room local (copia de `package.json`+
+  `package-lock.json`, `NODE_ENV=production npm install` sin el flag →
+  `npm ls tsx patch-package` vacío; con el flag → ambos presentes) — **no**
+  contra un deploy real de Render. Acción puntual: en el próximo deploy
+  real, confirmar `npm ls tsx patch-package --depth=0` inmediatamente
+  después del `npm install` (criterio de éxito ya fijado en
+  `docs/auditoria-integral-fase16-2026-09-16.md:540`).
+- **D-06/P-04 residuo -- `INCIDENT_LOG_2026-08-08.md:119` sigue en falso
+  (Wave 7, 16/09/2026)** — el ítem de checklist dice *"No existe ninguna
+  variable `DATABASE_URL` genérica sin prefijo en el código o en Render"*.
+  El retiro de `repair-tenant-db` sacó el ÚNICO escritor de esa variable,
+  pero `src/db/pg.client.ts:82` (`const rawUrl = process.env.DATABASE_URL;`)
+  sigue siendo un LECTOR sin prefijo — ya señalado por
+  `docs/auditoria-integral-fase14-2026-09-16.md:370` como "la misma clase
+  de riesgo que F11-02 describe para `repair-tenant-db`". El criterio de
+  éxito de la Etapa 8 (`fase16:543`, "el ítem del checklist queda cumplido
+  o explícitamente derogado") NO se cumple todavía con este bloque —
+  bloque aparte, no decidido: ¿retirar el lector también, o
+  derogar explícitamente el ítem del incident log?
+- **`CONFIG-ENV-BASELINE-001` -- 2 formas de `process.env` sin cubrir por
+  la cerca de conteo (Wave 7, 16/09/2026, gate `architecture-governor`,
+  condición C7)** — `src/tests/architecture/process-env-usage-count.test.ts`
+  solo cuenta clave LITERAL (`process.env.X`/`process.env['X']`). Dos
+  formas reales del árbol quedan invisibles: `process.env[name]` con
+  clave dinámica (`src/platform/neon-provisioning.ts:56`, resuelve
+  `NEON_API_KEY`/`NEON_PROJECT_ID`/`NEON_TEMPLATE_BRANCH_ID`) y
+  `process.env` como objeto completo (`src/api/docs-exposure.ts:52`).
+  Documentado en el propio docblock de la cerca. Bloqueante para el
+  bloque 3 (`src/config/env.ts`): ese bloque NO puede declarar "0 fuera
+  de config/env.ts" completo sin cerrar esto primero (extender
+  `PROCESS_ENV_RE` para cubrir las dos formas, o migrar esos 2 usos y
+  ampliar las zonas exentas con motivo).
 
 ---
 
@@ -3935,8 +3969,10 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `render.yaml` junto a `DB_ENCRYPTION_KEY` (recién cuando
   `DB_ENCRYPTION_KEY_OLD` exista de verdad en Render, no antes) + el
   procedimiento de `docs/auditoria-dominios.md` que eso dispara, y una
-  línea nueva en la Fase 0 del runbook nombrando `admin.routes.ts:63`
-  (`set-tenant-url`) y `:124` (`repair-tenant-db`) como los 2 endpoints
+  línea nueva en la Fase 0 del runbook nombrando `admin.routes.ts:71`
+  (`set-tenant-url`, el único endpoint que queda ahí desde el retiro de
+  `repair-tenant-db`, D-06/P-04, Wave 7, 16/09/2026 -- ancla re-chequeada
+  al arrastrar este ítem) como el endpoint
   que el freeze de rotación tiene que cubrir y que hoy nada hace cumplir.
   **Cerrado por D-09 (Wave 6 del plan de ejecución integral, 16/09/2026,
   commit `aa8e369`).** El hallazgo original decía: `migrate-tenants.ts`
@@ -4110,7 +4146,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   No aplica hoy (`credit_note_request` sigue en HOLD) -- anotado para
   cuando se reabra.
 - **Guard `pg_constraint` (schema v51, caso 6 residuo parte 2) pierde
-  convergencia — `schema.sql`/`repair-tenant-db` ya no corrigen una
+  convergencia — `schema.sql` ya no corrige una
   definición divergente de los 3 CHECK de `financial_transactions`.**
   Hallazgo del gate `architecture-governor` al revisar el commit que sigue
   a `2156f76`. El patrón viejo (`DROP CONSTRAINT IF EXISTS` + `ADD
@@ -4119,10 +4155,11 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   vieja la reemplazaba por la canónica del archivo. Con el guard por
   nombre (`IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname =
   ...)`), eso desaparece: si algún tenant tiene
-  `chk_financial_transactions_amount` con una expresión más débil,
-  `schema.sql` — ni `POST /repair-tenant-db`, cuyo propio docblock en
-  `admin.routes.ts` dice "reparación/mantenimiento puntual" — nunca la va
-  a corregir, en silencio. Riesgo medido hoy: cero (revisado el historial,
+  `chk_financial_transactions_amount` con una expresión más débil, ni
+  `set-tenant-url` ni `migrate:tenants` (los dos únicos caminos que
+  corren `applyTenantSchema()` desde el retiro de `repair-tenant-db`,
+  D-06, Wave 7 del plan de ejecución integral, 16/09/2026) la van a
+  corregir, en silencio. Riesgo medido hoy: cero (revisado el historial,
   bajo estos 3 nombres nunca hubo más de una definición). Riesgo hacia
   adelante: si hace falta CAMBIAR la definición de alguno de estos 3 en el
   futuro, hay que sacar el guard a mano, dejar correr un DROP+ADD real una

@@ -16,9 +16,9 @@
  *    queda en estado PENDING, sin BD asignada.
  * 2. Alguien crea la BD del negocio a mano (hoy: un proyecto Neon) — vacía,
  *    sin schema todavía.
- * 3. El ADMIN del negocio llama POST /api/admin/set-tenant-url (o
- *    repair-tenant-db) con la connection string. Desde ahí el propio
- *    endpoint llama a applyTenantSchema() — corre schema.sql y registra la
+ * 3. El ADMIN del negocio llama POST /api/admin/set-tenant-url con la
+ *    connection string. Desde ahí el propio endpoint llama a
+ *    applyTenantSchema() — corre schema.sql y registra la
  *    versión (ver CURRENT_SCHEMA_VERSION más abajo) antes de cifrar y
  *    guardar la connection string. Ya no hace falta correr schema.sql a
  *    mano por SQL Editor/psql como antes.
@@ -544,8 +544,8 @@ export const CURRENT_SCHEMA_VERSION = 60;
  *
  * Reemplaza al flujo manual ("alguien corre schema.sql a mano por SQL
  * Editor o psql" — ver comentario de archivo) en los dos puntos donde el
- * código ya conoce la connection string de un tenant: los endpoints de
- * admin (`repair-tenant-db`, `set-tenant-url`) y el runner masivo
+ * código ya conoce la connection string de un tenant: el endpoint de
+ * admin (`set-tenant-url`) y el runner masivo
  * (src/scripts/migrate-tenants.ts). Segura de re-correr: mismo criterio
  * idempotente que el resto de schema.sql.
  *

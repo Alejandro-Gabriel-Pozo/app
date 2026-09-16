@@ -309,6 +309,15 @@ corrigen en el mismo commit que produce el delta.
 `GET /api/customer/bookable-services`, nuevas en el árbol vivo, no
 `CLOSURE_MOUNTS`). Mismo criterio que las dos correcciones anteriores.
 
+**Corrección 16/09/2026 (Wave 7 del plan de ejecución integral, D-06/P-04
+— retiro de `repair-tenant-db`): 264 → 263.** `docs/inventario-rutas.md`
+regenerado en este mismo cambio (-1 ruta del árbol vivo,
+`POST /api/admin/repair-tenant-db`, `platform/admin.routes.ts` — trampa
+armada, ver `docs/decisiones-plan-integral-2026-09-16.md:63-68`). Primera
+corrección de esta sección que resta en vez de sumar — mismo criterio
+igual: la cita se corrige en el mismo commit que produce el delta, no
+después.
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -337,7 +346,8 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-18 de 264 -- corrección 16/09/2026, ver arriba). Depende de `NODE_ENV` — generado con `development`, `/` y
+17 de 263 -- corrección 16/09/2026, Wave 7/D-06, ver arriba: bajó junto
+con el endpoint que documentaba). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Consumo — qué ruta usa quién

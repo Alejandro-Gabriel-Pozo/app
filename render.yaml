@@ -30,7 +30,30 @@ services:
     # como paso explícito del build (ver .puppeteerrc.cjs para dónde cae el
     # caché) no depende de que el postinstall se dispare -- es idempotente,
     # si el binario ya está no vuelve a bajarlo.
-    buildCommand: npm install && npx puppeteer browsers install chrome && npm run build && npm run migrate:tenants
+    #
+    # `--include=dev` (16/09/2026, D-13, Wave 7 del plan de ejecución
+    # integral, P-09/decisiones-plan-integral-2026-09-16.md:139-144) -- con
+    # `NODE_ENV=production` seteada como env var de este servicio (abajo),
+    # un `npm install` sin este flag omite `devDependencies` por defecto.
+    # Dos pasos de este mismo buildCommand dependen de paquetes que viven
+    # ahí: el `postinstall: patch-package` de `package.json` (dispara
+    # automático apenas termina el `npm install`, ANTES de llegar a
+    # cualquier otro paso de esta línea) y `npm run migrate:tenants`
+    # (`tsx`, más abajo en esta misma cadena) -- los dos en
+    # `devDependencies`. El build dependía, sin declararlo en ningún lado,
+    # de que `NODE_ENV=production` NO llegara a este `npm install` puntual
+    # (confirmado en clean-room: CON esa var seteada, sin el flag, `npm ls
+    # tsx patch-package` da vacío) -- si Render alguna vez cambiara cómo
+    # propaga esa var al paso de build, el `postinstall` fallaría fuerte
+    # (build rojo, no silencioso) en vez de solo tardar más. `--include=dev`
+    # es la opción correcta en las dos ramas posibles (con o sin esa
+    # propagación), no un parche condicional a una sola.
+    #
+    # Verificación pendiente contra el build real de Render (no solo
+    # clean-room local): confirmar `npm ls tsx patch-package --depth=0`
+    # inmediatamente después del próximo `npm install` real -- ver
+    # docs/pendientes-2026-09-12.md, Verificaciones pendientes.
+    buildCommand: npm install --include=dev && npx puppeteer browsers install chrome && npm run build && npm run migrate:tenants
     startCommand: npm start
     healthCheckPath: /health
     envVars:

@@ -23,7 +23,7 @@
  * 12. /api/customer/*       — helmetApi (portal del cliente)
  * 13. authenticate()        — verifica JWT, protege /api/* restante
  * 14. /api/admin            — mantenimiento (ADMIN, SIN tenantMiddleware)
- *     ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
+ *     ⚠️  Montado ANTES de tenantMiddleware a propósito: set-tenant-url
  *        necesita correr cuando la BD del tenant todavía no está activa.
  * 15. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
  * 16. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
@@ -282,9 +282,9 @@ export async function createApp(): Promise<{
   app.use('/api', ...helmetApi);
 
   // /api/admin — ANTES del authenticate() de tenant de más abajo (19/08/2026,
-  // auditoría de producto: repair-tenant-db/set-tenant-url estaban detrás de
+  // auditoría de producto: set-tenant-url estaba detrás de
   // Roles.MANAGEMENT de TENANT, es decir cualquier OWNER/ADMIN de cualquier
-  // negocio podía reapuntar su propia BD -- set-tenant-url incluso a una URL
+  // negocio podía reapuntar su propia BD, incluso a una URL
   // arbitraria mandada en el body). Ahora exige un token de PLATAFORMA
   // (authenticatePlatform(), PLATFORM_JWT_SECRET) -- un superadmin no tiene
   // token de tenant, así que este mount tiene que resolver ANTES de que el

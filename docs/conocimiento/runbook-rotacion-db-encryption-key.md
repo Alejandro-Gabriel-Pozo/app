@@ -25,7 +25,7 @@ el error que un rotador apurado comete:
 
 | Columna | Base | Qué es | Escritores | Lectores |
 |---|---|---|---|---|
-| `businesses.db_url_encrypted` | **plataforma** | connection string del tenant (1 por negocio activo) | `admin.routes.ts` (`set-tenant-url`, `repair-tenant-db`), `business.routes.ts`, `platform.routes.ts` (activate) | `tenant.middleware.ts:~100` (**cada request**), `migrate-tenants.ts`, `company-sync.worker.ts` |
+| `businesses.db_url_encrypted` | **plataforma** | connection string del tenant (1 por negocio activo) | `admin.routes.ts` (`set-tenant-url`), `business.routes.ts`, `platform.routes.ts` (activate) | `tenant.middleware.ts:~100` (**cada request**), `migrate-tenants.ts`, `company-sync.worker.ts` |
 | `business_profile.afip_cert_encrypted` · `afip_key_encrypted` | **cada tenant** | certificado X.509 + clave privada de AFIP/ARCA | `sql.afip-credentials.repository.ts::save()` | `::getDecrypted()` (al facturar) |
 | `afip_tickets.ticket_encrypted` | **cada tenant** | Ticket de Acceso WSAA (efímero, ~12 h, se re-emite solo) | `::saveTicket()` | `::getTicket()` |
 
@@ -89,7 +89,7 @@ este runbook **no** significa "podemos rotar".
    (mismo criterio que `runbook-deploy-render.md` §Procedimiento 3).
 3. **Freeze de escrituras a columnas cifradas** durante toda la ventana
    (Fase 1 a Fase 3): sin activación de negocios, sin
-   `set-tenant-url`/`repair-tenant-db`, sin carga de certificado AFIP, **y sin
+   `set-tenant-url`, sin carga de certificado AFIP, **y sin
    correr `src/scripts/encrypt-database-url.ts`** (ver §1 — cifraría con la
    primaria, que en la ventana puede no ser la que ya barriste). Las
    escrituras de `afip_tickets` da igual — son descartables.

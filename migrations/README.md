@@ -7,7 +7,7 @@ los ejecuta.
 El aplicador real es `applyTenantSchema()`
 (`src/platform/tenant-db.setup.ts`), que corre `src/db/schema.sql` completo
 e idempotente contra cada tenant DB — en el alta de un negocio
-(`repair-tenant-db`/`set-tenant-url`) y en cada deploy vía
+(`set-tenant-url`) y en cada deploy vía
 `npm run migrate:tenants` (`src/scripts/migrate-tenants.ts`).
 
 Se conservan por valor de registro histórico (forma del cambio, orden en

@@ -193,7 +193,7 @@ ver sección 4.
 
 ### `src/platform/`
 
-**`admin.routes.ts`** — sistema de PLATAFORMA, no de tenant. `authenticatePlatform() + authorizePlatform([SUPERADMIN])` en todo el router: POST `/repair-tenant-db`, POST `/set-tenant-url`.
+**`admin.routes.ts`** — sistema de PLATAFORMA, no de tenant. `authenticatePlatform() + authorizePlatform([SUPERADMIN])` en todo el router: POST `/set-tenant-url` (`repair-tenant-db` retirado 16/09/2026, D-06/P-04, Wave 7 del plan de ejecución integral — trampa armada, ver `docs/decisiones-plan-integral-2026-09-16.md:63-68`).
 
 **`platform.routes.ts`** — sistema de PLATAFORMA. **23/08/2026: se agregó `authorizePlatform([SUPERADMIN])`** (antes solo `authenticatePlatform()`, ver sección 5 — era el único router de plataforma sin ese segundo gate). POST `/login` es público (antes del `router.use`). El resto: GET `/stats`, GET `/businesses`, POST `/businesses`, GET `/businesses/:id`, PATCH `/businesses/:id/status`, POST `/businesses/:id/provision`, **PATCH `/businesses/:id/plan`** (nuevo, L), **GET/PUT `/plan-limits[/:plan]`** (nuevo, L — editar `plan_limits`/`plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`), **GET/PUT `/role-presets[/:name]`** (nuevo, L — editar el catálogo global de los 5 roles de fábrica; corrección 09-10/09/2026: SÍ afecta negocios ya provisionados, vía el backfill que corre en cada arranque del proceso — ver `platform.routes.ts:444-459` y `docs/pendientes-2026-09-10.md`, `PRESET-REVOKE-001`, para el mecanismo completo y sus límites), **POST `/outbox/purge`** (nuevo, 12/09/2026, Caso 1 — purga `domain_events` resueltos con más de 90 días en TODOS los tenants, misma función que `npm run purge:outbox`, ver `platform/outbox-purge.ts`).
 

@@ -33,6 +33,12 @@ const SRC_DIR = join(__dirname, '../..');
  * 270/291/355/357/372/394) el 09/09/2026. Si un prefijo se re-monta a otro
  * router, esta cerca sigue verde validando contra el archivo viejo.
  * Re-verificar a mano al tocar los mounts de `app.ts` que aparecen acá.
+ *
+ * `/api/admin` sacado de este mapa el 16/09/2026 (D-06/P-04, Wave 7): el
+ * único path que spec.ts documentaba bajo ese prefijo
+ * (`/api/admin/repair-tenant-db`) se retiró junto con el endpoint real --
+ * `set-tenant-url` nunca estuvo documentado en spec.ts. Un prefijo sin
+ * ningún path en spec.ts es un mapeo sin usar, no una entrada a mantener.
  */
 
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -49,7 +55,6 @@ type Method = (typeof METHODS)[number];
  */
 const MOUNT_TO_ROUTES_FILE: Record<string, string> = {
   '/api/login':            'api/routes/auth.routes.ts',
-  '/api/admin':             'platform/admin.routes.ts',
   '/api/resources':         'reservas/resources.routes.ts',
   '/api/reservations':      'reservas/reservations.routes.ts',
   '/api/reports':           'api/routes/reports.routes.ts',

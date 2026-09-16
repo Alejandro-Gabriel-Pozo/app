@@ -99,8 +99,8 @@ const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docB
     docBullets: [],
   },
   'platform/admin.routes.ts': {
-    hiddenCount: 2,
-    motivo: 'Prosa de una línea: "POST /repair-tenant-db, POST /set-tenant-url", no bullets.',
+    hiddenCount: 1, // 2->1: repair-tenant-db retirado (16/09/2026, D-06/P-04, Wave 7)
+    motivo: 'Prosa de una línea: "POST /set-tenant-url", no bullets.',
     docBullets: [],
   },
   'platform/platform.routes.ts': {

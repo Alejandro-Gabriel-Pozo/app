@@ -8,8 +8,8 @@
  * Resuelve el hueco señalado en la auditoría de deuda estructural (0.1):
  * hasta ahora, cuando schema.sql cambiaba, no había forma de aplicar ese
  * cambio a los tenants ya provisionados sin conectarse a mano a cada BD.
- * Los dos endpoints de admin (`repair-tenant-db`, `set-tenant-url`) ya
- * corren `applyTenantSchema()` en el momento en que se da de alta la
+ * El endpoint de admin (`set-tenant-url`) ya
+ * corre `applyTenantSchema()` en el momento en que se da de alta la
  * connection string — este script es para el resto: negocios que YA
  * tenían su BD apuntada antes de este cambio, o el día que schema.sql
  * cambie de nuevo y haga falta empujar esa versión a todos.

@@ -1,15 +1,17 @@
 /**
  * @file admin.routes.test.ts
  * @description Regresión de seguridad (19/08/2026, auditoría de producto):
- * repair-tenant-db/set-tenant-url exigían Roles.MANAGEMENT de TENANT —
- * cualquier OWNER/ADMIN de cualquier negocio podía reapuntar su propio
- * negocio, y set-tenant-url a una URL arbitraria. Ahora exigen token de
- * PLATAFORMA. Corre la CADENA COMPLETA de middlewares (authenticatePlatform
- * -> authorizePlatform -> handler), no solo el handler final —
- * DEFENSIVE_DEVELOPING.md principio 3, mismo criterio que
+ * set-tenant-url exigía Roles.MANAGEMENT de TENANT — cualquier OWNER/ADMIN
+ * de cualquier negocio podía reapuntar su propia BD a una URL arbitraria.
+ * Ahora exige token de PLATAFORMA. Corre la CADENA COMPLETA de middlewares
+ * (authenticatePlatform -> authorizePlatform -> handler), no solo el
+ * handler final — DEFENSIVE_DEVELOPING.md principio 3, mismo criterio que
  * companies.routes.test.ts: un token de TENANT real (no un mock de
  * `req.user`) tiene que rebotar acá, para detectar si alguien reintroduce
  * el gate viejo sin que un test aislado de authenticatePlatform lo note.
+ *
+ * `repair-tenant-db` retirado (16/09/2026, D-06/P-04, Wave 7) -- este
+ * archivo tenía su propio describe con 4 tests, borrado junto con la ruta.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -38,7 +40,6 @@ vi.mock('./tenant.middleware.js', async (importOriginal) => {
 
 const ORIGINAL_PLATFORM_SECRET = process.env.PLATFORM_JWT_SECRET;
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
-const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 const ORIGINAL_ENCRYPTION_KEY = process.env.DB_ENCRYPTION_KEY;
 const PLATFORM_SECRET = 'platform-test-secret-32-chars-min!!';
 const TENANT_SECRET = 'tenant-test-secret-32-characters!!';
@@ -46,7 +47,6 @@ const TENANT_SECRET = 'tenant-test-secret-32-characters!!';
 beforeEach(() => {
   process.env.PLATFORM_JWT_SECRET = PLATFORM_SECRET;
   process.env.JWT_SECRET = TENANT_SECRET;
-  process.env.DATABASE_URL = 'postgresql://legacy/db';
   process.env.DB_ENCRYPTION_KEY = 'x'.repeat(32);
 });
 
@@ -55,8 +55,6 @@ afterEach(() => {
   else delete process.env.PLATFORM_JWT_SECRET;
   if (ORIGINAL_JWT_SECRET !== undefined) process.env.JWT_SECRET = ORIGINAL_JWT_SECRET;
   else delete process.env.JWT_SECRET;
-  if (ORIGINAL_DATABASE_URL !== undefined) process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
-  else delete process.env.DATABASE_URL;
   if (ORIGINAL_ENCRYPTION_KEY !== undefined) process.env.DB_ENCRYPTION_KEY = ORIGINAL_ENCRYPTION_KEY;
   else delete process.env.DB_ENCRYPTION_KEY;
   vi.restoreAllMocks();
@@ -145,53 +143,6 @@ async function runRoute(
   await new Promise((resolve) => setTimeout(resolve, 0));
   return res;
 }
-
-describe('POST /api/admin/repair-tenant-db — exige token de PLATAFORMA', () => {
-  it('sin ningún token: 401, nunca llega al handler', async () => {
-    const platformRepo = fakePlatformRepo();
-    const router = createAdminRouter(platformRepo);
-
-    const res = await runRoute(router, '/repair-tenant-db', reqWithAuth(undefined, { businessId: 'biz-1' }));
-
-    expect(res.statusCode).toBe(401);
-    expect(platformRepo.activateBusiness).not.toHaveBeenCalled();
-  });
-
-  it('con un token de TENANT real (el bug original -- OWNER/ADMIN de un negocio cualquiera): rebota, no un token de plataforma', async () => {
-    const platformRepo = fakePlatformRepo();
-    const router = createAdminRouter(platformRepo);
-
-    // Token de TENANT genuino, firmado con JWT_SECRET (no PLATFORM_JWT_SECRET)
-    // -- exactamente lo que tendría cualquier OWNER logueado normal.
-    const tenantToken = signToken({ sub: 'user-1', businessId: 'biz-1', role: 'OWNER' }, TENANT_SECRET);
-    const res = await runRoute(router, '/repair-tenant-db', reqWithAuth(`Bearer ${tenantToken}`, { businessId: 'biz-1' }));
-
-    expect(res.statusCode).toBe(401);
-    expect(platformRepo.activateBusiness).not.toHaveBeenCalled();
-  });
-
-  it('con token de plataforma (SUPERADMIN) válido: pasa el gate y activa el negocio pedido', async () => {
-    const platformRepo = fakePlatformRepo();
-    const router = createAdminRouter(platformRepo);
-
-    const platformToken = signPlatformToken({ sub: 'admin-1', role: PlatformRole.SUPERADMIN, email: 'admin@zuluhub.com' });
-    const res = await runRoute(router, '/repair-tenant-db', reqWithAuth(`Bearer ${platformToken}`, { businessId: 'biz-target' }));
-
-    expect(res.statusCode).toBeUndefined(); // res.json() sin status previo = 200 implícito
-    expect(platformRepo.activateBusiness).toHaveBeenCalledWith('biz-target', 'manual-demo', 'encrypted-blob');
-    expect(platformRepo.updateSchemaVersion).toHaveBeenCalledWith('biz-target', 27);
-  });
-
-  it('businessId ausente del body: 400 de validación, no un 500 ni un negocio activado a ciegas', async () => {
-    const platformRepo = fakePlatformRepo();
-    const router = createAdminRouter(platformRepo);
-
-    const platformToken = signPlatformToken({ sub: 'admin-1', role: PlatformRole.SUPERADMIN, email: 'admin@zuluhub.com' });
-    await runRoute(router, '/repair-tenant-db', reqWithAuth(`Bearer ${platformToken}`, {}));
-
-    expect(platformRepo.activateBusiness).not.toHaveBeenCalled();
-  });
-});
 
 describe('POST /api/admin/set-tenant-url — exige token de PLATAFORMA', () => {
   it('sin ningún token: 401, nunca llega al handler', async () => {

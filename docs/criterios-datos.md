@@ -258,10 +258,16 @@ Toda alta o modificación pasa por la capa de servicio con sus validaciones.
 Nada de seeds, imports, scripts administrativos o endpoints de reparación
 que escriban directo contra la tabla.
 
-⚠️ *`POST /api/admin/repair-tenant-db` es exactamente el riesgo que esta
-regla previene — apunta la connection string del negocio, no escribe datos
-de negocio directamente. Pendiente auditar si hay otro camino que sí lo
-haga.*
+✅ *`POST /api/admin/repair-tenant-db` — el endpoint que motivó esta nota
+se retiró (16/09/2026, D-06/P-04, Wave 7 del plan de ejecución integral,
+`docs/decisiones-plan-integral-2026-09-16.md:63-68`): era una trampa
+armada (aplicaría schema de tenant contra `DATABASE_URL`, no declarada en
+Render), no un riesgo de escritura directa contra tabla. Queda
+`set-tenant-url` (mismo router) — recibe `businessId`+`databaseUrl`
+validados por `SetTenantUrlSchema`, y escribe únicamente vía
+`PlatformRepository.activateBusiness()`/`updateSchemaVersion()`, no SQL
+directo contra ninguna tabla de negocio. No es el mismo riesgo que este
+ítem nombraba.*
 
 ### R15. Las referencias rotas fallan fuerte
 
@@ -337,7 +343,7 @@ condiciones de carrera.
 | R11 bloqueo hacia adelante | ✅ Implementado explícitamente 13/08/2026 (antes lo hacía sin querer el filtro que R2 sacó) |
 | R12 revertir no editar | ✅ En la práctica (`financial_transactions` solo cambia `status`). Sin revoke a nivel Postgres |
 | R13 idempotencia | ⚠️ Solo en pagos |
-| R14 un camino de escritura | ⚠️ Verificar `repair-tenant-db` a fondo |
+| R14 un camino de escritura | ✅ `repair-tenant-db` retirado (16/09/2026, D-06/P-04) — `set-tenant-url` escribe vía `PlatformRepository`, no SQL directo |
 | R15 fallo ruidoso | ✅ Corregido junto con R2 — antes la categoría fantasma fallaba en silencio |
 | R16 límites sobre lo existente | ❌ `maxResources` nunca se aplica; el chequeo de categorías tiene carrera |
 

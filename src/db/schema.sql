@@ -2441,7 +2441,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
 -- deploy, para siempre, aunque el constraint ya esté aplicado sin cambios.
 -- `migrations/NNN_*.sql` NO es la salida -- esa carpeta no está conectada
 -- a `applyTenantSchema()` (ver tenant-db.setup.ts): un tenant nuevo o un
--- `repair-tenant-db` solo corre `schema.sql`, así que mover este CHECK
+-- `set-tenant-url` solo corre `schema.sql`, así que mover este CHECK
 -- ahí lo sacaría del alta de cualquier tenant futuro, silenciosamente.
 -- La salida real: el ADD queda adentro de este mismo archivo, pero
 -- guardado por `pg_constraint` -- solo corre (y revalida) la primera vez
