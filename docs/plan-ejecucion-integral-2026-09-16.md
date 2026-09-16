@@ -534,3 +534,80 @@ entorno, 3/3.
 
 **No pusheado.** Push de `6edf27d`/`2f2a3e7` (y de este commit de docs)
 requiere autorización explícita y nueva del dueño.
+
+---
+
+## Apéndice F — Wave 4 ejecutada: `D-01` (frontend) + `D-07(c)` (backend)
+
+**16/09/2026, gate `architecture-governor` en cada repo por separado
+(2 rondas cada uno — la primera de D-07(c) devolvió HOLD con 4
+correcciones, aplicadas antes de commitear), commits
+`appfrontend-main a64d931` (D-01) + `app-main a4950db` (D-07(c)) + este
+mismo commit de docs (local, sin pushear).**
+
+`:51` (fila de la tabla de oleadas, arriba) queda ejecutado. Los dos
+componentes viven en repos distintos y se gatearon por separado, en
+paralelo — sin dependencia entre sí, tal como la fila ya indicaba
+("Ninguno de los otros 3" agentes).
+
+**D-01 (sub-opción (a) solamente):** `next` 16.3.1 → 16.3.5 en
+`appfrontend-main`, cierra las 2 advisories CRITICAL de RCE no autenticada
+(GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4) + la HIGH transitiva de `sharp`
+(GHSA-rgj7-g3m4-5g8c, resuelta sola vía el rango de `optionalDependencies`
+de `next`). Pin exacto mantenido a propósito (no `^16.3.5`) — con lockfile
+commiteado y `npm ci` en CI, un caret no aporta actualidad, solo drift no
+revisado; la visibilidad la tiene que dar la sub-opción (c) (`npm audit`
+en CI), todavía no decidida. `npm audit --omit=dev` post-bump: 0 crítico,
+0 alto, 1 moderado (`qs`, preexistente, fuera de alcance). Build/typecheck/
+lint/unit tests verdes. **Sub-opciones (b) (`images` block en
+`next.config.js`) y (c) (`npm audit` en CI de ambos repos) quedan sin
+decidir — bloques separados**, tal como el propio D-01 los planteaba.
+**Residuo declarado, precondición de push, no de este commit:** sin smoke
+test de login/dashboard contra un runtime real (`next start`) — `next
+build` no ejercita los `rewrites()` de `next.config.js`, que es el proxy
+same-origin del que depende la cookie de sesión.
+
+**D-07(c):** inventario completo de las 21 sentencias DML de `schema.sql`
+(`docs/inventario-dml-schema-2026-09-16.md` — el número correcto es 21,
+no 20; la cita original de F10-02/fase15 nunca se había re-contado, y la
+primera versión de este mismo documento heredó el mismo error hasta que
+el gate lo encontró, ver el propio documento sección 4 de "Lo que NO
+garantiza"). 18 son auto-limitantes por construcción, 2 ya estaban
+gateadas (precedente v42), y las 3 con condición de disparo abierta
+(`customer_rates` D-07/F10-02, `invoices.afip_contacted` F10-16,
+`reservation_lines` F10-17) se gatean por `schema_migrations version=60`.
+Medición previa contra los 2 tenants reales (Apéndices B/D de
+`docs/decisiones-plan-integral-2026-09-16.md`): 0 filas candidatas y 0 ya
+convertidas en `customer_rates` — gatear no deja ninguna corrección
+pendiente sin aplicar. F10-16/F10-17 severidad Baja, no medidos.
+
+**A diferencia de toda la sesión hasta acá, esta pieza SÍ se verificó
+contra Postgres real, no solo tsc/lint/unitarios.** Esta misma sesión
+encontró un servidor PostgreSQL 16.13 instalado localmente (apagado por
+default) y lo levantó (`service postgresql start`) — primera vez en todo
+este plan de ejecución que hay Postgres real disponible sin depender de
+Neon ni de autorización de producción. Con eso: la suite de integración
+completa corrió limpia (**48 archivos, 381 tests**, incluidos los 3 tests
+nuevos de `schema-redeploy-idempotent.integration.test.ts` que reproducen
+el escenario exacto de F10-02 y los casos de F10-16/F10-17 — **5/5
+pasando, no salteados**, confirmado explícitamente porque el gate había
+rechazado la corrida "skip" anterior como evidencia insuficiente). Esto
+también resuelve, de paso, varios de los residuos de
+"🔍 Verificaciones pendientes" acumulados en `docs/pendientes-2026-09-12.md`
+en waves anteriores que esperaban exactamente esto — pendiente de
+reconciliar esa sección contra la corrida real (bloque de docs aparte, no
+este commit).
+
+**Lo que D-07(c) no cierra, a propósito — residuo registrado en
+`docs/pendientes-2026-09-12.md`:**
+1. La "ventana de un deploy más" — `applyTenantSchema()` registra la
+   versión DESPUÉS de correr `schema.sql`, así que el primer deploy con
+   este commit todavía ejecuta las 3 sentencias una última vez antes de
+   quedar cerradas para siempre. Medido para `customer_rates` (no-op), no
+   para F10-16/F10-17 — precondición de deploy, no de este commit.
+2. `route-consumer-coverage` nunca corre en la CI de este repo (residuo
+   de Wave 3, sin relación con D-07(c), ya registrado en el Apéndice E).
+
+**No pusheado.** Push de `a64d931` (`appfrontend-main`), `a4950db`
+(`app-main`) y de este commit de docs requiere autorización explícita y
+nueva del dueño, en cada repo.

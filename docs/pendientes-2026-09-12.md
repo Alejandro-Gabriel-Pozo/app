@@ -1195,6 +1195,23 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   cerca nueva con motivo, no borrado — la decisión de qué hacer con cada
   huérfano (incluido este) es "familia por familia", explícitamente
   diferida por D-23, no una decisión de esta Wave.
+- **F10-16/F10-17 -- "una última corrida" del gateo D-07(c), no medida
+  contra Postgres real (Wave 4 / D-07(c), gate `architecture-governor`,
+  16/09/2026, `a4950db`).** `applyTenantSchema()` corre `schema.sql`
+  primero y RECIÉN DESPUÉS registra la versión en `schema_migrations` — el
+  primer deploy que lleve este commit todavía ejecuta las 3 sentencias
+  gateadas una última vez antes de quedar cerradas para siempre. Para
+  `customer_rates` (D-07/F10-02) esa última corrida es un no-op medido (0
+  filas en los 2 tenants reales, Apéndices B/D de
+  `docs/decisiones-plan-integral-2026-09-16.md`). Para
+  `invoices.afip_contacted` (F10-16) y `reservation_lines` (F10-17) —
+  severidad Baja, sin decisión de negocio pendiente — esa última corrida
+  NO está medida: si hay una fila candidata hoy en algún tenant real, el
+  primer deploy con este commit la toca igual que antes del fix. Acción
+  puntual antes del próximo deploy: correr contra cada tenant real la
+  misma clase de consulta de diagnóstico de solo lectura que ya se corrió
+  para `customer_rates` (ver `docs/inventario-dml-schema-2026-09-16.md`
+  para el detalle del riesgo de cada una).
 
 ---
 
