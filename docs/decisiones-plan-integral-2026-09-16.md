@@ -540,3 +540,251 @@ vive en `pendientes-2026-09-12.md` y en el grounding— pero el encabezado
 promete más de lo que el cuerpo entrega. Debe leerse, en `:6`: *"Contexto
 (una línea, con ancla **cuando el ítem la tiene en su documento de origen;
 los de `pendientes` remiten a su bloque, no a `archivo:línea`**)"*.
+
+---
+
+## Apéndice B — Resolución de P-05 (16/09/2026, post-commit)
+
+Este apéndice documenta la resolución de la única pregunta que el cuerpo
+del documento (P-05, sección B) dejó explícitamente sin decidir. **No
+edita el cuerpo original** — el estado "sin decidir" que el cuerpo
+describe fue real en el momento del commit `d6ae6b5`; esto es lo que pasó
+después, en la misma sesión, con autorización explícita del dueño en cada
+paso (identificar el proyecto real de Neon, elegir la rama, y autorizar la
+consulta).
+
+### Consulta de diagnóstico ejecutada
+
+Proyecto Neon `ancient-king-17098519` (DB-APP-PPMS), rama
+`tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) — el único tenant
+real con datos (la rama `production` del mismo proyecto es la base de
+plataforma; `customer_rates` no vive ahí; las demás ramas del proyecto son
+la plantilla vacía de aprovisionamiento y respaldos puntuales sin tráfico).
+
+Consulta de solo lectura, réplica exacta del `WITH base AS (...)` de
+`src/db/schema.sql:824-852` sin el `UPDATE`, clasificando cada fila:
+
+```sql
+WITH base AS (
+  SELECT
+    cr.id, cr.customer_id, cr.resource_id, cr.service_id,
+    cr.fixed_price, cr.created_at,
+    CASE WHEN cr.resource_id IS NOT NULL THEN r.base_price ELSE bs.price END AS base_price
+  FROM customer_rates cr
+  LEFT JOIN resources r          ON r.id  = cr.resource_id
+  LEFT JOIN bookable_services bs ON bs.id = cr.service_id
+  WHERE cr.fixed_price IS NOT NULL
+    AND cr.discount_percentage IS NULL
+    AND cr.rate_catalog_id IS NULL
+    AND cr.created_at < '2026-08-22T00:00:00Z'::timestamptz
+)
+SELECT id, customer_id, fixed_price, created_at, base_price,
+  CASE
+    WHEN base_price IS NULL THEN 'sin precio base -- excluido por diseño'
+    WHEN base_price = 0     THEN 'DORMIDO -- se activaría si sube el precio'
+    WHEN fixed_price >= base_price THEN 'legacy fixed -- excluido por diseño'
+    ELSE 'CANDIDATO REAL -- se convertiría en el próximo deploy'
+  END AS estado
+FROM base ORDER BY estado, created_at;
+```
+
+**Resultado: 0 filas.** Verificado que no es un falso negativo por tabla
+vacía sin sentido: `SELECT count(*) FROM customer_rates` → **0 filas
+totales** (0 con `fixed_price`, 0 con `discount_percentage`, 0 con
+`rate_catalog_id`, `min`/`max(created_at)` nulos). El dueño confirmó que,
+a la fecha, **todos los tenants del sistema son de prueba** — no hay datos
+de clientes reales expuestos a este riesgo hoy.
+
+### Decisión
+
+Con el dato medido en mano, el dueño decidió: **inventariar las 20
+sentencias DML de `schema.sql` y gatear/retirar las 3 con disparador
+abierto** — opción (c) de `D-07` (Fase 15), que cierra la **clase**
+completa del problema (este backfill de `customer_rates` + `F10-16`,
+`afip_contacted`, + `F10-17`, `reservation_lines`), no solo esta
+instancia.
+
+- **Alternativas descartadas:** gatear solo este backfill puntual (deja
+  los otros 2 con el mismo patrón sin resolver — `F10-16`/`F10-17`
+  seguirían con el mismo riesgo estructural); retirar el backfill entero
+  (aunque cumplió su función el 22/08/2026 y no hay datos que dependan de
+  él hoy, retirar solo este no cierra la clase).
+- **Por qué la decisión no dependía únicamente del resultado:** la
+  recomendación de Fase 15 ya era la opción (c) independientemente del
+  conteo — la consulta solo determinaba si la severidad de **este caso
+  puntual** era Crítica (con filas candidatas) o Alta (sin ellas). Con 0
+  filas, la severidad baja a Alta, pero el trabajo estructural
+  recomendado no cambia.
+- **Gatillo de revisión:** ninguno — el dato es medido contra Postgres
+  real, no inferido.
+
+### Estado final
+
+**P-05 (D-07) pasa de "sin decidir" a decidida — el documento queda con
+25 de 25 preguntas decididas.** Siguiente paso concreto: el bloque de
+inventario de las 20 DML de `schema.sql`, con su propio gate de
+`architecture-governor` antes de tocar el archivo.
+
+---
+
+## Apéndice C — Correcciones del gate (`architecture-governor`, 16/09/2026, sobre el Apéndice B)
+
+Verificación independiente del Apéndice B antes de commitearlo, contra
+`src/db/schema.sql`, `docs/conocimiento/runbook-deploy-render.md`,
+`docs/auditoria-integral-fase15-2026-09-16.md`,
+`docs/auditoria-integral-fase16-2026-09-16.md`,
+`docs/plan-integral-sistemico-2026-09-16.md` y el registro de mediciones
+previas de `docs/pendientes-2026-09-10.md` / `docs/pendientes-2026-08-28.md`.
+Ni el cuerpo (`:1-267`) ni el Apéndice A se editan — misma convención que
+usó el propio Apéndice A. **Este apéndice no cambia la decisión del dueño**
+(sigue siendo la opción **(c)** de `D-07`): corrige la descripción de la
+evidencia, un ancla, el gatillo de revisión, y declara el residuo de
+medición que el Apéndice B dio por cerrado.
+
+**Lo que el gate NO pudo verificar:** el resultado *"0 filas"* en sí. El
+gate no tiene acceso a las tools de Neon; toma el conteo **como
+reportado**, no como verificado de forma independiente. Lo que sí verificó
+es que la consulta sea fiel al código y que la decisión sea fiel a su
+fuente.
+
+### C.1 — `production` **no** es la base de plataforma: es la tenant Demo, y quedó sin medir
+
+El Apéndice B dice: *"la rama `production` del mismo proyecto es la base de
+plataforma; `customer_rates` no vive ahí"*. **Es falso**, contra cuatro
+fuentes concordantes del repo:
+
+- `docs/conocimiento/runbook-deploy-render.md:327-328` — **Tenants** (una BD
+  por negocio) = `ancient-king-17098519` / *DB-APP-PPMS*; **Plataforma**
+  (`PLATFORM_DATABASE_URL`) = **`morning-unit-50056927` / *pdb-ppms***, un
+  **proyecto Neon distinto** (`:7` y `:321` hablan de *"los dos proyectos
+  Neon"*).
+- `docs/pendientes-2026-09-10.md:830-831` — *"branches `production`=Demo +
+  `tenant-hotel-los-alamos`=Hotel los Álamos"*, *"las 2 tenants reales"*
+  (ídem `:1021`, `:1533-1536`, `:1872`).
+- `docs/pendientes-2026-08-28.md:647-648` — *"proyecto Neon
+  `ancient-king-17098519` (BD de tenant de `biz-demo-01`, **distinta de la
+  BD de plataforma**)"*.
+- `docs/plan-resolucion-bugs-deuda-2026-08-27.md:216-220` — verificación de
+  tablas de **schema de tenant** sobre esa misma rama `production`.
+
+**Consecuencia:** `customer_rates` **sí** vive en `production`
+(`br-snowy-tree-ax5wmq70`), y la medición del Apéndice B cubrió **1 de las 2
+tenants reales**, cuando `auditoria-integral-fase15:238`,
+`auditoria-integral-fase16:55`, `:579` (*"Conteo **por tenant**"*) y
+`plan-integral-sistemico:62` piden la consulta **"contra cada tenant"**.
+
+Debe leerse, en la sección "Consulta de diagnóstico ejecutada": *"Proyecto
+Neon `ancient-king-17098519` (DB-APP-PPMS) — el proyecto **de tenants**; la
+BD de plataforma vive en otro proyecto (`morning-unit-50056927` / pdb-ppms,
+runbook `:327-328`) y no se consultó porque `customer_rates` es una tabla
+de schema de tenant. El proyecto tiene **dos** tenants reales:
+`tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`, Hotel los Álamos) y
+`production` (`br-snowy-tree-ax5wmq70`, **Demo**); el resto de las ramas son
+la plantilla de aprovisionamiento (`br-polished-hill-axn1uibp`),
+`test-integration-db` (`br-bold-cell-axuvmork`), `vercel-dev`
+(`br-square-king-ay2uaubg`) y respaldos puntuales (runbook `:337-342`,
+`:357-359`). **La consulta se corrió sobre `tenant-hotel-los-alamos`
+solamente.**"*
+
+**Residuo declarado (convención de `CLAUDE.md`: un ítem con residuo no es
+"cerrado", se divide):** correr la misma consulta read-only contra
+`production` (`br-snowy-tree-ax5wmq70`) es una **verificación pendiente**.
+Hasta entonces, *"0 filas"*, *"la severidad baja a Alta"* y *"no hay datos
+de clientes reales expuestos a este riesgo hoy"* valen para **una** tenant,
+no para el sistema. La **decisión** (opción (c)) no depende de ese dato y no
+se reabre.
+
+### C.2 — El ancla del backfill es `:834-852`, no `:824-852`
+
+El Apéndice B cita *"réplica exacta del `WITH base AS (...)` de
+`src/db/schema.sql:824-852`"*. Medido: la sentencia empieza en **`:834`**;
+`:824-833` es el **bloque de comentario** que declara la intención.
+`auditoria-integral-fase15:218` ya lo separa correctamente
+(*"`src/db/schema.sql:834-852`; comentario de intención en `:824-832`"*) y
+`auditoria-integral-fase16:15` cita `:834`. Debe leerse:
+*"`src/db/schema.sql:834-852` (comentario de intención en `:824-833`)"*.
+
+### C.3 — "Gatillo de revisión: ninguno" contradice a `fase15:224`
+
+El Apéndice B escribe *"**Gatillo de revisión:** ninguno — el dato es medido
+contra Postgres real, no inferido"*. `auditoria-integral-fase15:224` dice lo
+contrario de forma explícita: la severidad es Alta *"si no existe hoy (**el
+bloque sigue armado para el día que alguien restaure datos viejos o cree una
+fila con `created_at` retroactivo**)"*. Además, los datos medidos son de
+práctica, no tráfico real — `pendientes-2026-09-10.md:832-834` ya dejó
+escrito que *"0 divergencia"* sobre datos ficticios *"es más débil que si
+fuera producción real con tráfico genuino"*.
+
+Debe leerse: *"**Gatillo de revisión:** (1) restaurar un backup con datos
+anteriores al 22/08/2026, o crear una fila de `customer_rates` con
+`created_at` retroactivo, vuelve a armar el disparador (`fase15:224`); (2)
+un tenant nuevo aprovisionado desde la plantilla, o el primer tenant con
+datos de clientes reales, exige remedir; (3) mientras el bloque siga sin
+guard en `schema.sql`, el conteo caduca con cada deploy."*
+
+### C.4 — La consulta contesta `D-07(a)`, no la pregunta que `P-05` enuncia; eso lo contesta el segundo `SELECT`
+
+`P-05`, tal como está enunciada en `auditoria-integral-fase16:617` y
+`plan-integral-sistemico:95`, es: *"Con el conteo de filas candidatas en
+mano: **¿qué se hace con las tarifas que ya se convirtieron?** Restaurarlas
+exige saber el `fixed_price` original, que el UPDATE pisó con `NULL`."*
+
+La consulta replicada **no puede ver una fila ya convertida**: el CTE filtra
+`cr.fixed_price IS NOT NULL`, y una fila ya convertida tiene `fixed_price =
+NULL`. O sea que su *"0 filas"* responde a **`D-07(a)`** (*cuántas filas
+candidatas quedan*), no a `P-05`. Lo que efectivamente cierra `P-05` en la
+rama consultada es el **segundo** query, que el Apéndice B presenta sólo
+como descarte de falso negativo: `SELECT count(*) FROM customer_rates` → **0
+filas totales**, es decir **tampoco hay ninguna ya convertida**. Debe
+leerse, en la sección "Resultado": *"el `count(*) = 0` no es sólo control de
+falso negativo — es lo que responde `P-05` tal como está enunciada (no hay
+tarifas ya convertidas que restaurar), porque la consulta principal es ciega
+a ellas por construcción. En `production` (Demo), ninguna de las dos
+preguntas está respondida todavía (ver C.1)."*
+
+### C.5 — Punteros de supersesión: son cuatro lugares del cuerpo, más dos documentos de fase
+
+El Apéndice B declara correctamente que no edita el cuerpo, pero sólo señala
+*"(P-05, sección B)"*. El cuerpo afirma "sin decidir" en **cuatro** lugares,
+y dos de ellos son afirmaciones volátiles que se volvieron falsas **dentro
+de la misma sesión** — el modo de falla que el `CLAUDE.md` raíz describe para
+*"LOCAL/sin pushear"*:
+
+- `:10` — *"24 de 25 decididas. `P-05` queda explícitamente sin decidir"*.
+- `:35` — fila de la tabla resumen: *"**Sin decidir** — requiere la consulta
+  de diagnóstico primero"*.
+- `:74-77` — *"Estado: sin decidir"* y *"Bloqueado por: la consulta todavía
+  no se corrió (el dueño declinó correrla en esta sesión…)"*.
+- `:258` — *"Esa consulta todavía no se autorizó a correr en esta sesión"*.
+
+Los cuatro quedan **superados por el Apéndice B**, y siguen siendo el
+registro fiel del estado en el commit `d6ae6b5`. El Apéndice A (`:321-330`)
+tampoco se contradice: su conteo de *"24 secciones `###` reales"* es
+estructural y sigue siendo cierto — `P-05` no gana una sección propia en el
+cuerpo; su Contexto/Decisión/Alternativas/Gatillo viven en el Apéndice B
+más este apéndice.
+
+Fuera de este archivo, quedan con una severidad superada (no se editan, son
+históricos): `auditoria-integral-fase15:224`, `:743` y el recuento de `:763`
+(*"4 Críticas (D-01, **D-07 condicional**, D-08, D-21)"*), y
+`auditoria-integral-fase16:33`, `:47`, `:299` (*"D-07 (CRÍTICA
+condicional)"*). Con la medición de C.1 completa, **D-07 resuelve a Alta**;
+hasta entonces, resuelve a Alta **para `tenant-hotel-los-alamos`**.
+
+**Falta además una prueba en el "siguiente paso concreto".** `fase15:238(2)`
+y `fase16:581` exigen, junto con el inventario: *"sembrar una fila legacy con
+`base_price = 0`, aplicar el schema, subir `base_price`, reaplicar, y
+afirmar que `fixed_price` **no** cambió"*. El bloque de inventario de las 20
+DML debe incluirla, no sólo el gateo.
+
+### C.6 — Atribución de la corrida
+
+El Apéndice B no declara con qué herramienta se corrió la consulta ni que
+fue de solo lectura — la convención que este repo ya usa
+(`pendientes-2026-09-10.md:1020-1021`, `:1531-1538`) es *"Medido, read-only,
+… (Neon `<proyecto>`, `<fecha>`)"*. Debe leerse, al pie de "Consulta de
+diagnóstico ejecutada": *"Corrida el 16/09/2026 vía las tools MCP de Neon
+(`run_sql`), únicamente sentencias `SELECT`/`WITH … SELECT`: ningún
+`UPDATE`, `DELETE` ni DDL. Resultado tomado de esa corrida; el gate
+`architecture-governor` **no lo reprodujo** (no tiene acceso a esas tools) y
+lo registra como reportado."*
