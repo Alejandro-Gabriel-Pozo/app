@@ -148,6 +148,34 @@ propia (ver "Reportes y estadísticas"). **Lo que falta:** concepto
 explícito de vencimiento/aging (0-30/31-60/61-90 días) — hoy el saldo
 existe pero no está segmentado por antigüedad.
 
+## Caja (arqueo de efectivo)
+
+⚠️ **Backend completo, cero UI — fila nueva (D-24, 16/09/2026,
+`docs/auditoria-integral-fase15-2026-09-16.md`; decisión del dueño en
+`docs/decisiones-plan-integral-2026-09-16.md:208-215`, P-15: completar).**
+El circuito #2 de la secuencia ERP canónica (*pago efectivo → turno
+abierto → cierre → recuento → diferencia*) está construido entero del
+lado servidor desde el `672dda5` (14/08/2026, "Gap Tango #2"):
+`src/clientes-finanzas/cash-register.routes.ts`, `.service.ts` (3 errores
+de dominio propios — `ShiftAlreadyOpenError`, `NoOpenShiftError`,
+`ShiftNotFoundError`), repositorio SQL, tabla en `schema.sql`, montado y
+vivo en producción (`app.ts`) detrás de
+`requireModule(ModuleKey.CUENTAS_CORRIENTES)`, con validación Zod de
+nivel 2. **Cero consumidores en `appfrontend-main`** (confirmado por
+`grep` de `cash-register`/`cash_register`/`caja` → 0, 0, 0) — nunca tuvo
+pantalla, y hasta esta fila nunca tuvo entrada de roadmap tampoco (el
+mecanismo exacto que la sección "Cómo se mantiene esto sincronizado con
+pendientes", más abajo, existe para prevenir). **Decisión ya tomada:
+completar la UI** (no retirar el backend — sin precedente de industria
+que respalde retirarlo, 4 de 4 referentes del grounding lo tienen, uno
+lo hace bloqueante para cerrar turno). **Antes de cualquier movimiento de
+código:** `SELECT count(*) FROM cash_register_shifts` en cada tenant
+productivo — si hay filas, alguien ya lo usó por API directamente y el
+histórico es un hecho financiero, no se toca. Bloque de implementación
+(construir la pantalla) es Wave 14 del plan de ejecución integral — esta
+fila es solo el "no está invisible" que la decisión exige antes de
+encarar esa Wave.
+
 ## Channel Manager
 
 ❌ No hay integración con OTAs (Booking.com, Expedia, Airbnb). Confirmado
