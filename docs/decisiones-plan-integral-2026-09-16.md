@@ -788,3 +788,146 @@ diagnóstico ejecutada": *"Corrida el 16/09/2026 vía las tools MCP de Neon
 `UPDATE`, `DELETE` ni DDL. Resultado tomado de esa corrida; el gate
 `architecture-governor` **no lo reprodujo** (no tiene acceso a esas tools) y
 lo registra como reportado."*
+
+---
+
+## Apéndice D — Medición completa: segunda tenant (`production`/Demo), cierra el residuo de C.1
+
+Con autorización explícita del dueño, se corrió la misma consulta de solo
+lectura del Apéndice B (MCP Neon `run_sql`, únicamente sentencias
+`SELECT`/`WITH … SELECT`, sin `UPDATE`/`DELETE`/DDL) contra la tenant que el
+Apéndice C.1 identificó como sin medir: **`production`**
+(`br-snowy-tree-ax5wmq70`, tenant **Demo**), mismo proyecto Neon
+`ancient-king-17098519`.
+
+**Resultado: 0 filas candidatas** — mismo resultado que
+`tenant-hotel-los-alamos`. Verificado con el mismo control de falso
+negativo: `SELECT count(*) FROM customer_rates` → **0 filas totales** (0 con
+`fixed_price`, 0 con `discount_percentage`, 0 con `rate_catalog_id`,
+`min`/`max(created_at)` nulos).
+
+**Con esto, las dos tenants reales del sistema quedan medidas** —
+`tenant-hotel-los-alamos` (Apéndice B) y `production`/Demo (este apéndice).
+El residuo declarado en C.1 queda cerrado: **0 filas candidatas y 0 filas ya
+convertidas en `customer_rates`, en el 100% de los tenants reales
+existentes hoy** (ambos de prueba, según confirmó el dueño).
+
+**Lo que esto no cambia:** la decisión (sigue siendo la opción (c) de `D-07`
+— inventariar las 20 DML y gatear/retirar las 3 de disparo abierto) y el
+gatillo de revisión de C.3 (restaurar un backup con datos anteriores al
+22/08/2026, un `created_at` retroactivo, o un tenant nuevo con datos reales
+vuelven a armar el disparador). **Lo que sí cambia:** la severidad "Alta"
+(vs. "Crítica condicional") de `D-07` para el estado actual del sistema
+queda confirmada con **cobertura completa**, no parcial.
+
+---
+
+## Apéndice E — Correcciones del gate (`architecture-governor`, 16/09/2026, sobre el Apéndice D)
+
+Verificación independiente del Apéndice D antes de commitearlo, contra el
+Apéndice C de este mismo archivo, `docs/conocimiento/runbook-deploy-render.md:327-328`
+/ `:337-342` / `:355-359`, y `docs/pendientes-2026-09-10.md:832-834` /
+`:1018-1021` / `:1531-1538`. **No edita el cuerpo, ni el Apéndice A, ni el
+B, ni el C, ni el D** — misma convención que usaron todos los anteriores.
+**No cambia la decisión del dueño** (sigue siendo la opción **(c)** de
+`D-07`) ni el resultado reportado: corrige la atribución de la corrida,
+agrega los punteros de supersesión que faltaban y ajusta dos afirmaciones
+de alcance.
+
+**Lo que el gate sí verificó:** que el diff es **puramente aditivo** (+31 /
+-0, una sola hunk — ni el cuerpo ni A/B/C cambian un byte); que `HEAD` es
+`0be2820` con el árbol limpio salvo este archivo; que el id
+`br-snowy-tree-ax5wmq70` corresponde a la tenant **Demo** (`production`)
+del proyecto `ancient-king-17098519` según cuatro fuentes concordantes
+(`runbook:327`, `pendientes-2026-09-08:383`, `pendientes-2026-09-10:1535`,
+`resuelto.md:296`); y que el universo de **dos** tenants reales coincide
+con `runbook:355-359` y con una corrida previa del repo sobre esas mismas
+dos ramas (`pendientes-2026-09-10:1533-1538`: *"el resto de las branches
+del proyecto son backups/templates/test, no tenants vivos"*).
+
+**Lo que el gate NO pudo verificar:** el resultado *"0 filas"* de esta
+segunda corrida, igual que en el Apéndice C — no tiene acceso a las tools
+de Neon. Ver E.1.
+
+### E.1 — Falta la atribución que C.6 exigió, aplicada a esta segunda corrida
+
+El Apéndice D declara la herramienta (MCP Neon `run_sql`), el alcance
+read-only y la autorización del dueño — pero **no** declara que el gate no
+reprodujo el resultado, ni la fecha de la corrida. `C.6` exigió exactamente
+eso para el Apéndice B; pedirlo de B y no de D sería inconsistente.
+
+Debe leerse, al pie del primer párrafo del Apéndice D: *"Corrida el
+**16/09/2026** vía las tools MCP de Neon (`run_sql`). Resultado tomado de
+esa corrida; el gate `architecture-governor` **no lo reprodujo** (no tiene
+acceso a esas tools) y lo registra **como reportado** — mismo estatus que el
+del Apéndice B, ver `C.6`."*
+
+### E.2 — Faltan los punteros de supersesión (convención de C.5)
+
+El Apéndice D cierra el residuo pero no señala qué afirmaciones anteriores
+quedan superadas; C.5 sí lo hace para el cuerpo, y esa es la convención del
+archivo (superar por apéndice, no reescribir lo anterior). Sin los punteros,
+quien lea C.1, C.4 o C.5 encuentra un residuo abierto que ya no lo está.
+
+Debe leerse, al cierre del Apéndice D: *"**Punteros de supersesión** (misma
+convención que `C.5`: lo superado no se edita, sigue siendo el registro fiel
+del estado al commit `0be2820`). Quedan superados por este apéndice:
+(1) `C.1`, *"la medición del Apéndice B cubrió **1 de las 2 tenants
+reales**"* y su párrafo de **residuo declarado**; (2) `C.4`, última oración
+— *"En `production` (Demo), ninguna de las dos preguntas está respondida
+todavía"*: ahora las dos lo están (0 candidatas por la consulta principal, 0
+ya convertidas por el `count(*) = 0`); (3) `C.5`, *"hasta entonces, resuelve
+a Alta **para `tenant-hotel-los-alamos`**"* — la condición se cumplió, `D-07`
+resuelve a **Alta** para el sistema, con los calificadores de E.3/E.4.
+Fuera de este archivo siguen sin editarse, por históricos,
+`auditoria-integral-fase15:224`, `:743`, `:763` y
+`auditoria-integral-fase16:33`, `:47`, `:299` (*"D-07 CRÍTICA
+condicional"*): su condición ya está resuelta, pero actualizarlos es un
+bloque de docs aparte, no decidido."*
+
+### E.3 — La paráfrasis del gatillo de C.3 omite el ítem (3) y angosta el (2)
+
+El Apéndice D resume el gatillo de `C.3` como *"(restaurar un backup con
+datos anteriores al 22/08/2026, un `created_at` retroactivo, o un tenant
+nuevo con datos reales…)"*. `C.3` tiene **tres** ítems, y dos se
+distorsionan: su (2) pedía remedir ante *"un tenant nuevo **aprovisionado
+desde la plantilla**, **o** el primer tenant con datos de clientes
+reales"* — la versión corta deja afuera el aprovisionamiento desde
+plantilla —, y su (3) *"mientras el bloque siga sin guard en `schema.sql`,
+**el conteo caduca con cada deploy**"* desaparece por completo. Con (3)
+omitido, *"queda confirmada"* se lee más durable de lo que `C.3` permite.
+
+Debe leerse, en "Lo que esto no cambia": *"…y el gatillo de revisión de
+`C.3` **en sus tres ítems, sin recortar** — en particular el (3): mientras
+el bloque siga sin guard en `schema.sql`, **este conteo caduca con cada
+deploy**, y el (2), que exige remedir tanto ante un tenant nuevo
+aprovisionado desde la plantilla como ante el primer tenant con datos de
+clientes reales."*
+
+### E.4 — Los dos calificadores que "cobertura completa" no puede perder
+
+La afirmación de cobertura (2 de 2) es exacta y la severidad **Alta** es la
+que corresponde por `fase15:224` (*"si no existe hoy…"*). Pero la oración
+final del Apéndice D — *"queda confirmada con **cobertura completa**"* —
+arrastra dos calificadores que quedan sueltos:
+
+1. **Naturaleza del dato.** `pendientes-2026-09-10.md:832-834` dice de estas
+   mismas dos ramas: *"**las dos son datos de práctica ficticios** …, no
+   clientes reales; '0 divergencia' acá es más débil que si fuera producción
+   real con tráfico genuino"*. El Apéndice D lleva *"(ambos de prueba, según
+   confirmó el dueño)"* pero en el párrafo anterior, no en la oración de
+   severidad.
+2. **Origen del universo.** *"el 100% de los tenants reales existentes hoy"*
+   se apoya en la foto documental del repo (`runbook:337-342`, `:355-359`,
+   fechada al 10/09/2026) más `C.1`; el gate **no re-enumeró las ramas del
+   proyecto contra Neon** en esta ronda.
+
+Debe leerse, en lugar de la oración final: *"**Lo que sí cambia:** la
+severidad **Alta** (vs. *"Crítica condicional"*) de `D-07` queda confirmada
+con **cobertura completa en la dimensión tenant** — 2 de 2, no 1 de 2. Dos
+calificadores siguen en pie: (a) **las dos tenants son datos de práctica
+ficticios**, no tráfico real, así que la fuerza probatoria de este 0 es la
+que `pendientes-2026-09-10.md:832-834` ya describió, no la de una medición
+sobre producción con clientes reales; y (b) el universo de *"dos tenants
+reales"* sale de `runbook:337-342` / `:355-359` (foto del 10/09/2026) y de
+`C.1`, no de una re-enumeración de ramas hecha por el gate en esta ronda."*
