@@ -955,6 +955,20 @@ anteriores.
   (`skipIfNoDb`, hoy skippeada). Se sacan de acá (se cortan, no se tachan)
   recién cuando alguien las corra contra Postgres real y confirme el
   resultado.
+- **`13630cf`** (Wave 5 / D-08, plan de ejecución integral, 16/09/2026) —
+  27 de las 28 constraints con `DROP+ADD` incondicional de `schema.sql`
+  pasaron a gateadas por `pg_constraint`. El MECANISMO está probado
+  (`git log -L` confirmó que las 27 nunca se redefinieron bajo el mismo
+  nombre; contra PostgreSQL 16.13 real, el OID de cada una queda estable
+  entre 2 corridas de `schema.sql`, mientras que el de la única excluida
+  a propósito sigue cambiando). **Lo que falta:** la MAGNITUD del ahorro
+  a la escala que F10-01 midió (200 000 filas en `reservations`) — la
+  cifra "~16 de ~50 s" citada en el commit es la de F10-01, medida ANTES
+  de este cambio (describe el costo que se retira), no una remedición
+  posterior. Acción puntual: sembrar ~200k reservas (o reutilizar un
+  branch de Neon con ese volumen si existe) y comparar el tiempo de
+  reaplicar `schema.sql` contra el mismo tenant antes/después de este
+  commit.
 
 ---
 

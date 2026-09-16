@@ -611,3 +611,79 @@ este commit).
 **No pusheado.** Push de `a64d931` (`appfrontend-main`), `a4950db`
 (`app-main`) y de este commit de docs requiere autorización explícita y
 nueva del dueño, en cada repo.
+
+---
+
+## Apéndice G — Wave 5 ejecutada: `D-08`
+
+**16/09/2026, gate `architecture-governor` (APPROVED WITH CONDITIONS,
+ambas cumplidas antes de commitear), commit `13630cf` (código) + este
+mismo commit de docs (local, sin pushear).**
+
+`:52` (fila de la tabla de oleadas, arriba) queda ejecutado. De las 28
+posiciones de `schema.sql` que hacían `DROP CONSTRAINT IF EXISTS` +
+`ADD CONSTRAINT` incondicional en cada deploy (F10-01: ~48-56 s por
+tenant de 200 000 reservas, ~16 s concentrados en los 2 `EXCLUDE`), se
+gatearon **27** con el mismo patrón `pg_constraint` que v51 ya usaba para
+3 `CHECK` de `financial_transactions`. La 28ª,
+`chk_stock_movements_movement_type`, quedó **excluida a propósito**:
+`git log -L` sobre su rango de línea actual encontró 3 redefiniciones
+reales bajo el mismo nombre (creció de 5 a 9 valores de enum entre
+19/07 y 28/08/2026) — gatearla habría dejado a cualquier tenant con una
+versión vieja del enum atascado para siempre, sin error visible. El
+propio `schema.sql` ya tenía, desde el 28/08, un comentario narrando el
+incidente real que produjo esa última redefinición (una fila
+`CONSUMPTION` real rompiendo `migrate:tenants` contra un bloque viejo
+duplicado) — la regresión de ese incidente exacto la cubre
+`schema-redeploy-idempotent.integration.test.ts`, ya existente antes de
+esta Wave.
+
+**Verificación previa a tocar una sola línea, no pedida explícitamente
+por D-08 pero necesaria:** las 28 posiciones se verificaron una por una
+contra la historia completa de git (`git log -L`, no un grep sobre
+`git log -p` — ese método más simple dio falsos positivos en 5 casos por
+mezclar contexto de hunks no relacionados, corregido antes de confiar en
+el resultado). Detalle completo, tabla de las 27 + la 1 excluida, y el
+método de verificación en `docs/inventario-guards-schema-2026-09-16.md`.
+
+**Dos condiciones del gate, ambas cumplidas antes de commitear:**
+1. `reservations_status_check` tiene un segundo sitio de definición (el
+   `CHECK` inline del `CREATE TABLE` de `reservations`, que Postgres
+   nombra igual automáticamente) — en un tenant nuevo, ese `CREATE TABLE`
+   crea la constraint primero y el `ALTER` gateado nunca vuelve a correr.
+   Mismo tipo de riesgo que la constraint excluida, con la diferencia de
+   que acá no se puede "excluir del guard" sin dejar de gatear también el
+   `ALTER`. Comentado en los dos sitios: un valor nuevo de `status` hay
+   que agregarlo en ambos.
+2. Cita de método corregida en el comentario de
+   `reservations_no_overlap_exclusive` (decía `git log -p`, el método
+   real fue `git log -L`).
+
+**Sin bump de `CURRENT_SCHEMA_VERSION`, y es la decisión correcta, no
+solo aceptable:** el gate señaló que `tenant.middleware.ts` emite un
+warning de drift por tenant cuando `businesses.schema_version` ≠
+`CURRENT_SCHEMA_VERSION` — bumpear para un cambio que produce un schema
+byte-idéntico (verificado: `pg_dump --schema-only` de antes y después de
+este commit son idénticos, 356 constraints con `pg_get_constraintdef()`
+iguales) generaría ruido de drift en toda la flota sin ninguna razón
+real.
+
+**Verificado contra PostgreSQL 16.13 real** (servidor local levantado en
+esta sesión, ver Apéndice F): `schema.sql` aplicado dos veces seguidas
+sin error; el OID de cada una de las 27 constraints guardadas queda
+estable entre la 1ª y la 2ª corrida (el `ADD` no se re-ejecuta), mientras
+que el de la excluida cambia (sigue revalidando) — prueba directa de que
+el mecanismo funciona, no solo de que no rompe nada. Suite unitaria
+completa (2443 tests) y de integración completa (381 tests, incluida
+`schema-redeploy-idempotent.integration.test.ts`) verdes.
+
+**Residuo declarado, no bloqueante, registrado en
+`docs/pendientes-2026-09-12.md`:** el ahorro de tiempo real de este
+bloque no se remidió contra un tenant de 200 000 filas en esta sesión —
+la cifra "~16 de ~50 s" sigue siendo la de F10-01 (medida ANTES de este
+cambio, describe el costo que se retira, no una confirmación posterior).
+El mecanismo está probado (estabilidad de OID); la magnitud exacta del
+ahorro a esa escala, no.
+
+**No pusheado.** Push de `13630cf` (`app-main`) y de este commit de docs
+requiere autorización explícita y nueva del dueño.
