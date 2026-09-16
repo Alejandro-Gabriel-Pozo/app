@@ -87,7 +87,10 @@ export async function seedResource(
   overrides: Partial<{ id: string; name: string; basePrice: number; capacity: number }> = {},
 ): Promise<SeededResource> {
   const id = overrides.id ?? randomUUID();
-  const name = overrides.name ?? 'Habitación 101';
+  // Default único por llamada (D-21, Fase 15) -- 'Habitación 101' fijo
+  // colisionaba con uq_resources_name (schema v59) apenas dos tests
+  // seedeaban un recurso sin pasar `name` en la misma corrida de suite.
+  const name = overrides.name ?? `Habitación ${randomUUID().slice(0, 8)}`;
   const basePrice = overrides.basePrice ?? 1000;
   const capacity = overrides.capacity ?? 1;
 
