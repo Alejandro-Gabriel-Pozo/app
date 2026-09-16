@@ -1610,3 +1610,45 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   hallazgo preexistente, no introducido por este cambio, registrado en
   `docs/pendientes-2026-09-12.md` como material de alcance para esa capa 2.
   Origen: `pendientes-2026-09-12.md`.
+
+- **`CUSTOMER-RBAC-ACTOR-FENCE-001` — capa 2 de la decisión del dueño para
+  P-01/D-03** (`docs/decisiones-plan-integral-2026-09-16.md:51`, textual:
+  *"rechazar tokens CUSTOMER en rutas de staff … **y** extender la cerca
+  por actor … las dos capas, no una sola"*) — ✅ **RESUELTO EN CÓDIGO,
+  gate-aprobado por `architecture-governor` (16/09/2026), commit `c1777e5`.**
+  Las dos assertions que la decisión pedía quedan cubiertas, cada una en
+  su lugar — **declarado así a propósito, no en el mismo archivo**:
+  - **(i) "`tenantMiddleware` sigue rechazando `role === CUSTOMER`"** —
+    cubierta por comportamiento real, no por texto, en
+    `src/platform/tenant-isolation.test.ts` (test `'un token CUSTOMER se
+    rechaza con 403...'`, ya commiteado en `668e16c`). No se duplicó acá.
+  - **(ii) "ningún mount `/api/*` que requiera contexto de staff se
+    registra antes de `tenantMiddleware` sin allowlist con motivo"** —
+    cubierta por `RBAC-MOUNT-002` (nuevo, extiende
+    `src/tests/architecture/api-auth-gate-order.test.ts`, mismo archivo
+    que ya tenía `RBAC-MOUNT-001` para el gate de `authenticate()`):
+    verifica que todo mount `/api/...` anterior a `tenantMiddleware` esté
+    en `PRE_TENANT_API_MOUNTS` (superset de `PRE_AUTH_API_MOUNTS`, +4
+    entradas reales: `/api/companies`, `/api/auth`,
+    `/api/business/modules`, `/api/business/plan-limits`), y que no haya
+    entradas stale. Verificado por mutación (no solo lectura): copias de
+    `app.ts` con un mount nuevo pre-`tenantMiddleware`, una entrada
+    movida, y el gate renombrado — las 3 disparan la aserción
+    correspondiente.
+  **Verificado en este commit:** `tsc --noEmit`, `eslint --max-warnings 0`,
+  `lint:arch`, suite unitaria completa (173 archivos, 2438 tests) —
+  ninguna corrida depende de entorno real, así que **sin residuo de
+  verificación** (a diferencia del resto de Wave 2, que sigue con 2
+  residuos abiertos en `## 🔍 Verificaciones pendientes` — este commit no
+  los toca).
+  **2 hallazgos encontrados al construir esta cerca, registrados aparte,
+  NO cerrados acá** (`docs/pendientes-2026-09-12.md`):
+  `CUSTOMER-STAFF-MOUNT-PRE-TENANT-001` (evidencia corregida en este
+  mismo commit de docs — `/api/business/modules` sin consumidor conocido,
+  `/api/business/plan-limits` con consumidor real; cierre probable
+  `Roles.STAFF`, no `MANAGEMENT`, decisión de RBAC aparte) y
+  `CUSTOMER-PERMISSION-GROUPS-UNFENCED-001` (hallazgo nuevo: la zona
+  pre-`tenantMiddleware` no tiene congelado qué grupo la protege —
+  `CUSTOMER_PERMISSION_GROUPS` queda fuera de cobertura de
+  `roles-catalog-sync.test.ts`, ver ese ítem para el detalle).
+  Origen: `pendientes-2026-09-12.md`.

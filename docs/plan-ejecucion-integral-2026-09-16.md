@@ -416,3 +416,49 @@ pendiente" — no "cerrada sin matices".
 **No pusheado.** Push de `668e16c` (y de este commit de docs) requiere
 autorización explícita y nueva del dueño, igual que el resto de esta
 sesión.
+
+---
+
+## Apéndice D — Wave 2 capa 2 ejecutada: `RBAC-MOUNT-002` cierra
+## `CUSTOMER-RBAC-ACTOR-FENCE-001`
+
+**16/09/2026, gate `architecture-governor`, commit `c1777e5` (código) + este
+mismo commit de docs (local, sin pushear).**
+
+`:395-408` (Apéndice C, arriba) queda ejecutado. La capa 2 que la decisión
+del dueño pedía (`decisiones-plan-integral-2026-09-16.md:51`, *"las dos
+capas, no una sola"*) está construida: `RBAC-MOUNT-002`
+(`src/tests/architecture/api-auth-gate-order.test.ts`) congela que ningún
+mount `/api/*` que dependa de contexto de staff se registre antes de
+`tenantMiddleware` sin allowlist con motivo — la assertion (i) de la
+decisión (que `tenantMiddleware` siga rechazando CUSTOMER) sigue cubierta
+por `tenant-isolation.test.ts`, no duplicada.
+
+**A diferencia del resto de Wave 2, esta pieza no tiene residuo de
+verificación** — es parseo de texto sobre `app.ts`, corre sin
+`TEST_DATABASE_URL` ni entorno real, y se verificó por mutación (3 casos:
+mount nuevo, entrada stale, gate renombrado — los 3 disparan). Va directo a
+`docs/resuelto.md` sin pasar por `## 🔍 Verificaciones pendientes`.
+
+**Lo que la capa 2 NO cierra, a propósito — dos hallazgos nuevos,
+registrados, no decisiones tomadas:**
+1. `CUSTOMER-STAFF-MOUNT-PRE-TENANT-001` — si `/api/business/modules`/
+   `/api/business/plan-limits` deberían cerrarse con `authorize()` (y con
+   qué grupo — `Roles.STAFF`, no `MANAGEMENT`, según el gate) sigue sin
+   decidir. La cerca declara el estado actual, no lo fuerza a cerrarse.
+2. `CUSTOMER-PERMISSION-GROUPS-UNFENCED-001` (nuevo) — la zona
+   pre-`tenantMiddleware` no tiene congelado qué GRUPO protege cada mount,
+   solo que el mount esté declarado. Si `CUSTOMER_PERMISSION_GROUPS`
+   (`security/roles.ts:81-84`) alguna vez ganara `Roles.MANAGEMENT`,
+   `/api/companies` quedaría abierto a un token CUSTOMER sin que ninguna
+   de las 8 cercas RBAC del repo lo note. Bloque propio, no decidido.
+
+**Estado final de Wave 2 (P-01/D-03):** código resuelto en su totalidad
+(capa 1 + capa 2), gate-aprobado en 3 rondas totales. Quedan, sin cerrar
+todavía y sin bloquear nada en curso: los 2 residuos de verificación real
+de `668e16c` (test de integración contra Postgres, wizard del portal
+contra un cliente real) y los 2 hallazgos de arriba (ninguno de los 4 es
+"capa 2 pendiente" — esa ya está).
+
+**No pusheado.** Push de `c1777e5` (y de este commit de docs) requiere
+autorización explícita y nueva del dueño.

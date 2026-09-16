@@ -970,12 +970,12 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   entre `authenticate()` y `tenantMiddleware` son alcanzables hoy por un
   token CUSTOMER sin ningún `authorize()` (gate `architecture-governor`,
   Wave 2 / P-01/D-03, ronda 2, 16/09/2026 — encontrado al mapear el
-  alcance real de la "capa 2" pendiente, ver más abajo).** `app.ts` monta
-  `/api/companies`, `/api/auth` (`me.routes.ts`),
-  `/api/business/modules` y `/api/business/plan-limits` ANTES de
-  `tenantMiddleware` — ninguno pasa por el rechazo-por-actor de D-03.
-  `/api/companies` está cubierto (`authorize(Roles.MANAGEMENT)` en las 3
-  rutas). `/api/auth` es deliberado — `me.routes.ts:61` ramifica
+  alcance real de la capa 2, cerrada como cerca en `c1777e5`, ver
+  `docs/resuelto.md`).** `app.ts` monta `/api/companies`, `/api/auth`
+  (`me.routes.ts`), `/api/business/modules` y `/api/business/plan-limits`
+  ANTES de `tenantMiddleware` — ninguno pasa por el rechazo-por-actor de
+  D-03. `/api/companies` está cubierto (`authorize(Roles.MANAGEMENT)` en
+  las 3 rutas). `/api/auth` es deliberado — `me.routes.ts:61` ramifica
   explícito sobre `role !== UserRole.CUSTOMER`. Pero
   `/api/business/modules` y `/api/business/plan-limits` **no tienen
   ningún `authorize()`** y hoy responden con los módulos/límites de plan
@@ -983,39 +983,59 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   CUSTOMER (`docs/rbac-matriz-endpoints.md:427-428` ya los documenta como
   "cualquier usuario ve los de SU PROPIO negocio" — frase escrita
   pensando en STAFF, nunca evaluada para el actor CUSTOMER). Preexistente,
-  **no introducido por D-03** — D-03 no cambia nada acá, solo lo hizo
-  visible al mapear qué mounts quedan fuera del rechazo-por-actor.
-  Riesgo: bajo (son GETs de solo lectura de datos ya no sensibles del
-  propio negocio del cliente — módulos contratados, límites de plan — no
-  de otro tenant, el aislamiento entre negocios sigue intacto), pero es
-  exactamente el tipo de hueco que la "capa 2" (ítem siguiente) tiene que
-  cubrir con una cerca, no dejarlo a que alguien lo note leyendo código.
-  Pendiente decidir junto con esa capa 2: ¿agregar `authorize()` a estos
-  2 endpoints, o declararlos deliberadamente abiertos con un allowlist
-  con motivo (mismo criterio que `PRE_AUTH_API_MOUNTS`)?
+  **no introducido por D-03**.
+  **Evidencia corregida por el gate (ronda de `c1777e5`, contra el claim
+  original de esta sesión):** `GET /api/business/modules` **no tiene
+  consumidor conocido en `appfrontend-main` hoy** — el gating de módulos
+  del dashboard pasa por `GET /api/business/context` (montado DESPUÉS de
+  `tenantMiddleware`), no por esta ruta; verificar si `/api/business/modules`
+  está directamente muerta es una pregunta aparte, no la de este ítem.
+  `GET /api/business/plan-limits` **sí tiene consumidor real confirmado**:
+  `appfrontend-main/src/app/dashboard/roles/page.tsx:52` (gating visual del
+  CRUD de roles). El cierre probable, si se decide cerrar, **no es**
+  `authorize(Roles.MANAGEMENT)` — el propio docblock de
+  `business-plan-limits.routes.ts` (L, 23/08/2026) registra que la ausencia
+  de `MANAGEMENT` fue deliberada, para que cualquier STAFF (no solo
+  MANAGEMENT) pudiera leer sus límites. El cierre que preserva esa
+  intención y saca a CUSTOMER es `authorize(Roles.STAFF)`
+  (`security/roles.ts:32`, "excluye CUSTOMER" por diseño), no
+  `MANAGEMENT`. Riesgo del estado actual: bajo (aislamiento entre
+  negocios intacto, son datos del propio negocio del cliente, no de otro
+  tenant). Pendiente decidir: ¿cerrar con `authorize(Roles.STAFF)` en las
+  2 rutas (cambia `EXPECTED_AUTHORIZE_CALL_SITES`, `docs/rbac-matriz-endpoints.md`
+  filas 427-428, `rbac-route-coverage`/`rbac-matrix-section2-sync`, y el
+  comentario de `dashboard/roles/page.tsx:47` que hoy afirma "no requiere
+  MANAGEMENT" — sigue siendo cierto con `Roles.STAFF`, pero conviene
+  revisar la redacción), o declararlas deliberadamente abiertas con
+  allowlist con motivo (ya hecho estructuralmente en
+  `PRE_TENANT_API_MOUNTS`, `RBAC-MOUNT-002`, `c1777e5` — falta la
+  decisión de si además se cierran con `authorize()`)? Investigar además,
+  aparte, si `/api/business/modules` está muerta.
 
-- **`CUSTOMER-RBAC-ACTOR-FENCE-001` — falta la "capa 2" que la decisión
-  del dueño pidió junto con el rechazo por actor de D-03 (gate
-  `architecture-governor`, Wave 2 / P-01/D-03, ronda 1+2, 16/09/2026).**
-  `docs/decisiones-plan-integral-2026-09-16.md:51`, textual: *"rechazar
-  tokens CUSTOMER en rutas de staff (opción 'a') **y** extender la cerca
-  por actor (molde `ESCAPE_ROUTES` de
-  `credit-note-escape-containment.test.ts`) — las dos capas, no una
-  sola"*. La capa 1 (el rechazo real en `tenantMiddleware`) está
-  implementada y gateada (`668e16c`, ver `docs/resuelto.md`). La capa 2
-  — una cerca de arquitectura que congele (i) que `tenantMiddleware`
-  siga rechazando `role === CUSTOMER`, y (ii) que ningún mount `/api/*`
-  que requiera contexto de staff se registre antes de `tenantMiddleware`
-  sin allowlist con motivo — **no se implementó todavía**. Sin ella, un
-  cambio futuro que reordene mounts en `app.ts`, o que agregue un router
-  de staff nuevo montado antes de `tenantMiddleware` (como ya pasa con
-  `CUSTOMER-STAFF-MOUNT-PRE-TENANT-001`, ítem anterior), puede dejar una
-  ruta de staff nueva fuera del rechazo-por-actor sin que ninguna de las
-  7 cercas RBAC existentes lo note. Alcance sugerido por el gate:
-  incluir en la matriz de impacto los 4 mounts pre-`tenantMiddleware`
-  reales (no solo las 4 rutas mutantes originales de F5-01). Bloque
-  siguiente declarado, no decisión abierta — la capa 2 es obligatoria,
-  falta implementarla.
+- **`CUSTOMER-PERMISSION-GROUPS-UNFENCED-001` — la zona pre-`tenantMiddleware`
+  no tiene congelado qué grupo la protege; solo que el mount esté
+  declarado (gate `architecture-governor`, Wave 2 / P-01/D-03, capa 2,
+  16/09/2026, `RBAC-MOUNT-002`, commit `c1777e5`).** `RBAC-MOUNT-002`
+  (`src/tests/architecture/api-auth-gate-order.test.ts`) verifica que
+  ningún mount `/api/*` de la zona pre-`tenantMiddleware` quede sin
+  declarar en `PRE_TENANT_API_MOUNTS` — pero NO verifica que el GRUPO que
+  blinda cada uno siga excluyendo a CUSTOMER. `/api/companies`
+  (crear/vincular empresa — mutante, dispara propagación de catálogo
+  entre negocios, D-05) depende enteramente de que
+  `CUSTOMER_PERMISSION_GROUPS` (`security/roles.ts:81-84`, hoy
+  `[CUSTOMER_ONLY, BOOKING]`) NO incluya `Roles.MANAGEMENT`. Ese array
+  está explícitamente fuera de cobertura de `roles-catalog-sync.test.ts`
+  (su limitación #3, ya declarada en ese archivo). Si algún día se le
+  agrega `MANAGEMENT` a `CUSTOMER_PERMISSION_GROUPS` — por error, o por
+  un cambio que solo pensó en otro grupo —, un token CUSTOMER abre
+  `/api/companies` de punta a punta y **ninguna de las 8 cercas RBAC de
+  este repo lo nota**: `tenantMiddleware` no corre en esta zona
+  (`RBAC-MOUNT-002` así lo declara a propósito), y nada más congela ese
+  conjunto. Riesgo: bajo hoy (nadie tiene motivo para tocar ese array), pero
+  el radio si se rompiera es alto (D-05, propagación de catálogo entre
+  organizaciones). Pendiente decidir: una cerca molde `ESCAPE_ROUTES` pero
+  sobre `CUSTOMER_PERMISSION_GROUPS` en vez de sobre una ruta puntual —
+  bloque propio, no decidido todavía, no bloqueante de nada en curso.
 
 - **`deleted_at` faltante en `SqlBookableServiceRepository.findAll()`**
   (gate `architecture-governor`, Wave 2 / P-01/D-03, ronda 2,
