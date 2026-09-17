@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { createBusinessRouter } from './business.routes.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
 import { hashPassword } from '../security/user.store.js';
+import { verifyToken } from '../security/auth.middleware.js';
 import type { PlatformRepository, Business, Identity, Role } from './platform.repository.js';
 import type * as TenantDbSetup from './tenant-db.setup.js';
 
@@ -29,10 +30,13 @@ vi.mock('./neon-provisioning.js', () => ({
 }));
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
+const ORIGINAL_JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
 beforeEach(() => { process.env.JWT_SECRET = 'test-secret-de-al-menos-32-caracteres!!'; });
 afterEach(() => {
   if (ORIGINAL_JWT_SECRET !== undefined) process.env.JWT_SECRET = ORIGINAL_JWT_SECRET;
   else delete process.env.JWT_SECRET;
+  if (ORIGINAL_JWT_EXPIRES_IN !== undefined) process.env.JWT_EXPIRES_IN = ORIGINAL_JWT_EXPIRES_IN;
+  else delete process.env.JWT_EXPIRES_IN;
   vi.restoreAllMocks();
 });
 
@@ -90,6 +94,27 @@ describe('POST /register', () => {
     const body = res.body as { business: { status: BusinessStatus }; token: string };
     expect(body.business.status).toBe(BusinessStatus.ACTIVE);
     expect(body.token).toEqual(expect.any(String));
+  });
+
+  // D-15/P-11 (Wave 7 bloque 4, 17/09/2026, gate architecture-governor
+  // condición C3) -- antes EXPIRES_IN_SECONDS estaba hardcodeado en 86_400,
+  // ignorando JWT_EXPIRES_IN; mismo patrón que
+  // auth.service.test.ts:46 ("usa el mismo TTL configurado que login()").
+  it('el token respeta JWT_EXPIRES_IN configurado, no un TTL fijo hardcodeado', async () => {
+    process.env.JWT_EXPIRES_IN = '2h';
+    const platformRepo = fakePlatformRepo();
+    const router = createBusinessRouter(platformRepo);
+    const handler = getHandler(router);
+
+    const req = { body: validBody } as unknown as Request;
+    const res = fakeRes();
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    const body = res.body as { token: string; expiresIn: number };
+    expect(body.expiresIn).toBe(2 * 3600);
+    const payload = verifyToken(body.token, process.env.JWT_SECRET!);
+    expect(payload.exp - payload.iat).toBe(2 * 3600);
+    expect(res.cookie).toHaveBeenCalledWith('rh_token', body.token, expect.objectContaining({ maxAge: 2 * 3600 * 1000 }));
   });
 
   it('rechaza con 400 si el slug generado del nombre ya existe', async () => {

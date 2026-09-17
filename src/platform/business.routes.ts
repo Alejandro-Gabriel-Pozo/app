@@ -39,11 +39,12 @@ import { z } from 'zod';
 import type { PlatformRepository } from './platform.repository.js';
 import { hashPassword, verifyPassword } from '../security/user.store.js';
 import { signToken, setAuthCookie } from '../security/auth.middleware.js';
+import { parseExpiresIn } from '../security/auth.service.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
 import { logger } from '../logger.js';
-import { getJwtSecret } from '../config/env.js';
+import { getJwtSecret, getJwtExpiresInRaw } from '../config/env.js';
 
 /**
  * @swagger
@@ -192,7 +193,17 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
         // auth.middleware.ts::getJwtSecret() iba a rechazar recién en la
         // primera request autenticada, con un error confuso y tardío.
         const jwtSecret = getJwtSecret();
-        const EXPIRES_IN_SECONDS = 86_400;
+        // D-15/P-11 (Wave 7 bloque 4, 17/09/2026, "3 bloques chicos" --
+        // docs/auditoria-integral-fase16-2026-09-16.md, Etapa 8 "Cambios,
+        // en orden estricto", punto 4 "los tres bloques chicos e
+        // independientes"; línea 539 al momento de escribir esto): antes
+        // era 86_400 (24h) HARDCODEADO acá, ajeno a JWT_EXPIRES_IN
+        // configurado -- este era el ÚNICO emisor de token que no respetaba
+        // esa variable. Cambio de comportamiento observable declarado a
+        // propósito: el token del alta pública pasa a durar lo que diga
+        // JWT_EXPIRES_IN (default "24h", igual valor que antes si nadie la
+        // configuró distinto).
+        const EXPIRES_IN_SECONDS = parseExpiresIn(getJwtExpiresInRaw());
         const token = signToken(
           { sub: identityId, business_id: businessId },
           jwtSecret,

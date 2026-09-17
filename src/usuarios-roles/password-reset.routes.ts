@@ -23,7 +23,7 @@ import { z, ZodError } from 'zod';
 import { generatePasswordResetToken, hashPasswordResetToken } from '../security/password-reset-token.js';
 import { hashPassword } from '../security/user.store.js';
 import { passwordResetEmail } from '../email/templates.js';
-import type { EmailSender } from '../email/email.sender.js';
+import { DEFAULT_SENDER_NAME, type EmailSender } from '../email/email.sender.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { getTenantClient } from '../platform/tenant.middleware.js';
 import type { PlatformRepository, PasswordResetToken } from '../platform/platform.repository.js';
@@ -31,7 +31,6 @@ import { logger } from '../logger.js';
 
 /** Más corto que los 7 días de invitación — acá ya existe una cuenta activa. */
 export const PASSWORD_RESET_EXPIRES_HOURS = 24;
-export const DEFAULT_SENDER_NAME = 'ZuluHub';
 
 export function buildPasswordResetUrl(frontendUrl: string, token: string): string {
   return `${frontendUrl}/restablecer-contrasena/confirmar?token=${encodeURIComponent(token)}`;

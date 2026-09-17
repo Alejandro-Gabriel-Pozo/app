@@ -1003,6 +1003,53 @@ anteriores.
   de config/env.ts" completo sin cerrar esto primero (extender
   `PROCESS_ENV_RE` para cubrir las dos formas, o migrar esos 2 usos y
   ampliar las zonas exentas con motivo).
+- **P-11/D-15 (Wave 7 bloque 4, "3 bloques chicos", 17/09/2026) -- tope de
+  paginación NO se tocó, contradicción con D-14 resuelta por el dueño vía
+  `AskUserQuestion`, no en silencio** --
+  `docs/plan-ejecucion-integral-2026-09-16.md` §4 (línea 67-69) corrigió la
+  lectura de P-11/D-15 a "tope de paginación ligado a `PLAN_LIMITS`, por
+  plan" y ordenó a Wave 7 ejecutar con esa lectura. Al llegar al bloque,
+  `src/reservas/reservation.repository.ts:6-17` ya tenía ese mismo tope
+  resuelto de forma incompatible por **D-14**
+  (`docs/decisiones-auditoria-fase2-2026-09-15.md` #12, 15/09/2026 --
+  posterior a la redacción del plan integral): constante GLOBAL fija
+  (`RESERVATIONS_DEFAULT_LIMIT=50`/`RESERVATIONS_MAX_LIMIT=200`), con
+  razonamiento propio en el código -- "no por plan ni por tenant, protege
+  al servidor, no es una variable de negocio". Ligarlo a `PLAN_LIMITS`
+  hoy volvería el tope una variable de negocio, exactamente lo que D-14
+  descartó a propósito -- no son lecturas complementarias, son
+  incompatibles entre sí. Se preguntó en vez de resolverlo unilateralmente
+  en cualquier sentido (mismo criterio que "preguntas de alcance pueden
+  esconder una decisión de negocio" del `CLAUDE.md` raíz de este repo,
+  aunque acá el conflicto era entre dos decisiones ya tomadas, no una
+  pregunta de alcance nueva). **Decisión del dueño: dejar D-14 como está,
+  sin tocar `reservation.repository.ts`.** La lectura de la línea 69 del
+  plan integral queda superseded por D-14 -- no se abre ítem de código
+  nuevo, el tope de paginación no cambió en este bloque. (Verificación
+  contra Postgres real del contrato canónico de D-14 en sí, no de esta
+  decisión: ver el ítem "D-14 (contrato canónico de paginación...)" más
+  arriba en 🔍.) Los otros dos ítems de P-11/D-15 sí se ejecutaron en este
+  bloque sin conflicto: `PASSWORD_RESET_EXPIRES_HOURS=24`
+  (`src/usuarios-roles/password-reset.routes.ts:33`) y
+  `OUTBOX_RETENTION_DAYS=90` (`src/platform/outbox-purge.ts:47`) ya eran
+  constantes fijas de producto, compliant sin cambio de código -- y
+  `EXPIRES_IN_SECONDS` de `business.routes.ts` (antes 86 400 hardcodeado,
+  el único de los 6 call sites de `signToken()` que ignoraba
+  `JWT_EXPIRES_IN`) pasó a `parseExpiresIn(getJwtExpiresInRaw())`, con
+  test nuevo en `business.routes.test.ts` que fija el TTL configurado
+  (mismo patrón que `auth.service.test.ts:46`) y actualización de la nota
+  en `docs/plan-ejecucion-integral-2026-09-16.md` §4 (gate
+  `architecture-governor`, condiciones C1/C2/C3, 17/09/2026) para que la
+  lectura descartada no se vuelva a ejecutar leyendo el plan.
+  **Residuo declarado, no accionable hoy (C4 del mismo gate):**
+  `src/security/auth.middleware.ts:113` conserva `expiresIn = 86_400`
+  como default del parámetro de `signToken()` — sin consumidor real hoy
+  (los 6 call sites pasan el tercer argumento explícito, auditado en el
+  gate), pero armado para que el próximo call site que se olvide el
+  argumento reintroduzca el mismo bug de fondo que este bloque cierra. No
+  se toca acá porque un default compartido no puede resolver a la vez
+  `JWT_EXPIRES_IN` (tenant) y `PLATFORM_JWT_EXPIRES_IN` (plataforma) —
+  bloque de diseño aparte, no decidido todavía.
 
 ---
 

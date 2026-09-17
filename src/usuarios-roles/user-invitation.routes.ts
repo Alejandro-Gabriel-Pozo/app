@@ -50,14 +50,13 @@ import { hashPassword } from '../security/user.store.js';
 import { generateInvitationToken, hashInvitationToken } from '../security/invitation-token.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { userInvitationEmail } from '../email/templates.js';
-import type { EmailSender } from '../email/email.sender.js';
+import { DEFAULT_SENDER_NAME, type EmailSender } from '../email/email.sender.js';
 import type { PlatformRepository, UserInvitation } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
 import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
 import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
 
 const INVITATION_EXPIRES_DAYS = 7;
-const DEFAULT_SENDER_NAME = 'ZuluHub';
 
 const InviteUserBodySchema = z.object({
   email:  z.string({ required_error: 'email es obligatorio' }).email(),

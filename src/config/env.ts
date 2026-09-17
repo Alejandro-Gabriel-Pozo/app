@@ -88,11 +88,12 @@
  *   decisión de qué hacer si faltan (503 fail-closed en un caso, fail-open
  *   con `NoopEmailSender` en el otro) sigue siendo de cada archivo dueño,
  *   documentada ahí, no acá.
- * - `business.routes.ts` sigue con `EXPIRES_IN_SECONDS = 86_400` HARDCODEADO
- *   para el token del alta pública -- moverlo a `getJwtExpiresInRaw()`
- *   (respetando `JWT_EXPIRES_IN` configurado) es un cambio de
- *   comportamiento observable declarado a propósito, alcance del bloque 4
- *   ("3 bloques chicos"), no de este.
+ * - `business.routes.ts` quedó FUERA de este bloque con
+ *   `EXPIRES_IN_SECONDS = 86_400` hardcodeado para el token del alta
+ *   pública -- lo resolvió el bloque 4 ("3 bloques chicos", 17/09/2026):
+ *   ya usa `parseExpiresIn(getJwtExpiresInRaw())`, respetando
+ *   `JWT_EXPIRES_IN` configurado (cambio de comportamiento observable,
+ *   declarado a propósito en su propio commit).
  *
  * SI ESTO ROMPE (`process-env-usage-count.test.ts`): agregaste un acceso a
  * `process.env` fuera de este archivo y las zonas exentas de arriba.

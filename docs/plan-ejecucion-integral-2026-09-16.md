@@ -68,6 +68,8 @@ No existe hoy una regla escrita en el repo sobre cuándo invocar cada uno — es
 
 La tabla resumen de `decisiones-plan-integral` dice "1 por tenant, 1 por plan, 1 constante"; el detalle real (Apéndice A.3) es **2 constantes de producto** (`PASSWORD_RESET_EXPIRES_HOURS`, `OUTBOX_RETENTION_DAYS`) **+ 1 ligado a `PLAN_LIMITS`** (tope de paginación, por plan) **+ 0 por tenant**. Wave 7 ejecuta con esta lectura corregida.
 
+**Actualización 17/09/2026 (Wave 7 bloque 4, "3 bloques chicos", gate `architecture-governor`, condición C2): el tercio de "tope de paginación ligado a `PLAN_LIMITS`" queda SUPERSEDED, no ejecutado.** Al implementarlo se encontró que `src/reservas/reservation.repository.ts:6-16` ya resuelve ese mismo tope con una decisión posterior e incompatible, **D-14** (`docs/decisiones-auditoria-fase2-2026-09-15.md` #12, 15/09/2026 — posterior a la redacción de este plan): constante GLOBAL fija (`RESERVATIONS_DEFAULT_LIMIT=50`/`RESERVATIONS_MAX_LIMIT=200`), explícitamente "no por plan ni por tenant -- protege al servidor, no es una variable de negocio". Se preguntó al dueño (`AskUserQuestion`) en vez de resolver el conflicto en cualquier sentido; decisión: dejar D-14 como está, no tocar `reservation.repository.ts`. Detalle completo y anclas en `docs/pendientes-2026-09-12.md`, ítem "P-11/D-15 (Wave 7 bloque 4...)". Los otros dos tercios (`PASSWORD_RESET_EXPIRES_HOURS`, `OUTBOX_RETENTION_DAYS`) sí se auditaron y confirmaron compliant sin cambio de código en ese mismo bloque.
+
 ---
 
 ## 5. Lo que no se puede planificar todavía
