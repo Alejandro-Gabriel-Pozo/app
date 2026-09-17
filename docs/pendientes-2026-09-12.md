@@ -228,6 +228,78 @@ cuando se pushea.
   el resto del sistema — no es un fix aceptable solo para este caso). No
   es parte de
   este bloque de D-02.
+- **`CONNECTION-ERROR-LISTENER-GAP-001` — ALTA, hallazgo nuevo (17/09/2026,
+  Wave 8 / D-11, gate `architecture-governor`, condición C7). Sin código,
+  sin decisión, no es parte de ningún bloque commiteado.** Al arreglar
+  `PgTransactionManager.run()` (D-11), el gate encontró 4 sitios más con
+  la MISMA clase de hueco que ese fix cierra (ver `src/db/pg.transaction-manager.ts`,
+  docblock punto 3): un cliente de `pg` sin listener de `'error'` mientras
+  está en uso deja que una caída de conexión real suba como excepción NO
+  CAPTURADA y tire abajo **el proceso entero de la API**, no solo la
+  operación en curso — reproducido de verdad contra Postgres 16 local
+  (`pg_terminate_backend` desde otra sesión, `Uncaught Exception:
+  ECONNRESET`, exit code 1). Los 4 sitios, 3 de ellos **peor** que el caso
+  que D-11 cerró (un `pg.Client` standalone, sin ningún pool que en algún
+  momento del ciclo de vida le ponga un listener — D-11 solo tenía la
+  ventana del cliente afuera del pool, acá no hay pool en absoluto):
+  - `src/platform/outbox-purge.ts:64` — `new pg.Client(...)` en
+    `purgeOutboxForTenant()` (corrección 17/09/2026, gate
+    `architecture-governor`, tercera pasada: era `:63`, esa línea es el
+    comentario del bloque JSDoc, no la construcción). Cron de purga por
+    tenant, llamado desde `purgeOutboxAcrossTenants()` vía
+    `src/platform/platform.routes.ts:426` — corre dentro del proceso de
+    la API. Una caída de Neon a mitad de la purga de UN tenant tira abajo
+    el proceso de la API para TODOS los tenants.
+  - `src/platform/company-sync.worker.ts:128` — mismo patrón, worker de
+    sincronización de catálogo entre sucursales (arrancado vía
+    `src/platform/company-sync.registry.ts`). Corre dentro del proceso
+    de la API.
+  - `src/platform/tenant-db.setup.ts:560` — mismo patrón, dentro de
+    `applyTenantSchema()` (corrección 17/09/2026: era `:566`, esa línea
+    es `await client.connect()`, no el `new pg.Client(`) — se ejecuta en
+    cada deploy (`migrate:tenants`) y también en el alta de un negocio
+    nuevo (`business.routes.ts`).
+  - `src/db/pg.client.ts:126` (`withTransaction()`) — mismos 3 defectos
+    que D-11 tenía ANTES del fix (ROLLBACK sin try propio, `release()`
+    sin argumento, sin listener), pero **código muerto**: `npx knip`
+    lo lista bajo "Unused exports" y `grep -rn "withTransaction" src`
+    fuera de `pg.client.ts` solo da comentarios/menciones históricas, cero
+    call sites reales. La decisión (borrar vs. arreglar) es más barata
+    borrando — no decidida todavía.
+  - Prioridad más baja, mismo patrón: `src/server.ts:44` arma un `Pool`
+    de arranque (`migrate` de `platform.schema.sql`) sin `pool.on('error',
+    ...)` — los otros 3 pools del proceso (`pg.client.ts:101`,
+    `tenant.middleware.ts:116`, `container.ts:60`) sí lo tienen; este es
+    el único que falta, y solo corre una vez al boot.
+  **Reproducción** (para no re-derivar en la próxima sesión): un cliente
+  standalone de `pg` conectado, sin `client.on('error', ...)`, con la
+  conexión matada por `pg_terminate_backend` desde otra sesión MIENTRAS
+  el cliente está en uso — Node emite `Uncaught Exception` y el proceso
+  cae (probado con un script descartable contra Postgres 16 local, no
+  commiteado). **Enumeración cerrada, no solo sin evidencia de lo
+  contrario** (gate, tercera pasada): `grep -rn "\.connect()" src
+  --include="*.ts" | grep -v test` da 6 resultados; de esos, solo 2 sacan
+  un cliente de un pool real (`pg.client.ts:129`, dentro de
+  `withTransaction()`, ya listado arriba como código muerto, y
+  `pg.transaction-manager.ts:90`, el propio `run()` ya corregido por
+  D-11) — no hay un sexto sitio con este patrón, no hace falta
+  re-derivarlo. **No se arregla en este bloque** — D-11 cierra solo
+  `PgTransactionManager.run()`; estos 4+1 sitios necesitan su propio
+  impact-matrix y su propio gate, empezando por decidir `withTransaction()`
+  (borrar es la opción más barata y seguro más segura, dado que no tiene
+  callers).
+  **Residuo relacionado, encontrado en la misma auditoría (gate, tercera
+  pasada) — no forma parte de esta entrada, pre-existente, no introducido
+  por D-11:** el `ROLLBACK` que `PgTransactionManager.run()` intenta tras
+  un error no tiene timeout propio (`tenant.middleware.ts:108-114` fija
+  `connectionTimeoutMillis: 5_000` para CONECTAR pero no
+  `statement_timeout`/`query_timeout` para las queries ya en curso). Con
+  un socket a medio abrir (partición de red, no un RST inmediato como
+  `pg_terminate_backend`), `await conn.query('ROLLBACK')` puede colgarse
+  indefinidamente reteniendo una de las 5 conexiones del pool de un
+  tenant. Sin ancla de código nueva que agregar (es ausencia de un
+  timeout, no una línea puntual) — requiere decidir un valor y dónde
+  fijarlo, no decidido todavía.
 - **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
   retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
   bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`
