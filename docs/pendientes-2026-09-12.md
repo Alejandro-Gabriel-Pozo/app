@@ -300,6 +300,27 @@ cuando se pushea.
   tenant. Sin ancla de código nueva que agregar (es ausencia de un
   timeout, no una línea puntual) — requiere decidir un valor y dónde
   fijarlo, no decidido todavía.
+- **`PAYMENT-DEDUPE-PAYLOAD-BLIND-001` — MEDIA, hallazgo nuevo (17/09/2026,
+  Wave 8 / D-10, gate `architecture-governor`, condición C2 — registrado
+  desde `app-main`, el fix vive en `appfrontend`, commit
+  `e5561b4690d3bfbf5cd8150f377fa8afdb4568c2`).** El fix de D-10 (generar
+  `idempotencyKey` al abrir el formulario de pago, no en cada submit)
+  cierra la duplicación de filas que D-10 describía, pero el gate
+  encontró que el dedupe del backend (`payment-application.ts:145-148`,
+  `getByIdempotencyKey`) devuelve la fila YA GUARDADA sin comparar el
+  payload del request nuevo contra el original. Consecuencia: si un
+  operador reintenta el mismo pago tras un COMMIT ambiguo (D-11) pero
+  ademas EDITA el monto antes de reenviar (mismo modal abierto, misma
+  clave), el backend responde 201 con la fila vieja — el frontend
+  muestra "Pago registrado" por un monto que nunca se grabó. **No es una
+  regresión de este bloque** — con la clave vieja (una por click) ese
+  mismo escenario creaba una fila DUPLICADA, que es peor (saldo
+  sobredeclarado en vez de un mensaje engañoso) — pero tampoco queda
+  cerrado por el fix: sigue siendo posible reportarle éxito al operador
+  por un monto distinto al grabado. Requiere decisión de diseño (huella
+  del payload en la clave, o comparar amount/allocations contra la fila
+  existente y devolver 409 si difieren) — no decidido todavía, no
+  implementado.
 - **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
   retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
   bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`
