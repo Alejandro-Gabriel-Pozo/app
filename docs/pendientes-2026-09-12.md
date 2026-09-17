@@ -49,26 +49,10 @@ cuando se pushea.
   con la línea de log real como evidencia, recién cuando alguien la corre.
 - **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` (17/09/2026, fix de
   `SCHEMA-VERSION-GATE-NOT-PERMANENT-001` ya en código, `docs/resuelto.md`)
-  — 3 verificaciones que el fix en sí NO cubre, todas antes de dar por
-  cerrado el push de estos commits:**
-  - **(a) Re-correr las 2 consultas read-only contra los 2 tenants reales
-    inmediatamente antes de pushear**, no reusar la corrida del 17/09/2026:
-    `SELECT version FROM schema_migrations ORDER BY version;` en
-    `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) y `production`
-    (`br-snowy-tree-ax5wmq70`), más
-    `SELECT id, name FROM resource_categories WHERE is_lodging AND NOT is_exclusive;`
-    en los 2. Dejar el resultado con la fecha/hora de ESA corrida. En este
-    servicio push = deploy (`docs/conocimiento/runbook-deploy-render.md:14-35`)
-    — no hay un checkpoint intermedio para reconsiderar.
-  - **(b) El fix solo está verificado contra Postgres 16.13 local** (BD de
-    scratch simulando el escenario real) — nunca corrió `migrate:tenants`
-    contra las 2 tenant DB reales con los gates nuevos. Acción puntual:
-    después del próximo deploy, confirmar en los logs de `migrate-tenants`
-    que los 2 tenants terminaron `ok:true` y que `schema_migrations` quedó
-    en `{60}` como versión máxima en ambos (no debería haber cambiado el
-    comportamiento observable para ninguno de los dos, dado que las 2
-    consultas de (a) dieron 0 filas candidatas el 17/09 — pero confirmarlo,
-    no asumirlo).
+  — sub-ítems (a) y (b) confirmados contra el push real (commit `8ceff54`,
+  deploy Render `dep-dam2hfnqj5pc73e1kbug`) y movidos a `docs/resuelto.md`
+  con la evidencia completa (consultas, timestamps, log de build). Queda
+  acá solo lo que sigue sin cerrar:**
   - **(c) BD de scratch sin borrar** — `audit_v60_probe`/`audit_v60_hoy`
     (dejadas por `erp-audit-orchestrator` en su propio entorno, no en este)
     y `gate_fix_verify`/`schema_syntax_check`/`resource_uniq_scratch` (de
@@ -141,6 +125,27 @@ cuando se pushea.
   `statement_timeout`) sería donde aparecería un rechazo de conexión, si
   lo hubiera — no `/health` (no toca BD). Verificación post-deploy: un
   login/request de staff real contra el proceso desplegado.
+  **Parcialmente cerrado 17/09/2026, con evidencia real del push de estos
+  commits (deploy Render `dep-dam2hfnqj5pc73e1kbug`, logs vía MCP Render):**
+  el canario involuntario de arriba SÍ corrió — `migrate-tenants` completó
+  `2/2 OK, 0 fallo(s)` usando `createPlatformPool()` (con `statement_timeout`
+  seteado) contra el pooler real de Neon, sin ningún error de conexión ni
+  timeout. Esto es evidencia empírica directa (no de sandbox) de que el
+  pooler SÍ reenvía `statement_timeout`/`idle_in_transaction_session_timeout`
+  como startup parameters para ese tipo de conexión — cierra el riesgo de
+  rechazo para el pool de plataforma específicamente. **Sigue sin cerrar:**
+  el pool por-tenant de `tenant.middleware.ts` (misma config, conexión
+  distinta) — ningún request de staff autenticado llegó a ejercitarlo
+  contra la instancia nueva en esta sesión. Intentado: `curl` directo
+  contra `https://app-chny.onrender.com/health` y `/health/db` desde el
+  sandbox — `403` explícito del proxy de organización
+  (`connect_rejected`), mismo bloqueo que contra el host de Neon, no
+  ausencia de ruta. Tampoco hay logs de requests `/api/*` en la ventana
+  posterior al deploy (`mcp__Render__list_logs`, sin resultados) — nadie
+  generó tráfico de staff real todavía. Acción puntual que lo cierra:
+  cualquier sesión con salida HTTPS real hacia `app-chny.onrender.com` (o
+  el próximo login de staff real) confirmando ausencia de errores de
+  conexión en los logs de `tenant.middleware.ts`.
 - **`D-22-SCHEMA-DIRTY-DATA-VERIFY-001` (17/09/2026, `schema.sql` actual
   aplicado exitosamente contra un branch descartable de Neon forkeado de
   `tenant-hotel-los-alamos` — 431/431 statements, sin error) — la corrida

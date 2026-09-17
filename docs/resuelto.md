@@ -20,6 +20,52 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 17/09/2026
+
+- **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001`, sub-ítems (a) y (b).**
+  Origen: `docs/pendientes-2026-09-12.md`. Las dos verificaciones pre-push/
+  post-deploy del fix `SCHEMA-VERSION-GATE-NOT-PERMANENT-001`, corridas
+  contra el push real de Waves 1-9 (commit `8ceff54`, deploy Render
+  `dep-dam2hfnqj5pc73e1kbug`):
+  - **(a)** Re-corrida read-only inmediatamente antes de pushear (MCP Neon
+    `run_sql`, solo `SELECT`), 17/09/2026 ~17:50 UTC: `MAX(schema_migrations.version)
+    = 59` en `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) y en
+    `production` (`br-snowy-tree-ax5wmq70`); `resource_categories WHERE
+    is_lodging AND NOT is_exclusive` = 0 filas en los dos. Como `MAX` daba
+    59 (`< 60`), se corrió además `SELECT count(*) FROM reservations r
+    WHERE NOT EXISTS (... reservation_lines ...)` (el único de los 3
+    backfills de D-07(c) con costo proporcional al volumen) — 0 en los dos
+    tenants. Deploy confirmado DML-neutro antes de pushear.
+  - **(b)** Post-deploy (17/09/2026 17:52 UTC, logs de build reales vía MCP
+    Render): `[migrate-tenants] 2 negocio(s) con BD asignada. Versión
+    objetivo: v60.` → `✅ cd6cd508-f219-4bde-81ec-7a1d74f02074 — migrado a
+    v60` / `✅ biz-demo-01 — migrado a v60` → `2/2 OK, 0 fallo(s)`. Re-chequeo
+    directo en las 2 tenant DB (MCP Neon `run_sql`): `schema_migrations`
+    tiene la fila `{version: 60, applied_at: 2026-09-17T17:52:27...}` en
+    los dos, timestamp coincidente con el log de build; `resource_categories
+    WHERE is_lodging AND NOT is_exclusive` sigue en 0 filas en los dos — sin
+    cambio observable, como predecía (a). El mensaje real fue "migrado a
+    v60" (no "verificado contra la BD real") porque `business.schemaVersion`
+    cacheado en la BD de plataforma estaba en 59 — confirma que
+    `applyTenantSchema()` corrió el DDL real, no un no-op.
+  - **Hallazgo adicional cerrado en el mismo push (gate `architecture-governor`,
+    ronda de push):** la conexión de `createPlatformPool()`
+    (`container.ts:67`, usada por `migrate-tenants.ts` vía
+    `PlatformRepository`) SÍ lleva `statement_timeout`/
+    `idle_in_transaction_session_timeout` como startup parameters, y el
+    build completo (incluida esa conexión) corrió sin ningún error de
+    conexión contra el pooler real de Neon — evidencia empírica directa
+    (no de sandbox) de que el pooler reenvía esos dos parámetros para ESE
+    tipo de conexión. Queda **sin cerrar** la mitad del residuo
+    `D-20-STATEMENT-TIMEOUT-POOLER-VERIFY-001` que corresponde al pool
+    por-tenant de `tenant.middleware.ts` (mismos parámetros, conexión
+    distinta) — ningún request de staff autenticado llegó a probarse contra
+    la instancia nueva en esta sesión (sandbox sin salida HTTPS hacia el
+    host de Render, mismo bloqueo de política de organización que hacia
+    Neon). Ver `docs/pendientes-2026-09-12.md` para el residuo actualizado.
+  - **(c)** sigue sin cerrar — limpieza de BD de scratch, no bloqueante,
+    permanece en `pendientes-2026-09-12.md`.
+
 ## 14/09/2026
 
 - **`CITY-LEDGER-AR-REPORT-ROW-FRONTEND-MIRROR-001`.** Origen:
