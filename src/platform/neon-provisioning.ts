@@ -47,6 +47,21 @@ import { getNeonApiKey, getNeonProjectId, getNeonTemplateBranchId } from '../con
 
 const NEON_API_BASE = 'https://console.neon.tech/api/v2';
 
+/**
+ * D-20 (17/09/2026, Wave 9 -- docs/auditoria-integral-fase15-2026-09-16.md:579-599).
+ * Sin timeout, un `fetch()` colgado retiene una request de Express
+ * indefinidamente -- con `plan: free` y una sola instancia, un puñado
+ * alcanza para agotar la capacidad (mismo razonamiento ya aplicado a
+ * `connectionTimeoutMillis` del pool de plataforma, `src/container.ts:58`).
+ * Generoso a propósito, más que las otras 2 contrapartes de este bloque:
+ * aprovisionar un branch crea infraestructura real (branch + compute
+ * endpoint), no responde desde caché/config -- un timeout corto abortaría
+ * el alta de un negocio a mitad de camino, que D-14 ya señala como peor
+ * que esperar. Sin medición de latencia real contra la API de Neon
+ * todavía -- ver docs/pendientes-2026-09-12.md.
+ */
+const NEON_API_TIMEOUT_MS = 30_000;
+
 export class NeonProvisioningError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
@@ -85,16 +100,43 @@ interface ConnectionUriResponse {
 
 async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<{ data: T; raw: string }> {
   const apiKey = requireEnv('NEON_API_KEY', getNeonApiKey());
-  const res = await fetch(`${NEON_API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${NEON_API_BASE}${path}`, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...(init?.headers ?? {}),
+      },
+      // `signal` va DESPUÉS del `...init` a propósito: pisa cualquier
+      // `init.signal` que pase un caller. Hoy ninguno lo pasa
+      // (business.routes.ts:178 y platform.routes.ts:400 mandan solo
+      // method/body, auditado en el gate del 17/09/2026) -- queda
+      // declarado para que el próximo caller que sí lo necesite sepa que
+      // acá se lo comen en silencio.
+      signal: AbortSignal.timeout(NEON_API_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new NeonProvisioningError(
+        `Neon API ${init?.method ?? 'GET'} ${path} no respondió en ${NEON_API_TIMEOUT_MS}ms`,
+        err,
+      );
+    }
+    throw err;
+  }
 
+  // LIMITACIÓN declarada (D-20, gate 17/09/2026): el try/catch de arriba
+  // cubre solo la fase de headers. Si el signal vence MIENTRAS se lee el
+  // body, el TimeoutError (DOMException) sale por acá SIN envolver --
+  // verificado con un servidor local que manda headers y no cierra el
+  // body. No cambia el comportamiento observable (ningún consumidor
+  // ramifica por NeonProvisioningError), solo pierde contexto en el
+  // mensaje. Mover la lectura del body adentro del try es un bloque
+  // aparte: cambia lo que el catch ve en el camino !res.ok y necesita
+  // test propio.
   const raw = await res.text();
 
   if (!res.ok) {

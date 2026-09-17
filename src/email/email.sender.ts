@@ -71,6 +71,16 @@ import { getResendApiKey, getResendFromEmail } from '../config/env.js';
 /** Nombre de remitente por defecto cuando el negocio no cargó `display_name`. */
 export const DEFAULT_SENDER_NAME = 'ZuluHub';
 
+/**
+ * D-20 (17/09/2026, Wave 9 -- docs/auditoria-integral-fase15-2026-09-16.md:579-599).
+ * Sin timeout, un `fetch()` colgado retiene la request que lo llamó --
+ * `send()` se invoca tanto desde el worker de outbox como directo desde
+ * rutas (password-reset, invitación de usuario). Resend es una API REST
+ * simple, no una operación de aprovisionamiento -- 10s es margen generoso
+ * sobre una respuesta que normalmente es de milisegundos.
+ */
+const RESEND_API_TIMEOUT_MS = 10_000;
+
 export interface EmailMessage {
   to: string;
   /** Nombre para mostrar en el remitente — el del negocio, o un default de plataforma. */
@@ -117,20 +127,29 @@ export class ResendEmailSender implements EmailSender {
   ) {}
 
   async send(message: EmailMessage): Promise<void> {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: `${formatFromDisplayName(message.fromName)} <${this.fromEmail}>`,
-        to: [message.to],
-        ...(message.replyTo && { reply_to: message.replyTo }),
-        subject: message.subject,
-        html: message.html,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: `${formatFromDisplayName(message.fromName)} <${this.fromEmail}>`,
+          to: [message.to],
+          ...(message.replyTo && { reply_to: message.replyTo }),
+          subject: message.subject,
+          html: message.html,
+        }),
+        signal: AbortSignal.timeout(RESEND_API_TIMEOUT_MS),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        throw new Error(`[ResendEmailSender] Resend no respondió en ${RESEND_API_TIMEOUT_MS}ms`, { cause: err });
+      }
+      throw err;
+    }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');

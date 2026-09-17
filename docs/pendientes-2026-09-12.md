@@ -1329,6 +1329,35 @@ anteriores.
   se toca acá porque un default compartido no puede resolver a la vez
   `JWT_EXPIRES_IN` (tenant) y `PLATFORM_JWT_EXPIRES_IN` (plataforma) —
   bloque de diseño aparte, no decidido todavía.
+- **`D-20-NEON-TIMEOUT-VALUE-VERIFY-001` (17/09/2026, Wave 9 sub-bloque 2,
+  `AbortSignal.timeout()` en los 3 `fetch()` no-AFIP ya en código y
+  verde -- `src/platform/neon-provisioning.ts`, `src/email/email.sender.ts`,
+  `src/security/google-oauth.ts`) — el valor de
+  `NEON_API_TIMEOUT_MS = 30_000` (`neon-provisioning.ts`) es un default
+  razonado, no medido contra la latencia real de la API de Neon.** El
+  propio hallazgo (`docs/auditoria-integral-fase15-2026-09-16.md:598`)
+  advierte: *"Un timeout mal dimensionado en el aprovisionamiento de Neon
+  aborta una saga a medio camino (D-14): peor que esperar. Dimensionar con
+  la latencia real observada, no con un default."* Los otros dos valores
+  (`RESEND_API_TIMEOUT_MS = 10_000`, `GOOGLE_JWKS_TIMEOUT_MS = 5_000`) son
+  de menor riesgo -- ninguno de los dos participa de una saga de varios
+  pasos. Acción puntual que lo cierra: registrar un alta de negocio real
+  (o varias) y medir cuánto tarda de punta a punta `POST
+  /projects/{id}/branches` + `GET .../connection_uri` contra la API real de
+  Neon; si la P99 observada se acerca a 30s, subir el valor: no bajarlo sin
+  medir primero. Se corta de acá (no se tacha) y pasa a `docs/resuelto.md`
+  con la medición real, recién cuando alguien la corre.
+  **Lo que el gate verificó y lo que NO (17/09/2026):** lo único
+  confirmado contra runtime real es la forma genérica del abort en Node
+  22 (`DOMException` con `name === 'TimeoutError'`, `instanceof Error`) —
+  la propia "Pruebas necesarias" del hallazgo original
+  (`docs/auditoria-integral-fase15-2026-09-16.md:597`, *"Un servidor
+  local que acepta la conexión y no responde, apuntando cada cliente a
+  él"*) **no se corrió por cliente**: los tres (`NEON_API_BASE`,
+  `https://api.resend.com/emails`, `JWKS_URL`) tienen la URL hardcodeada,
+  así que ninguno se puede apuntar hoy a un servidor de prueba sin
+  inyectar la base URL — cambio de testeabilidad no decidido todavía. No
+  se hizo ninguna llamada real a Neon, Resend ni Google en este bloque.
 
 ---
 

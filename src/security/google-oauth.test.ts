@@ -103,4 +103,44 @@ describe('verifyGoogleIdToken', () => {
     const token = signIdToken(privateKey, validPayload(), KID);
     await expect(verifyGoogleIdToken(token)).rejects.toThrow(/GOOGLE_CLIENT_ID/);
   });
+
+  // D-20 (17/09/2026, Wave 9) -- el fetch del JWKS ahora lleva
+  // AbortSignal.timeout(). Estos tres casos verifican que un cuelgue de
+  // Google no se disfrace de "token inválido" (401 al cliente) cuando en
+  // realidad es una falla de disponibilidad nuestra/de Google (debería
+  // caer a next(err) -> 500).
+  describe('D-20 -- timeout del fetch al JWKS', () => {
+    it('un timeout se mapea a un Error plano con el ms declarado -- NUNCA a GOOGLE_TOKEN_INVALID', async () => {
+      const timeoutErr = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+      global.fetch = vi.fn().mockRejectedValue(timeoutErr) as unknown as typeof fetch;
+      const token = signIdToken(privateKey, validPayload(), KID);
+
+      const caught: unknown = await verifyGoogleIdToken(token).catch((e: unknown) => e);
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toMatch(/JWKS de Google no respondió en 5000ms/);
+      // la aserción negativa es la que importa acá: un timeout NO es un
+      // token de cliente inválido, así que auth.routes.ts no debe poder
+      // mapearlo a 401 -- ver docblock de getGoogleJwks().
+      expect((caught as NodeJS.ErrnoException).code).not.toBe('GOOGLE_TOKEN_INVALID');
+    });
+
+    it('pasa un AbortSignal al fetch del JWKS', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ keys: [jwk] }) });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const token = signIdToken(privateKey, validPayload(), KID);
+
+      await verifyGoogleIdToken(token);
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('una falla de fetch que NO es timeout (ej. DNS caído) propaga tal cual, sin envolver', async () => {
+      const dnsErr = new TypeError('fetch failed');
+      global.fetch = vi.fn().mockRejectedValue(dnsErr) as unknown as typeof fetch;
+      const token = signIdToken(privateKey, validPayload(), KID);
+
+      await expect(verifyGoogleIdToken(token)).rejects.toBe(dnsErr);
+    });
+  });
 });

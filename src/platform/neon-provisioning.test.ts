@@ -102,4 +102,36 @@ describe('provisionTenantDatabase', () => {
       expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer fake-api-key');
     }
   });
+
+  // D-20 (17/09/2026, Wave 9) -- cada llamada a la API de Neon ahora lleva
+  // AbortSignal.timeout(30000).
+  describe('D-20 -- timeout del fetch a la API de Neon', () => {
+    it('un timeout se mapea a NeonProvisioningError con el ms declarado', async () => {
+      const timeoutErr = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+      vi.spyOn(global, 'fetch').mockRejectedValue(timeoutErr);
+
+      await expect(provisionTenantDatabase('negocio-nuevo')).rejects.toThrow(NeonProvisioningError);
+      await expect(provisionTenantDatabase('negocio-nuevo')).rejects.toThrow(/no respondió en 30000ms/);
+    });
+
+    it('pasa un AbortSignal en cada llamada', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch')
+        .mockResolvedValueOnce(jsonResponse({ branch: { id: 'branch-nuevo' } }))
+        .mockResolvedValueOnce(jsonResponse({ uri: 'postgresql://algo' }));
+
+      await provisionTenantDatabase('negocio-nuevo');
+
+      for (const call of fetchSpy.mock.calls) {
+        const init = call[1] as RequestInit;
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+      }
+    });
+
+    it('una falla de fetch que NO es timeout (ej. DNS caído) propaga tal cual, sin envolver', async () => {
+      const dnsErr = new TypeError('fetch failed');
+      vi.spyOn(global, 'fetch').mockRejectedValueOnce(dnsErr);
+
+      await expect(provisionTenantDatabase('negocio-nuevo')).rejects.toBe(dnsErr);
+    });
+  });
 });

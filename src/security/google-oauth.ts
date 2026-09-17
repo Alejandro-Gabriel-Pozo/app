@@ -55,6 +55,16 @@ const JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 const GOOGLE_ISSUERS = new Set(['accounts.google.com', 'https://accounts.google.com']);
 const JWKS_CACHE_TTL_MS = 60 * 60 * 1_000; // Google rota las claves con poca frecuencia -- 1h alcanza.
 
+/**
+ * D-20 (17/09/2026, Wave 9 -- docs/auditoria-integral-fase15-2026-09-16.md:579-599).
+ * Camino de login -- de las 3 contrapartes no-AFIP de este bloque, la más
+ * sensible a latencia: un JWKS colgado cuelga el login (la cache mitiga
+ * el caso repetido, no el primero ni un `forceRefresh`). El endpoint de
+ * Google normalmente responde en milisegundos -- 5s es margen, no un
+ * default sin pensar.
+ */
+const GOOGLE_JWKS_TIMEOUT_MS = 5_000;
+
 let jwksCache: { keys: GoogleJwk[]; fetchedAt: number } | undefined;
 
 async function getGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
@@ -62,10 +72,30 @@ async function getGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
     return jwksCache.keys;
   }
 
-  const res = await fetch(JWKS_URL);
+  let res: Response;
+  try {
+    res = await fetch(JWKS_URL, { signal: AbortSignal.timeout(GOOGLE_JWKS_TIMEOUT_MS) });
+  } catch (err) {
+    // Deliberadamente NO se mapea a GOOGLE_TOKEN_INVALID (googleTokenInvalidError):
+    // un timeout es una falla de DISPONIBILIDAD de Google, no un token de
+    // cliente inválido -- mismo criterio que la rama !res.ok de abajo, que
+    // ya lanzaba un Error plano en vez de GOOGLE_TOKEN_INVALID. Sin `code`,
+    // auth.routes.ts/customer.routes.ts caen a next(err) -> 500, no 401.
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(`[google-oauth] JWKS de Google no respondió en ${GOOGLE_JWKS_TIMEOUT_MS}ms`, { cause: err });
+    }
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`[google-oauth] No se pudo obtener el JWKS de Google (status ${res.status})`);
   }
+  // LIMITACIÓN declarada (D-20, gate 17/09/2026): el try/catch de arriba
+  // cubre solo la fase de headers. Si el signal vence MIENTRAS se lee el
+  // body, el TimeoutError (DOMException) sale por acá SIN envolver --
+  // verificado con un servidor local que manda headers y no cierra el
+  // body. No cambia el comportamiento observable (sigue sin `code`, o sea
+  // 500 y no 401), solo pierde contexto en el mensaje. Mover la lectura
+  // del body adentro del try es un bloque aparte: necesita test propio.
   const body = (await res.json()) as { keys: GoogleJwk[] };
   jwksCache = { keys: body.keys, fetchedAt: Date.now() };
   return body.keys;

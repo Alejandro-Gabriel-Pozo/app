@@ -49,6 +49,37 @@ describe('ResendEmailSender', () => {
       sender.send({ to: 'cliente@example.com', fromName: 'ZuluHub', subject: 's', html: 'h' }),
     ).rejects.toThrow(/422/);
   });
+
+  // D-20 (17/09/2026, Wave 9) -- el fetch a Resend ahora lleva
+  // AbortSignal.timeout(10000).
+  describe('D-20 -- timeout del fetch a Resend', () => {
+    const sender = new ResendEmailSender('re_test_key', 'notificaciones@zuluhub.com.ar');
+    const msg = { to: 'cliente@example.com', fromName: 'ZuluHub', subject: 's', html: 'h' };
+
+    it('un timeout se mapea a un Error con el ms declarado', async () => {
+      const timeoutErr = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+      global.fetch = vi.fn().mockRejectedValue(timeoutErr) as unknown as typeof fetch;
+
+      await expect(sender.send(msg)).rejects.toThrow(/Resend no respondió en 10000ms/);
+    });
+
+    it('pasa un AbortSignal al fetch', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      await sender.send(msg);
+
+      const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(options.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('una falla de fetch que NO es timeout (ej. DNS caído) propaga tal cual, sin envolver', async () => {
+      const dnsErr = new TypeError('fetch failed');
+      global.fetch = vi.fn().mockRejectedValue(dnsErr) as unknown as typeof fetch;
+
+      await expect(sender.send(msg)).rejects.toBe(dnsErr);
+    });
+  });
 });
 
 describe('ResendEmailSender — header From (EMAIL-FROMNAME-RFC5322-01)', () => {
