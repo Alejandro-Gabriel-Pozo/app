@@ -43,6 +43,8 @@
  *                            nuevos. No es secreto.
  */
 
+import { getNeonApiKey, getNeonProjectId, getNeonTemplateBranchId } from '../config/env.js';
+
 const NEON_API_BASE = 'https://console.neon.tech/api/v2';
 
 export class NeonProvisioningError extends Error {
@@ -52,8 +54,15 @@ export class NeonProvisioningError extends Error {
   }
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
+/**
+ * Wave 7 (17/09/2026) -- antes leía `process.env[name]` con clave dinámica,
+ * uno de los 2 blind spots que la cerca de conteo
+ * (`process-env-usage-count.test.ts`) dejó documentados al no cubrir esa
+ * forma. Ahora recibe el VALOR ya resuelto por `config/env.ts` -- cierra el
+ * blind spot sin que este archivo, de dominio ajeno, tenga que saber cómo
+ * se lee `process.env`.
+ */
+function requireEnv(name: string, value: string | undefined): string {
   if (!value) {
     throw new NeonProvisioningError(`${name} no está definida — no se puede aprovisionar la BD del tenant.`);
   }
@@ -75,7 +84,7 @@ interface ConnectionUriResponse {
 }
 
 async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<{ data: T; raw: string }> {
-  const apiKey = requireEnv('NEON_API_KEY');
+  const apiKey = requireEnv('NEON_API_KEY', getNeonApiKey());
   const res = await fetch(`${NEON_API_BASE}${path}`, {
     ...init,
     headers: {
@@ -105,8 +114,8 @@ async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<{ data
  * admin.routes.ts con una connection string provista a mano.
  */
 export async function provisionTenantDatabase(businessSlug: string): Promise<{ connectionString: string }> {
-  const projectId = requireEnv('NEON_PROJECT_ID');
-  const templateBranchId = requireEnv('NEON_TEMPLATE_BRANCH_ID');
+  const projectId = requireEnv('NEON_PROJECT_ID', getNeonProjectId());
+  const templateBranchId = requireEnv('NEON_TEMPLATE_BRANCH_ID', getNeonTemplateBranchId());
 
   const { data: created } = await neonApiFetch<CreateBranchResponse>(`/projects/${projectId}/branches`, {
     method: 'POST',

@@ -42,6 +42,7 @@ import { SqlResourceRepository }               from '../reservas/sql.resource.re
 import { SqlStayRepository }                   from '../pms-estadias/stay.repository.js';
 import { SqlAccountsReceivableRepository }     from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
+import { getFrontendOrigin }                   from '../config/env.js';
 
 const workers = new Map<string, OutboxWorker>();
 const holdExpiryWorkers = new Map<string, ReservationHoldExpiryWorker>();
@@ -120,9 +121,7 @@ export function ensureTenantWorker(
   // pasa a dead-letter. `dashboardUrl` = misma base que el CORS del frontend
   // (app.ts:181) + /dashboard, donde vive el OutboxAlertBanner. Sin
   // CORS_ORIGIN (dev), cae al puerto default de Next.
-  const frontendBase = process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*'
-    ? process.env.CORS_ORIGIN
-    : 'http://localhost:3000';
+  const frontendBase = getFrontendOrigin();
   const onDeadLetterBatch = makeDeadLetterEmailNotifier({
     businessId,
     getManagementEmails: (id) => platformRepo.getManagementEmails(id),

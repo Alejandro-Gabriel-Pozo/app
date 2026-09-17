@@ -21,6 +21,7 @@ import { pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { signPlatformToken } from './platform.auth.middleware.js';
 import { PlatformRole } from '../types/enums.js';
+import { getPlatformAdminEmail, getPlatformAdminPassword } from '../config/env.js';
 
 const pbkdf2Async = promisify(pbkdf2);
 
@@ -71,8 +72,8 @@ let _bootstrapHash: string | null = null;
 let _bootstrapEmail: string | null = null;
 
 async function getBootstrapCredentials(): Promise<{ email: string; hash: string } | null> {
-  const email    = process.env.PLATFORM_ADMIN_EMAIL;
-  const password = process.env.PLATFORM_ADMIN_PASSWORD;
+  const email    = getPlatformAdminEmail();
+  const password = getPlatformAdminPassword();
 
   if (!email || !password) return null;
 

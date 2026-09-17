@@ -29,6 +29,7 @@ import { stripSslMode, sslConfig } from './db/pg.client.js';
 import { PgTransactionManager } from './db/pg.transaction-manager.js';
 import type { TransactionManager } from './db/transaction-manager.js';
 import { logger } from './logger.js';
+import { requirePlatformDatabaseUrl, getPlatformDatabaseUrl } from './config/env.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -40,13 +41,7 @@ const { Pool } = pg;
 let _platformPool: InstanceType<typeof Pool> | null = null;
 
 export function createPlatformPool(): SqlClient {
-  const rawUrl = process.env.PLATFORM_DATABASE_URL;
-  if (!rawUrl) {
-    throw new Error(
-      '[container] PLATFORM_DATABASE_URL no está definida. ' +
-      'Configurá la variable de entorno en Render Dashboard → Environment Variables.',
-    );
-  }
+  const rawUrl = requirePlatformDatabaseUrl();
 
   if (!_platformPool) {
     const connectionString = stripSslMode(rawUrl);
@@ -119,7 +114,7 @@ export interface AppContainer {
 }
 
 export async function createAppContainer(): Promise<AppContainer> {
-  if (!process.env.PLATFORM_DATABASE_URL) {
+  if (!getPlatformDatabaseUrl()) {
     throw new Error(
       '[container] PLATFORM_DATABASE_URL no está definida. ' +
       'Configurá la variable de entorno en Render Dashboard → Environment Variables.',

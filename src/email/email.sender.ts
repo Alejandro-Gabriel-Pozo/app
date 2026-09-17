@@ -66,6 +66,7 @@
  */
 
 import { logger } from '../logger.js';
+import { getResendApiKey, getResendFromEmail } from '../config/env.js';
 
 /** Nombre de remitente por defecto cuando el negocio no cargó `display_name`. */
 export const DEFAULT_SENDER_NAME = 'ZuluHub';
@@ -149,8 +150,8 @@ export class NoopEmailSender implements EmailSender {
 }
 
 export function createEmailSender(): EmailSender {
-  const apiKey = process.env.RESEND_API_KEY;
-  const fromEmail = process.env.RESEND_FROM_EMAIL;
+  const apiKey = getResendApiKey();
+  const fromEmail = getResendFromEmail();
   if (!apiKey || !fromEmail) return new NoopEmailSender();
   return new ResendEmailSender(apiKey, fromEmail);
 }

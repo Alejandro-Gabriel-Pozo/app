@@ -40,6 +40,7 @@ import { verifyPassword } from './user.store.js';
 import { verifyGoogleIdToken } from './google-oauth.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
 import { logger } from '../logger.js';
+import { getJwtSecret, getJwtExpiresInRaw } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -95,7 +96,7 @@ export class AuthService {
   private readonly tokenTtlSeconds: number;
 
   constructor(private readonly platformRepo: PlatformRepository) {
-    this.tokenTtlSeconds = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
+    this.tokenTtlSeconds = parseExpiresIn(getJwtExpiresInRaw());
   }
 
   /**
@@ -164,7 +165,7 @@ export class AuthService {
 
     const identityToken = signToken<IdentityTokenPayload>(
       { sub: identity.id, purpose: 'BUSINESS_SELECTION' },
-      requireJwtSecret(),
+      getJwtSecret(),
       IDENTITY_TOKEN_TTL_SECONDS,
     );
 
@@ -192,7 +193,7 @@ export class AuthService {
     try {
       payload = verifyToken<IdentityTokenPayload & { exp: number; iat: number }>(
         identityToken,
-        requireJwtSecret(),
+        getJwtSecret(),
       );
     } catch {
       throw invalidBusinessSelectionError();
@@ -222,7 +223,7 @@ export class AuthService {
   refreshTenantToken(identityId: string, businessId: string): { token: string; tokenType: 'Bearer'; expiresIn: number } {
     const token = signToken(
       { sub: identityId, business_id: businessId },
-      requireJwtSecret(),
+      getJwtSecret(),
       this.tokenTtlSeconds,
     );
     return { token, tokenType: 'Bearer', expiresIn: this.tokenTtlSeconds };
@@ -238,7 +239,7 @@ export class AuthService {
   private issueTenantToken(identity: Identity, membership: Membership): LoginResult {
     const token = signToken(
       { sub: identity.id, business_id: membership.businessId },
-      requireJwtSecret(),
+      getJwtSecret(),
       this.tokenTtlSeconds,
     );
 
@@ -258,12 +259,6 @@ export class AuthService {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function requireJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error('[AuthService] JWT_SECRET no está definida');
-  return secret;
-}
 
 function invalidCredentialsError(): Error {
   const err = new Error('Credenciales inválidas');

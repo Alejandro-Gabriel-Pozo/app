@@ -18,11 +18,12 @@
  */
 
 import pino from 'pino';
+import { isProduction as checkIsProduction, getLogLevel } from './config/env.js';
 
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = checkIsProduction();
 
 export const logger = pino({
-  level: process.env.LOG_LEVEL ?? (isProduction ? 'info' : 'debug'),
+  level: getLogLevel() ?? (isProduction ? 'info' : 'debug'),
   ...(isProduction ? {} : {
     transport: {
       target: 'pino-pretty',

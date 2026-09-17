@@ -35,6 +35,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
+import { getDbEncryptionKey, getDbEncryptionKeyOld } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
 // Schema loader — fuente de verdad única, resuelta desde este archivo
@@ -138,7 +139,7 @@ export async function decryptConnectionString(
 }
 
 async function deriveEncryptionKey(): Promise<Buffer> {
-  const keyMaterial = process.env.DB_ENCRYPTION_KEY;
+  const keyMaterial = getDbEncryptionKey();
   if (!keyMaterial) {
     throw new Error(
       '[tenant-db.setup] DB_ENCRYPTION_KEY no está definida. ' +
@@ -167,7 +168,7 @@ async function deriveEncryptionKey(): Promise<Buffer> {
  * rotación real. Sin exportar -- sin consumidor fuera de este archivo.
  */
 async function deriveOldEncryptionKey(): Promise<Buffer | null> {
-  const keyMaterial = process.env.DB_ENCRYPTION_KEY_OLD;
+  const keyMaterial = getDbEncryptionKeyOld();
   if (!keyMaterial) return null;
   const keyBuffer = Buffer.from(keyMaterial, 'hex');
   if (keyBuffer.length !== 32) {

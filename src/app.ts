@@ -123,6 +123,7 @@ import { SqlStockMovementRepository }        from './repositories/sql.stock-move
 import { buildTenantTransactionManager }     from './db/tenant-context.js';
 import { stopAllWorkers }                from './workers/outbox.registry.js';
 import { createEmailSender }             from './email/email.sender.js';
+import { getCorsOriginSetting, getFrontendOrigin, getHealthDbTtlMs, getHealthDbFailTtlMs } from './config/env.js';
 import type { Request, Response, NextFunction } from 'express';
 
 export async function createApp(): Promise<{
@@ -171,19 +172,14 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // 5. CORS + body parser
   // -------------------------------------------------------------------------
-  const corsOrigin =
-    process.env.CORS_ORIGIN ??
-    (process.env.NODE_ENV === 'production' ? false : '*');
+  const corsOrigin = getCorsOriginSetting();
 
   // Base para links que mandamos por mail (invitación de usuarios, D2) —
   // reusa CORS_ORIGIN ("dominio del frontend", ver render.yaml) en vez de
   // sumar una segunda variable de entorno con el mismo dominio adentro.
   // `'*'` (dev sin CORS_ORIGIN seteada) no es una URL real, así que cae al
   // puerto default de Next.js en local.
-  const frontendUrl =
-    process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*'
-      ? process.env.CORS_ORIGIN
-      : 'http://localhost:3000';
+  const frontendUrl = getFrontendOrigin();
 
   app.use(cors({
     origin:         corsOrigin,
@@ -218,8 +214,8 @@ export async function createApp(): Promise<{
   // health check y reiniciaría el servicio por una caída de Neon que el
   // proceso no puede resolver reiniciándose.
   const dbHealth = new CachedDbHealth(() => checkDatabaseHealth(platformClient), {
-    okTtlMs:   parseInt(process.env['HEALTH_DB_TTL_MS'] ?? '30000', 10),
-    failTtlMs: parseInt(process.env['HEALTH_DB_FAIL_TTL_MS'] ?? '5000', 10),
+    okTtlMs:   getHealthDbTtlMs(),
+    failTtlMs: getHealthDbFailTtlMs(),
   });
 
   app.get('/health', (_req, res) => {

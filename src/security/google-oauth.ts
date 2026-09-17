@@ -26,6 +26,7 @@
  */
 
 import { createPublicKey, createVerify } from 'node:crypto';
+import { getGoogleClientId } from '../config/env.js';
 
 export interface GoogleIdentity {
   /** ID estable de la cuenta de Google — nunca cambia, a diferencia del email. */
@@ -90,20 +91,12 @@ function base64UrlDecode(input: string): Buffer {
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
 
-function requireGoogleClientId(): string {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) {
-    throw new Error('[google-oauth] GOOGLE_CLIENT_ID no está definida — login con Google no configurado todavía.');
-  }
-  return clientId;
-}
-
 /**
  * Verifica un ID token de Google Identity Services.
  * @throws Error con `code: 'GOOGLE_TOKEN_INVALID'` si la firma/claims no son válidas.
  */
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity> {
-  const clientId = requireGoogleClientId();
+  const clientId = getGoogleClientId();
 
   const parts = idToken.split('.');
   if (parts.length !== 3) throw googleTokenInvalidError('Token malformado');

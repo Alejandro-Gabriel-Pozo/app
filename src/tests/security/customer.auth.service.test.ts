@@ -55,8 +55,12 @@ describe('CustomerAuthService — constructor', () => {
   it('lanza Error si JWT_SECRET no está definida (Bug 1)', () => {
     delete process.env.JWT_SECRET;
     const repo = new InMemoryCustomerRepository();
+    // Mensaje canónico de config/env.ts::getJwtSecret() desde Wave 7 bloque 3
+    // (17/09/2026) -- antes decía "[CustomerAuthService] JWT_SECRET no está
+    // definida en las variables de entorno.", una de las 4 validaciones
+    // distintas de la misma variable que ese bloque consolidó en una sola.
     expect(() => new CustomerAuthService(repo, 'biz-test-1', new InMemoryNumberSequenceRepository())).toThrow(
-      '[CustomerAuthService] JWT_SECRET no está definida',
+      '[env] JWT_SECRET no está definida.',
     );
   });
 });

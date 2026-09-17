@@ -28,6 +28,7 @@
 import pg from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
+import { getNeonSsl, getDatabaseUrl, getDbPoolMax, getDbPoolIdleMs } from '../config/env.js';
 
 const { Pool } = pg;
 
@@ -65,7 +66,7 @@ export function stripSslMode(url: string): string {
  * su propio comentario decía ser consistente.
  */
 export function sslConfig(): pg.PoolConfig['ssl'] {
-  return process.env.NEON_SSL === 'true'
+  return getNeonSsl()
     ? { rejectUnauthorized: true }
     : false;
 }
@@ -79,7 +80,7 @@ let _pool: InstanceType<typeof Pool> | null = null;
 function getPool(): InstanceType<typeof Pool> {
   if (_pool) return _pool;
 
-  const rawUrl = process.env.DATABASE_URL;
+  const rawUrl = getDatabaseUrl();
   if (!rawUrl) {
     throw new Error(
       '[pg.client] DATABASE_URL no está definida. ' +
@@ -91,8 +92,8 @@ function getPool(): InstanceType<typeof Pool> {
 
   _pool = new Pool({
     connectionString,
-    max:                     parseInt(process.env.DB_POOL_MAX     ?? '10',    10),
-    idleTimeoutMillis:       parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
+    max:                     getDbPoolMax(),
+    idleTimeoutMillis:       getDbPoolIdleMs(),
     connectionTimeoutMillis: 5_000,
     ssl: sslConfig(),
   });

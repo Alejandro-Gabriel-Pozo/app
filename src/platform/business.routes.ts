@@ -43,6 +43,7 @@ import { BusinessPlan, BusinessStatus } from '../types/enums.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
 import { logger } from '../logger.js';
+import { getJwtSecret } from '../config/env.js';
 
 /**
  * @swagger
@@ -185,7 +186,12 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
 
         // El JWT de staff ya no lleva `role` (ver security/roles.ts) — los
         // permisos se resuelven en cada request contra role_permission_groups.
-        const jwtSecret = process.env.JWT_SECRET!;
+        // getJwtSecret() (config/env.ts, Wave 7 bloque 3, 17/09/2026) --
+        // antes leía `process.env.JWT_SECRET!` sin validar nada acá; un
+        // secreto ausente o corto emitía igual un token que
+        // auth.middleware.ts::getJwtSecret() iba a rechazar recién en la
+        // primera request autenticada, con un error confuso y tardío.
+        const jwtSecret = getJwtSecret();
         const EXPIRES_IN_SECONDS = 86_400;
         const token = signToken(
           { sub: identityId, business_id: businessId },

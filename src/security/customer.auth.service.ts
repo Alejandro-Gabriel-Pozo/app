@@ -12,6 +12,7 @@ import { parseExpiresIn } from './auth.service.js';
 import { verifyGoogleIdToken } from './google-oauth.js';
 import { UserRole } from '../types/enums.js';
 import type { NumberSequenceRepository } from '../repositories/number-sequence.repository.js';
+import { getJwtSecret, getJwtExpiresInRaw } from '../config/env.js';
 
 export interface CustomerRegistrationInput {
   fullName: string;
@@ -58,12 +59,8 @@ export class CustomerAuthService {
     /** D6 (22/08/2026) — número operativo para el alta real (register()/loginWithGoogle()). */
     private readonly numberSequenceRepository: NumberSequenceRepository,
   ) {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      throw new Error('[CustomerAuthService] JWT_SECRET no está definida en las variables de entorno.');
-    }
-    this.jwtSecret = secret;
-    this.tokenTtlSeconds = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
+    this.jwtSecret = getJwtSecret();
+    this.tokenTtlSeconds = parseExpiresIn(getJwtExpiresInRaw());
   }
 
   async register(input: CustomerRegistrationInput): Promise<CustomerAuthResult> {

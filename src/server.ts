@@ -25,10 +25,11 @@ import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
 import { sslConfig } from './db/pg.client.js';
 import { logger } from './logger.js';
+import { getPort, getPlatformDatabaseUrl } from './config/env.js';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT ?? '3000', 10);
+const PORT = getPort();
 
 async function main(): Promise<void> {
   // -------------------------------------------------------------------------
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
 
     const { Pool } = pg;
     const pool = new Pool({
-      connectionString: process.env.PLATFORM_DATABASE_URL,
+      connectionString: getPlatformDatabaseUrl(),
       // Misma fuente de verdad que el resto de los pools del proceso
       // (container.ts, tenant.middleware.ts) — ver db/pg.client.ts.
       // Antes decidía por NODE_ENV en vez de NEON_SSL, un tercer criterio

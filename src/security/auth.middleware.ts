@@ -61,6 +61,7 @@ import { UserRole } from '../types/enums.js';
 import type { AuthenticatedUser } from './user.types.js';
 import type { PermissionGroup } from './roles.js';
 import { CUSTOMER_PERMISSION_GROUPS } from './roles.js';
+import { getJwtSecret, isProduction } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
 // JWT Payload
@@ -201,7 +202,7 @@ function cookieOptions(maxAgeSeconds?: number): {
 } {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: isProduction(),
     sameSite: 'strict',
     path: '/',
     ...(maxAgeSeconds !== undefined && { maxAge: maxAgeSeconds * 1000 }),
@@ -223,22 +224,6 @@ export function setCustomerAuthCookie(res: Response, token: string, maxAgeSecond
 
 export function clearCustomerAuthCookie(res: Response): void {
   res.clearCookie(AUTH_COOKIE_NAME_CUSTOMER, cookieOptions());
-}
-
-// ---------------------------------------------------------------------------
-// Configuración — LAZY: se lee en tiempo de uso, no al importar
-// ---------------------------------------------------------------------------
-
-/**
- * Lee y valida JWT_SECRET en el momento de llamarse.
- * Al ser lazy, no explota durante la carga del módulo en tests donde
- * beforeEach setea la variable antes de instanciar el servicio.
- */
-export function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error('[auth.middleware] JWT_SECRET no está definida.');
-  if (secret.length < 32) throw new Error('[auth.middleware] JWT_SECRET debe tener al menos 32 caracteres.');
-  return secret;
 }
 
 // ---------------------------------------------------------------------------

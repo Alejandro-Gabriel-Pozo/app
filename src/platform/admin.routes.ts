@@ -50,6 +50,7 @@ import { encryptConnectionString, applyTenantSchema } from './tenant-db.setup.js
 import { evictTenantPool } from './tenant.middleware.js';
 import { PlatformRole } from '../types/enums.js';
 import { logger } from '../logger.js';
+import { getDbEncryptionKey } from '../config/env.js';
 
 const SetTenantUrlSchema = z.object({
   businessId: z.string().min(1),
@@ -72,7 +73,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
     '/set-tenant-url',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const encryptionKey = process.env.DB_ENCRYPTION_KEY;
+        const encryptionKey = getDbEncryptionKey();
         if (!encryptionKey) {
           res.status(500).json({
             code: 'MISSING_DB_ENCRYPTION_KEY',

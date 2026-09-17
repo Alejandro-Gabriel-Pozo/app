@@ -84,9 +84,9 @@ import {
   setCustomerAuthCookie,
   clearCustomerAuthCookie,
   signToken,
-  getJwtSecret,
 } from '../../security/auth.middleware.js';
 import { parseExpiresIn } from '../../security/auth.service.js';
+import { getJwtSecret, getJwtExpiresInRaw } from '../../config/env.js';
 import { Roles } from '../../security/roles.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { ReservationStatus, BusinessStatus, UserRole } from '../../types/enums.js';
@@ -695,7 +695,7 @@ export function createCustomerRouter(
         return;
       }
 
-      const ttl = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
+      const ttl = parseExpiresIn(getJwtExpiresInRaw());
       const token = signToken(
         { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: businessId },
         getJwtSecret(),

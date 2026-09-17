@@ -24,6 +24,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { PlatformRole } from '../types/enums.js';
 import { signToken, verifyToken } from '../security/auth.middleware.js';
+import { getPlatformJwtSecret } from '../config/env.js';
 
 export interface PlatformJwtPayload {
   sub: string;
@@ -46,13 +47,6 @@ declare global {
       platformUser?: AuthenticatedPlatformUser;
     }
   }
-}
-
-function getPlatformJwtSecret(): string {
-  const secret = process.env.PLATFORM_JWT_SECRET;
-  if (!secret) throw new Error('[platform.auth] PLATFORM_JWT_SECRET no está definida.');
-  if (secret.length < 32) throw new Error('[platform.auth] PLATFORM_JWT_SECRET debe tener al menos 32 caracteres.');
-  return secret;
 }
 
 export function signPlatformToken(

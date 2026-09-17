@@ -41,6 +41,7 @@ import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
 import { logger } from '../logger.js';
+import { getMaxTenantPools } from '../config/env.js';
 
 const { Pool } = pg;
 type PgPool = InstanceType<typeof Pool>;
@@ -61,7 +62,7 @@ interface TenantPoolEntry {
   lastUsedAt: number;
 }
 
-const MAX_TENANT_POOLS = parseInt(process.env.MAX_TENANT_POOLS ?? '200', 10);
+const MAX_TENANT_POOLS = getMaxTenantPools();
 const tenantPools = new Map<string, TenantPoolEntry>();
 
 // ---------------------------------------------------------------------------
