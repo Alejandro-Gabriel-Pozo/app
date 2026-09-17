@@ -33,6 +33,52 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
+- **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` (17/09/2026, fix de
+  `SCHEMA-VERSION-GATE-NOT-PERMANENT-001` ya en código, `docs/resuelto.md`)
+  — 3 verificaciones que el fix en sí NO cubre, todas antes de dar por
+  cerrado el push de estos commits:**
+  - **(a) Re-correr las 2 consultas read-only contra los 2 tenants reales
+    inmediatamente antes de pushear**, no reusar la corrida del 17/09/2026:
+    `SELECT version FROM schema_migrations ORDER BY version;` en
+    `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) y `production`
+    (`br-snowy-tree-ax5wmq70`), más
+    `SELECT id, name FROM resource_categories WHERE is_lodging AND NOT is_exclusive;`
+    en los 2. Dejar el resultado con la fecha/hora de ESA corrida. En este
+    servicio push = deploy (`docs/conocimiento/runbook-deploy-render.md:14-35`)
+    — no hay un checkpoint intermedio para reconsiderar.
+  - **(b) El fix solo está verificado contra Postgres 16.13 local** (BD de
+    scratch simulando el escenario real) — nunca corrió `migrate:tenants`
+    contra las 2 tenant DB reales con los gates nuevos. Acción puntual:
+    después del próximo deploy, confirmar en los logs de `migrate-tenants`
+    que los 2 tenants terminaron `ok:true` y que `schema_migrations` quedó
+    en `{60}` como versión máxima en ambos (no debería haber cambiado el
+    comportamiento observable para ninguno de los dos, dado que las 2
+    consultas de (a) dieron 0 filas candidatas el 17/09 — pero confirmarlo,
+    no asumirlo).
+  - **(c) BD de scratch sin borrar** — `audit_v60_probe`/`audit_v60_hoy`
+    (dejadas por `erp-audit-orchestrator` en su propio entorno, no en este)
+    y `gate_fix_verify`/`schema_syntax_check`/`resource_uniq_scratch` (de
+    esta sesión, ya borradas localmente salvo confirmar que no quedó
+    ninguna) — limpieza pendiente, no bloqueante, ninguna tiene datos que
+    conservar.
+  - **Riesgos residuales del fix en sí, declarados por el gate
+    `architecture-governor` (17/09/2026), no una verificación pendiente
+    sino una propiedad permanente a tener presente:** `schema_migrations`
+    pasa a ser la ÚNICA autoridad sobre si un backfill de datos corre —
+    editarla a mano, o restaurar un snapshot de datos más viejo que su
+    propio `schema_migrations`, ahora SUPRIME el backfill en silencio en
+    vez de re-correrlo a los gritos (se dio vuelta la dirección de falla,
+    de ruidosa a silenciosa). Y todo gate de versión FUTURO debe usar
+    `N == la CURRENT_SCHEMA_VERSION que se bumpea en el mismo commit` —
+    reusar un N viejo, u olvidar el bump, hace que el backfill nunca corra
+    para ningún tenant, sin error y sin log; este mismo fix retira el
+    único canario que avisaba de esto (`schema-redeploy-idempotent.
+    integration.test.ts` ya no se pone rojo con un bump sin actualizar el
+    gate correspondiente — ver su docblock actualizado). Cerca de
+    numeración de gates de versión = bloque siguiente, no decidido
+    todavía (test de arquitectura que parsee los `MAX(version) < N` de
+    `schema.sql`, importe `CURRENT_SCHEMA_VERSION` real y asegure que
+    todo N sea `<= CURRENT_SCHEMA_VERSION`).
 - **Retrospectiva Waves 1-7 (17/09/2026) — Postgres 16.13 local real,
   confirmado en esta sesión.** `5fb2487` (D-21), la mitad automatizada de
   `668e16c` (Wave 2), `4c4a17b` (AFIP) y `d5d27c4` (auditoría de
@@ -117,131 +163,6 @@ cuando se pushea.
   una vez migrados (hay que medir duplicados reales antes de aplicar, no
   asumir 0 como se hizo con `customer_rates`/D-07). Ninguna de las Waves
   8-16 del plan integral lo cubre.
-- **`SCHEMA-VERSION-GATE-NOT-PERMANENT-001` — ALTA, hallazgo nuevo
-  (17/09/2026, retrospectiva Waves 1-7) — cruza Wave 4 (D-07(c),
-  `a4950db`), Wave 5 (D-08, `13630cf`) y Wave 6 (D-09, `aa8e369`). Dos
-  agentes en la misma retrospectiva (`auditor-estructura`, hallazgo 1;
-  `erp-audit-orchestrator`) lo encontraron por separado — el segundo lo
-  reprodujo contra Postgres real y contra los 2 tenants reales, dato que
-  cambia la severidad del ítem, no solo su redacción.**
-  `applyTenantSchema()` (`src/platform/tenant-db.setup.ts:558-580`) inserta
-  UNA SOLA fila en `schema_migrations` por corrida —
-  `INSERT ... VALUES ($1) ON CONFLICT DO NOTHING` con
-  `[CURRENT_SCHEMA_VERSION]` (hoy 60, `:540`) — nunca rellena las
-  versiones intermedias. Todo gate `IF NOT EXISTS (... WHERE version = N)`
-  en `schema.sql` depende de que N haya sido `CURRENT_SCHEMA_VERSION`
-  exacto en un deploy que migró a ESE tenant — no de un estado
-  estructural.
-  **No es un riesgo futuro (v61) — el gate v42 YA está roto hoy, con
-  datos reales, verificado, aunque hoy no toca nada (ver medición
-  abajo).** `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`,
-  aprovisionado 30/08/2026, después de que v42 dejara de ser CURRENT el
-  28/08) **no tiene la fila 42** en `schema_migrations` — confirmado por
-  `SELECT version FROM schema_migrations` contra el tenant real
-  (17/09/2026): `{44,45,46,47,48,49,50,51,52,54,55,59}`, sin 42. `production`
-  (`br-snowy-tree-ax5wmq70`) sí la tiene. Afecta a los 2 backfills v42 de
-  `is_exclusive` (`schema.sql:146-150` categorías, guard en `:3828`
-  reservas — anclas re-chequeadas por el gate DESPUÉS de que el comentario
-  nuevo de este mismo commit desplazara `schema.sql` +12 líneas; las citas
-  viejas `:135-137`/`:3815-3823` ya no apuntan a lo mismo) — **no** a los
-  3 DML v60 de D-07(c) (esos siguen bien mientras `CURRENT_SCHEMA_VERSION`
-  sea 60; se rompen recién en el PRÓXIMO bump, ver más abajo).
-  **Reproducido (Postgres 16.13 local, `erp-audit-orchestrator`):**
-  tenant con `schema_migrations = {61}` (sin 42) + una categoría de
-  alojamiento con `is_exclusive = false` (editable por el dueño vía
-  `PUT /api/categories/:id`, `src/reservas/categories.routes.ts:186` — no
-  hace falta SQL a mano) + 2 reservas CONFIRMED solapadas sobre un recurso
-  de cupo compartido (legítimo con `is_exclusive = false`) → redeploy →
-  `UPDATE ... SET is_exclusive_resource = rc.is_exclusive` choca contra
-  `reservations_no_overlap_exclusive` (el EXCLUDE ya existe desde la
-  primera corrida gracias al guard de D-08) →
-  `ERROR: conflicting key value violates exclusion constraint` →
-  `applyTenantSchema()` lanza → `migrateBusiness()` → `ok:false` →
-  `migrate-tenants.ts:127` `process.exit(1)` → **el build de Render entero
-  falla, no solo el de ese tenant** (el `buildCommand` encadena con
-  `&&`). Variante silenciosa (sin solape): el mismo redeploy revierte
-  calladamente `is_exclusive` FALSE→TRUE sobre una categoría real,
-  volviendo exclusivo un alojamiento de cupo compartido y rechazando
-  reservas legítimas desde ese momento — sin error, sin log de negocio.
-  **Por qué D-08/D-09 lo agravan:** antes de D-09 un redeploy con versión
-  cacheada igual saltaba el tenant sin conectarse — el UPDATE casi nunca
-  se re-ejecutaba. D-09 sacó ese atajo (`schema.sql` corre en el 100% de
-  los deploys, para el 100% de los tenants) y D-08 hizo que el EXCLUDE ya
-  exista desde la primera corrida (antes se creaba recién al agregarse la
-  constraint) — juntas, el conflicto aparece de entrada en vez de más
-  adelante.
-  **Medición read-only contra los 2 tenants reales (17/09/2026, mismo
-  criterio que D-07/Apéndices B/D — solo SELECT, autorizado):**
-  `tenant-hotel-los-alamos` y `production` dan **0 filas** en
-  `resource_categories WHERE is_lodging AND NOT is_exclusive` y **0
-  pares** de reservas solapadas en cupo compartido — **hoy el hueco está
-  estructuralmente vivo pero no tiene ningún dato real que tocar: si el
-  deploy corriera ahora mismo, no fallaría ni revertiría nada, en el
-  estado actual de los 2 tenants.**
-  **Corrección del gate (condición 2): en este servicio push = deploy, no
-  dos decisiones separadas.** `render.yaml` no tiene `autoDeploy` (Render
-  lo asume `true`) y el `buildCommand` termina en `migrate:tenants` —
-  `docs/conocimiento/runbook-deploy-render.md:14-35` lo dice en los
-  términos más fuertes que tiene: *"todo push a `main` escribe en TODAS
-  las tenant DB ... No hay una autorización de 'push' separada de una
-  autorización de 'deploy' en este servicio — son la misma decisión, y
-  hay que pedirla así ... no como si fueran dos pasos donde el segundo
-  pudiera reconsiderarse después del primero."* Por eso este ítem se
-  etiqueta **"requiere decisión del dueño ANTES DEL PUSH (= deploy en
-  este servicio)"**, no "antes del próximo deploy" como si push y deploy
-  fueran cosas distintas con un checkpoint en el medio — no lo son acá.
-  La medición reduce la urgencia (0 filas hoy), no mueve el momento de la
-  decisión: sigue siendo antes de este push puntual, no de uno futuro.
-  **Paso operativo, no opcional:** la medición de arriba es puntual
-  (17/09/2026) — antes de pushear estos 19 commits, re-correr las mismas
-  2 consultas (`SELECT version FROM schema_migrations` en los 2 tenants;
-  `SELECT ... resource_categories WHERE is_lodging AND NOT is_exclusive`)
-  contra los 2 tenants reales, y dejar el resultado con la fecha/hora de
-  ESA corrida — no citar la de este commit como si siguiera vigente sin
-  re-verificar.
-  **v60 (los 3 DML de D-07(c)) es distinto: hoy no tiene el hueco** —
-  todo tenant real ya tiene la fila 60 mientras `CURRENT_SCHEMA_VERSION`
-  siga siendo 60 — **pero se reabre solo, automáticamente, en el
-  PRÓXIMO bump a 61**, mismo mecanismo. Mitigante parcial ya existente
-  para v60 (no para v42): `schema-redeploy-idempotent.integration.test.ts`
-  usa `applyTenantSchema()` real, así que ese bump pondría esos 3 tests
-  en rojo en CI — un canario, no un fix.
-  **Bloqueante antes del próximo bump de `CURRENT_SCHEMA_VERSION`, y
-  deuda ya activa para v42 aunque no urgente hoy** — radio =
-  `applyTenantSchema()`, corre contra todas las tenant DB en cada
-  deploy, el bloque de mayor riesgo de toda esta retrospectiva.
-  2 afirmaciones falsas corregidas en el mismo commit que encontró esto
-  (mismo criterio que las correcciones de conteo de endpoints que este
-  repo ya aplica): `docs/inventario-dml-schema-2026-09-16.md` (decía que
-  el gate de versión da "la misma garantía" que un auto-limitante
-  estructural) y el comentario de `schema.sql:128` ("Backfill UNA SOLA
-  VEZ" como garantía, no como intención).
-  Direcciones posibles, ninguna decidida: **(A)** `(SELECT COALESCE(MAX(version),0)
-  FROM schema_migrations) >= N` en vez de `= N` — una línea por gate,
-  cierra v42 y v60 para tenants viejos y nuevos, cambia la semántica a
-  "este tenant ya pasó este cutover"; **(B)** que `applyTenantSchema()`
-  siembre la historia completa de versiones-cutover en la primera
-  aplicación; **(C)** reemplazar los backfills v42 por garantías
-  auto-limitantes estructurales (el patrón que el propio inventario
-  prefiere para sus 18 casos); **(D)** retirar los 2 `UPDATE` de v42
-  (medir antes si su población legacy ya está hecha donde hacía falta).
-  Pregunta de negocio aparte, no técnica: ahora que `is_exclusive` es
-  editable por el dueño, ¿debe seguir existiendo algún camino que lo
-  re-derive de `is_lodging`? Requiere decisión del dueño. Para las
-  opciones (A), (C) y (D), ninguna de las Waves 8-16 del plan integral lo
-  cubre. **Calificación del gate (condición 5) sobre la opción (B):**
-  Wave 15 extrae `tenant-provisioning.service.ts` sobre los 4 caminos de
-  aprovisionamiento (`docs/plan-ejecucion-integral-2026-09-16.md`, oleada
-  15) y es, por diseño del propio plan, el bloque de mayor riesgo de todo
-  el roadmap — cambiar la semántica de siembra de `applyTenantSchema()`
-  (que es lo que pide la opción B) colisiona directo con ese bloque. Si
-  se elige (B), secuenciar DESPUÉS de Wave 15, no antes ni en paralelo —
-  mismo criterio que `MIGRATE-TENANTS-CONCURRENT-DDL-001` ya declara para
-  su propio alcance. 2 BD de scratch quedaron en el
-  Postgres local del `erp-audit-orchestrator` (`audit_v60_probe`,
-  `audit_v60_hoy`) — no se borraron por la restricción de no ejecutar
-  limpieza destructiva sin permiso; reproducibles, borrar cuando se
-  quiera.
 - **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
   retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
   bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`

@@ -1708,3 +1708,75 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   después de que ese bloque ya corriera y la resolviera — quedó abierto
   por descuido de bookkeeping, no porque el trabajo faltara. Origen:
   `pendientes-2026-09-12.md`.
+
+- **`SCHEMA-VERSION-GATE-NOT-PERMANENT-001`** (ALTA, retrospectiva Waves
+  1-7, 17/09/2026) — ✅ **RESUELTO EN CÓDIGO (opción A elegida por el
+  dueño, 17/09/2026), verificado reproduciendo el bug original y
+  confirmando que ya no ocurre, contra Postgres 16.13 real.** Los 5 gates
+  `IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = N)` de
+  `src/db/schema.sql` pasan a `IF (SELECT COALESCE(MAX(version), 0) FROM
+  schema_migrations) < N THEN` — un tenant cuya versión más alta ya pasó
+  el cutover nunca vuelve a correr el backfill, sin depender de que la
+  fila `N` exacta exista. Los 5 (por nombre, no por línea — las líneas se
+  mueven con cada edición del archivo; reproducible con `grep -n
+  "COALESCE(MAX(version), 0)" src/db/schema.sql`, debe dar 5 hits): v42
+  `resource_categories.is_exclusive`; v42
+  `reservations.is_exclusive_resource`; v60 `reservation_lines` (F10-17);
+  v60 `customer_rates.fixed_price→discount_percentage` (D-07/F10-02);
+  v60 `invoices.afip_contacted` (F10-16).
+  **Reproducción del bug ANTES del fix, confirmada por
+  `erp-audit-orchestrator`:** tenant con `schema_migrations` sin la fila
+  42 (simula `tenant-hotel-los-alamos`, aprovisionado después de que 42
+  dejara de ser `CURRENT_SCHEMA_VERSION`) + categoría de alojamiento con
+  `is_exclusive = false` + 2 reservas CONFIRMED solapadas en cupo
+  compartido → redeploy → `ERROR: conflicting key value violates
+  exclusion constraint "reservations_no_overlap_exclusive"` →
+  `applyTenantSchema()` lanza → build de Render entero falla.
+  **Mismo escenario DESPUÉS del fix (verificado, no solo argumentado):**
+  BD con `schema_migrations = {60}` (sin 42, mismo tenant simulado),
+  categoría `is_exclusive = false`, 2 reservas CONFIRMED solapadas →
+  re-aplicar `schema.sql` completo (`applyTenantSchema()` real) →
+  `REDEPLOY OK, version 60` — sin error. Confirmado además que no hay
+  reversión silenciosa: `resource_categories.is_exclusive` siguió en
+  `false`, `reservations.is_exclusive_resource` en ambas reservas siguió
+  en `false`, `schema_migrations` quedó exactamente en `{60}` (sin
+  duplicar la fila, `ON CONFLICT DO NOTHING` intacto).
+  **Decisión de negocio aparte, también del dueño (17/09/2026):**
+  `is_exclusive` NO se re-deriva de `is_lodging` después de creada la
+  categoría — queda editable a mano vía `PUT /api/categories/:id`, sin
+  ningún camino de sincronización automática posterior. Es el
+  comportamiento natural del fix elegido (el backfill deja de
+  re-ejecutarse una vez que el tenant pasa el cutover), no un cambio de
+  código adicional.
+  **Verificado:** `tsc --noEmit` limpio; `schema-line-anchor-drift.test.ts`
+  verde (0 anclas de línea a `schema.sql` dentro de `src/`, cerca
+  intacta); suite completa (175 archivos, 2441 tests, mismo conteo);
+  `lint`/`lint:arch` limpios (312 módulos, sin violaciones); suite de
+  integración contra Postgres real (49 archivos, 383 tests, incluyendo
+  `reservations-unpaginated-limit` y los tests de D-07(c) que dependen
+  del mismo `applyTenantSchema()`).
+  **No resuelto en este bloque, opciones (B)/(C)/(D) descartadas por el
+  dueño a favor de (A):** el resto del contenido de las opciones
+  descartadas y la calificación sobre la opción (B) (colisión con la
+  extracción de `tenant-provisioning.service.ts` en Wave 15) ya no
+  aplican — se resolvió por (A). El paso operativo de re-correr las 2
+  consultas read-only contra los 2 tenants reales inmediatamente antes
+  del push sigue vigente igual (el fix reduce el riesgo, no reemplaza la
+  verificación previa al push — que en este servicio es deploy) — ver
+  `SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` en
+  `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones
+  pendientes`, para el detalle completo.
+  **2 riesgos residuales de la opción A en sí, no bugs, propiedades
+  permanentes a tener presentes de ahora en más (declarados por el gate
+  `architecture-governor`, 17/09/2026):** (1) `schema_migrations` pasa a
+  ser la ÚNICA autoridad sobre si un backfill de datos corre — editarla a
+  mano, o restaurar un snapshot de datos más viejo que su propio
+  `schema_migrations`, ahora SUPRIME el backfill en silencio en vez de
+  re-correrlo a los gritos (la dirección de falla se dio vuelta, de
+  ruidosa a silenciosa); (2) todo gate de versión FUTURO debe usar
+  `N == la CURRENT_SCHEMA_VERSION que se bumpea en el mismo commit` —
+  este fix retira el único canario que avisaba de un gate mal numerado
+  (`schema-redeploy-idempotent.integration.test.ts` ya no se pone rojo
+  con un bump sin actualizar el gate correspondiente). Cerca de
+  numeración de gates de versión = bloque siguiente, no decidido
+  todavía. Origen: `pendientes-2026-09-12.md`.

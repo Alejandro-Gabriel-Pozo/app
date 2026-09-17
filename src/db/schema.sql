@@ -132,19 +132,24 @@ ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_exclusive BOOLEAN NO
 -- is_exclusive = FALSE en una categoría de alojamiento que deja de ser
 -- exclusiva) cada vez que se vuelva a correr.
 --
--- "UNA SOLA VEZ" es la INTENCIÓN, no una garantía que este guard cumpla
--- para todo tenant (corrección 17/09/2026, retrospectiva Waves 1-7,
--- erp-audit-orchestrator, reproducido contra Postgres real): la fila
--- version=42 solo existe en un tenant si 42 era CURRENT_SCHEMA_VERSION en
--- un deploy que migró a ESE tenant -- applyTenantSchema() inserta solo
--- la versión actual, nunca rellena versiones intermedias. Un tenant
--- aprovisionado/migrado por primera vez con CURRENT_SCHEMA_VERSION > 42
--- (como tenant-hotel-los-alamos, verificado sin la fila 42 hoy) nunca
--- tiene esta fila -- el UPDATE de abajo se re-ejecuta en CADA deploy para
--- ese tenant, sin límite. Ver docs/pendientes-2026-09-12.md,
--- SCHEMA-VERSION-GATE-NOT-PERMANENT-001 -- sin fix decidido todavía.
+-- FIX 17/09/2026 (decisión del dueño, opción A de
+-- SCHEMA-VERSION-GATE-NOT-PERMANENT-001, docs/pendientes-2026-09-12.md):
+-- `WHERE version = 42` (igualdad exacta) SOLO funciona si este tenant fue
+-- migrado en el deploy exacto en que 42 era CURRENT_SCHEMA_VERSION --
+-- applyTenantSchema() inserta solo la versión actual en cada corrida,
+-- nunca rellena las intermedias. Un tenant aprovisionado/migrado por
+-- primera vez con CURRENT_SCHEMA_VERSION > 42 (caso real:
+-- tenant-hotel-los-alamos, verificado sin la fila 42 el 17/09/2026) nunca
+-- tenía esa fila con `= 42` -- el UPDATE se re-ejecutaba en CADA deploy
+-- para ese tenant, sin límite (reproducido contra Postgres real por
+-- erp-audit-orchestrator antes de este fix). `>= 42` vía MAX() resuelve
+-- esto para viejos y nuevos por igual: un tenant cuya versión más alta ya
+-- pasó el cutover (por ejemplo llegó directo a 59 o 60) nunca vuelve a
+-- correr el backfill, sin depender de que 42 particularmente haya existido
+-- como fila. Mismo cambio aplicado a los otros 4 gates `version = N` de
+-- este archivo (reservas más abajo, y los 3 de D-07(c) -- ver ese bloque).
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 42) THEN
+  IF (SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 42 THEN
     UPDATE resource_categories SET is_exclusive = is_lodging WHERE is_lodging = TRUE;
   END IF;
 END $$;
@@ -693,7 +698,11 @@ DECLARE
   last_unit DECIMAL(10,2);
   i INT;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+  -- FIX 17/09/2026: `>= 60` vía MAX(), mismo criterio que el backfill
+  -- v42 de resource_categories/reservations más arriba en este archivo
+  -- (SCHEMA-VERSION-GATE-NOT-PERMANENT-001, docs/pendientes-2026-09-12.md)
+  -- -- blinda también a este gate contra el próximo bump a 61+.
+  IF (SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 60 THEN
     FOR r IN
       SELECT id, total_price, start_time, end_time
       FROM reservations
@@ -937,8 +946,10 @@ END $$;
 -- `customer_rates` en el 100% de los tenants existentes -- gatear no deja
 -- ninguna corrección pendiente sin aplicar.
 -- ---------------------------------------------------------------------------
+-- FIX 17/09/2026: `>= 60` vía MAX(), mismo criterio que el resto de los
+-- gates de este archivo (SCHEMA-VERSION-GATE-NOT-PERMANENT-001).
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+  IF (SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 60 THEN
     WITH base AS (
       SELECT
         cr.id,
@@ -3150,9 +3161,10 @@ ALTER TABLE invoices ADD COLUMN IF NOT EXISTS afip_contacted BOOLEAN NOT NULL DE
 -- error_message exacto (hoy inalcanzable por código, no por schema), un
 -- deploy cualquiera lo revertiría en silencio, sin pasar por
 -- `domain/audit.ts` ni por decisión humana. Mismo patrón de gateo que el
--- backfill de `customer_rates` de arriba.
+-- backfill de `customer_rates` de arriba -- FIX 17/09/2026 aplicado
+-- igual (`>= 60` vía MAX(), SCHEMA-VERSION-GATE-NOT-PERMANENT-001).
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 60) THEN
+  IF (SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 60 THEN
     UPDATE invoices SET afip_contacted = FALSE
       WHERE status = 'FAILED_UNCERTAIN'
         AND afip_contacted = TRUE
@@ -3822,10 +3834,11 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS is_exclusive_resource BOOLEAN 
 -- protege ninguna reserva ya creada (solo las nuevas, que sí lo resuelven en
 -- ReservationService). Solo PENDING/CONFIRMED -- una reserva CANCELLED/
 -- COMPLETED no participa del EXCLUDE (WHERE de abajo), no hace falta
--- resolverla. Una sola vez (mismo guard que resource_categories.is_exclusive
--- más arriba, misma migración v42).
+-- resolverla. Mismo guard que resource_categories.is_exclusive más
+-- arriba, misma migración v42 -- FIX 17/09/2026 aplicado igual (`>= 42`
+-- vía MAX(), ver el comentario completo en ese bloque).
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 42) THEN
+  IF (SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 42 THEN
     UPDATE reservations r
     SET is_exclusive_resource = rc.is_exclusive
     FROM resources res

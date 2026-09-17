@@ -203,12 +203,34 @@ describe.skipIf(skipIfNoDb)('schema.sql -- redeploy con datos reales ya cargados
  * D-07(c) (16/09/2026, docs/auditoria-integral-fase15-2026-09-16.md,
  * docs/inventario-dml-schema-2026-09-16.md) -- las 3 sentencias DML de
  * schema.sql con "condición de disparo abierta" (D-07/F10-02, F10-16,
- * F10-17) ahora se gatean por `schema_migrations version = 60`. Este
- * bloque usa `applyTenantSchema()` real (no `db.query(schemaSql, [])` a
- * secas como el resto del archivo) porque es la función que ADEMÁS
- * inserta la fila de `schema_migrations` -- sin eso, el gate nunca vería
- * la versión ya aplicada y el DML de abajo correría en cada reapply igual
- * que antes del fix, dejando el test en falso verde.
+ * F10-17) se gatean por versión. Este bloque usa `applyTenantSchema()`
+ * real (no `db.query(schemaSql, [])` a secas como el resto del archivo)
+ * porque es la función que ADEMÁS inserta la fila de `schema_migrations`
+ * -- sin eso, el gate nunca vería la versión ya aplicada y el DML de
+ * abajo correría en cada reapply igual que antes del fix, dejando el
+ * test en falso verde.
+ *
+ * FORMA DEL GATE (corregida 17/09/2026, SCHEMA-VERSION-GATE-NOT-PERMANENT-001,
+ * decisión del dueño, opción A -- docs/resuelto.md): ya no es
+ * `schema_migrations version = 60` (igualdad exacta) -- pasó a
+ * `(SELECT COALESCE(MAX(version), 0) FROM schema_migrations) < 60`. Un
+ * tenant cuya versión más alta ya pasó el cutover 60 nunca vuelve a
+ * correr el DML, sin depender de que la fila 60 exacta exista.
+ *
+ * ESTE COMMIT RETIRA EL CANARIO que este describe block era hasta ahora:
+ * antes del fix, bumpear `CURRENT_SCHEMA_VERSION` a 61 sin actualizar
+ * estos gates ponía los 3 tests de abajo en rojo (el `MAX` real seguía
+ * en 60 tras el reapply con la nueva versión, pero el gate viejo
+ * comparaba contra la constante hardcodeada `60` de este archivo, que
+ * dejaba de coincidir con la versión real que `applyTenantSchema()`
+ * acababa de insertar). Con `MAX(version) < 60`, un bump a 61 hace que
+ * `MAX` pase a 61 tras el reapply, `61 < 60` da `FALSE`, el DML se
+ * saltea -- y estos 3 tests siguen en VERDE, porque ese es exactamente
+ * el comportamiento correcto (el backfill ya no debe correr para un
+ * tenant que superó el cutover). El aviso automático de "che, revisá si
+ * hay que bumpear el número del gate" desaparece -- ver
+ * `docs/pendientes-2026-09-12.md`, cerca de numeración de gates de
+ * versión (bloque siguiente, no decidido todavía).
  */
 describe.skipIf(skipIfNoDb)('D-07(c) -- las 3 sentencias DML de schema.sql con disparo abierto quedan gateadas', () => {
   async function withIsolatedTestDb<T>(
