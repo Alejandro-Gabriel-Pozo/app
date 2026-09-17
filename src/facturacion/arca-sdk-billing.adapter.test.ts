@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { ArcaSdkBillingAdapter } from './arca-sdk-billing.adapter.js';
 
@@ -144,5 +144,65 @@ describe('ArcaSdkBillingAdapter.getIvaReceptorTypes', () => {
     const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getIvaReceptorTypes }));
 
     expect(await adapter.getIvaReceptorTypes()).toEqual([]);
+  });
+});
+
+// D-20 (Wave 9 sub-bloque 3, 17/09/2026) -- las 4 llamadas al SDK ahora
+// corren detrás de withAfipTimeout() (afip-request.timeout.ts,
+// AFIP_REQUEST_TIMEOUT_MS = 20_000, compartido con padron.service.ts). Un
+// mock que nunca resuelve simula una AFIP colgada; se avanza el reloj
+// falso para no esperar 20s reales por test.
+describe('ArcaSdkBillingAdapter -- D-20 timeout (20_000ms)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('createNextVoucher colgado rechaza a los 20_000ms con mensaje claro', async () => {
+    const createNextVoucher = vi.fn(() => new Promise(() => { /* nunca resuelve -- AFIP colgada */ }));
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ createNextVoucher }));
+
+    const pending = expect(adapter.createNextVoucher({ CantReg: 1 })).rejects.toThrow(
+      /createNextVoucher no respondió en 20000ms/,
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('getLastVoucher colgado rechaza a los 20_000ms', async () => {
+    const getLastVoucher = vi.fn(() => new Promise(() => { /* nunca resuelve */ }));
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getLastVoucher }));
+
+    const pending = expect(adapter.getLastVoucher(3, 6)).rejects.toThrow(/getLastVoucher no respondió en 20000ms/);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('getVoucherInfo colgado rechaza a los 20_000ms', async () => {
+    const getVoucherInfo = vi.fn(() => new Promise(() => { /* nunca resuelve */ }));
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getVoucherInfo }));
+
+    const pending = expect(adapter.getVoucherInfo(1, 3, 6)).rejects.toThrow(/getVoucherInfo no respondió en 20000ms/);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('getIvaReceptorTypes colgado rechaza a los 20_000ms', async () => {
+    const getIvaReceptorTypes = vi.fn(() => new Promise(() => { /* nunca resuelve */ }));
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getIvaReceptorTypes }));
+
+    const pending = expect(adapter.getIvaReceptorTypes()).rejects.toThrow(/getIvaReceptorTypes no respondió en 20000ms/);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('una respuesta que llega ANTES del timeout no se ve afectada (sin timer colgado)', async () => {
+    const getLastVoucher = vi.fn().mockResolvedValue({ cbteNro: 42, cbteTipo: 6, ptoVta: 3 });
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getLastVoucher }));
+
+    const result = await adapter.getLastVoucher(3, 6);
+
+    expect(result).toEqual({ cbteNro: 42 });
+    // No hace falta avanzar el reloj -- si el timer no se hubiera limpiado
+    // con clearTimeout(), vi.useRealTimers() en afterEach lo detectaría
+    // como timer pendiente en la siguiente corrida de la suite.
   });
 });

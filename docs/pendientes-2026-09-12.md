@@ -1358,6 +1358,117 @@ anteriores.
   así que ninguno se puede apuntar hoy a un servidor de prueba sin
   inyectar la base URL — cambio de testeabilidad no decidido todavía. No
   se hizo ninguna llamada real a Neon, Resend ni Google en este bloque.
+- **`D-20-AFIP-TIMEOUT-VALUE-VERIFY-001` (17/09/2026, Wave 9 sub-bloque 3,
+  timeout de aplicación ya en código y verde en las **7** llamadas reales
+  al SDK de AFIP de todo el repo -- `src/facturacion/afip-request.timeout.ts`
+  (mecanismo + constante compartidos), consumido desde
+  `src/facturacion/arca-sdk-billing.adapter.ts` (4: `InvoiceService`) y
+  `src/facturacion/padron.service.ts` (3: autocompletado de padrón)) — el
+  valor de `AFIP_REQUEST_TIMEOUT_MS = 20_000` es un default razonado, no
+  medido contra la latencia real de WSFEv1/padrón.** Mismo criterio que
+  `D-20-NEON-TIMEOUT-VALUE-VERIFY-001` de arriba: un timeout corto
+  multiplica facturas `FAILED_UNCERTAIN` que después necesitan revisión
+  manual (o escalan `credit_note_request` a `EN_REVISION_MANUAL`) sin que
+  AFIP haya hecho nada mal -- solo tardó.
+  **Hallazgo adicional de este bloque, no solo el valor:** el mecanismo
+  mismo tuvo que cambiar respecto a lo que proponía el hallazgo original.
+  `docs/auditoria-integral-fase15-2026-09-16.md:584` cita un punto de
+  extensión real del SDK
+  (`node_modules/@arcasdk/core/lib/infrastructure/soap/soap-client.js:68-78`,
+  `request: adapterRequestOptions`) como si `request: { timeout }` al
+  constructor de `Arca` pudiera alcanzarlo -- verificado leyendo el código
+  instalado (no la doc del hallazgo, y re-verificado de forma
+  independiente por el gate en su segunda pasada) que NO es así: `Arca`'s
+  constructor (`infrastructure/composition/arca.js`) nunca reenvía
+  `request`/`requestOptions` a `ElectronicBillingRepository.getClient()`,
+  que llama `createSoapClient(wsdlName)` sin opciones. El fix implementado
+  en cambio envuelve las llamadas reales con un `Promise.race` manual
+  (`withAfipTimeout()`, `afip-request.timeout.ts`) -- no cancela el socket
+  TCP subyacente, solo libera la request de Express que esperaba (con
+  `logger.warn` si la llamada real se asienta DESPUÉS de vencido el
+  timeout, en vez de descartarla en silencio), y para `createNextVoucher()`
+  alimenta la MISMA maquinaria de ambigüedad que ya existía
+  (`FAILED_UNCERTAIN` + `afipContacted:true` + reconciliación vía
+  `getLastVoucher()`/`getVoucherInfo()`, que es además el camino que AFIP
+  mismo documenta para desambiguar un timeout de WSFEv1 --
+  `FECompConsultar`, ver `docs/grounding-25-preguntas-2026-09-16.md:225`).
+  **Gate, primera pasada (HOLD, 17/09/2026):** la primera versión de este
+  bloque cubría SOLO las 4 llamadas de `arca-sdk-billing.adapter.ts` --
+  las 3 de `padron.service.ts` (detrás de 3 rutas autenticadas reales,
+  `POST /api/customers/padron/lookup-by-cuit`, `POST .../lookup-by-dni`,
+  `GET .../iva-receptor-types`) quedaban sin timeout, el mismo riesgo que
+  este bloque existe para cerrar. Corregido extrayendo el mecanismo a
+  `afip-request.timeout.ts` y aplicándolo también ahí, envolviendo las 3
+  llamadas DENTRO de `callPadron()` (así un timeout sale como
+  `AfipPadronUnavailableError`/503, no como error genérico -- efecto
+  colateral necesario: `getIvaReceptorTypes()` de `padron.service.ts` ni
+  siquiera pasaba por `callPadron()` antes de este bloque, inconsistencia
+  ya corregida, ahora con test propio que fija el cambio de contrato
+  deliberado -- espejo de los dos tests hermanos de `ECONNRESET` ->
+  `AfipPadronUnavailableError` que ya existían para los otros dos
+  métodos). El hallazgo del puerto duplicado que el gate encontró en el
+  camino queda aparte, en `AFIP-BILLING-PORT-UNUSED-IVA-METHOD-001` (más
+  abajo) -- no se mezcla acá para que no se pierda cuando este ítem se
+  cierre por la medición de latencia.
+  **`createNextVoucher()` es una llamada COMPUESTA, no simple:** el SDK
+  hace `FECompUltimoAutorizado` + `FECAESolicitar` (+ login WSAA lazy si
+  el ticket venció) dentro de una sola invocación -- los 20s son un
+  presupuesto para las tres juntas, no por sub-llamada, así que un timeout
+  puede dispararse antes de que `FECAESolicitar` se haya transmitido
+  siquiera (igual se marca `afipContacted: true` -- conservador, pero
+  cuesta una revisión manual evitable si el presupuesto quedó corto). Y
+  como `issue()` puede encadenar hasta 4 llamadas
+  (`getLastVoucher -> createNextVoucher -> [si falla] getLastVoucher ->
+  getVoucherInfo`), el techo real de una request de facturación es ~4x el
+  valor declarado (~80s), no 20s -- acotado igual (satisface el hallazgo),
+  pero el número solo no lo deja ver. Ver docblock de
+  `afip-request.timeout.ts` para el detalle completo.
+  **Acción puntual que cierra el residuo de VALOR** (no el de mecanismo
+  ni el de cobertura, ambos ya resueltos): medir P50/P99 real de
+  `createNextVoucher()` contra homologación o producción de AFIP durante
+  al menos una sesión de facturación real, y de las 3 llamadas de
+  `padron.service.ts` durante uso real de autocompletado; si la P99 se
+  acerca a 20s, subir el valor. Se corta de acá (no se tacha) y pasa a
+  `docs/resuelto.md` con la medición real, recién cuando alguien la corre.
+  **No verificado tampoco:** el comportamiento del socket real bajo una
+  contraparte colgada (la "Prueba necesaria" original de un servidor local
+  que acepta la conexión y no responde) -- los tests de este bloque usan
+  timers falsos (`vi.useFakeTimers()`) sobre un mock que nunca resuelve,
+  prueban el wrapper, no el socket. Y la verificación del punto de
+  extensión inalcanzable del SDK está anclada a la versión instalada hoy
+  de `@arcasdk/core` -- sin cerca que detecte que deje de ser cierto en un
+  bump de versión. Patch-package al SDK para wirear el punto de extensión
+  real (en vez del `Promise.race` de aplicación) es una alternativa más
+  invasiva, evaluada y no elegida en este bloque -- no descartada para
+  siempre, solo no necesaria mientras el `Promise.race` cumpla el mismo
+  contrato observable para los callers.
+- **`AFIP-BILLING-PORT-UNUSED-IVA-METHOD-001` (17/09/2026, Wave 9
+  sub-bloque 3, gate `architecture-governor`, condición C3 de la segunda
+  pasada) — `AfipBillingPort.getIvaReceptorTypes()`
+  (`src/facturacion/arca-sdk-billing.adapter.ts`) no tiene NINGÚN
+  consumidor real en `src/` hoy.** Separado a propósito del ítem de arriba
+  (`D-20-AFIP-TIMEOUT-VALUE-VERIFY-001`) para que no desaparezca cuando
+  ese se cierre por la medición de latencia -- el gate marcó este hallazgo
+  como "declarado, no bloqueaba el HOLD", pero con rot path real si queda
+  subordinado a otro ítem. La ruta real
+  (`GET /api/customers/padron/iva-receptor-types`) la sirve
+  `src/facturacion/padron.service.ts::getIvaReceptorTypes()`, que nunca
+  pasó por `AfipBillingPort` -- le pega directo al SDK vía su propio
+  `resolveAfipClient()`. El docblock de `afip-billing.port.ts` afirmaba
+  que `PadronService` invocaba estos 4 métodos vía el puerto -- falso,
+  corregido en ese archivo en el mismo bloque que encontró el hallazgo.
+  Duplicación concreta que esto deja: el mapeo
+  `(result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id,
+  description: t.desc }))` y el tipo `IvaReceptorTypeOption` existen
+  palabra por palabra en los dos archivos
+  (`arca-sdk-billing.adapter.ts`/`padron.service.ts`). **Opciones, ninguna
+  decidida:** (a) retirar `getIvaReceptorTypes()` de `AfipBillingPort`/
+  `ArcaSdkBillingAdapter` (API ya pública -- verificar que nada fuera de
+  `src/` la use antes); (b) hacer que `PadronService` consuma el puerto en
+  vez de pegarle al SDK directo, unificando el único camino real. Sin
+  costo operativo hoy -- la copia sin consumidor SÍ tiene el timeout de
+  D-20 (queda protegida si algún día gana un caller), así que no es una
+  superficie insegura, solo duplicada.
 
 ---
 

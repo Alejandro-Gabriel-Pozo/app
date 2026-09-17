@@ -2050,6 +2050,41 @@ describe('InvoiceService', () => {
       expect(invoice.cbteNro).toBe(11);
       expect(invoice.cae).toBe('CAE-RECOVERED');
     });
+
+    // D-20 (Wave 9 sub-bloque 3, 17/09/2026 --
+    // docs/auditoria-integral-fase15-2026-09-16.md:597, "Pruebas
+    // necesarias" del hallazgo original, cita literal: "sumar un test que
+    // verifique que el timeout post-createNextVoucher produce
+    // FAILED_UNCERTAIN con afipContacted = true, no un error genérico").
+    // A diferencia de los tests de arriba (que mockean el ERROR
+    // directamente), este simula el CUELGUE real: createNextVoucher()
+    // nunca resuelve, y es el withAfipTimeout() (afip-request.timeout.ts)
+    // que usa ArcaSdkBillingAdapter (el adapter REAL -- buildService() de
+    // este archivo ya lo usa, no un doble de prueba) el que lo convierte
+    // en un rechazo a los 20_000ms. Extremo a extremo, no solo a nivel de
+    // servicio.
+    it('D-20: createNextVoucher COLGADO (nunca resuelve) -- el timeout del adapter produce FAILED_UNCERTAIN con afipContacted=true, no un error genérico', async () => {
+      vi.useFakeTimers();
+      try {
+        const getLastVoucher = vi.fn().mockResolvedValue({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 });
+        const createNextVoucher = vi.fn(() => new Promise(() => { /* nunca resuelve -- AFIP colgada */ }));
+        const getVoucherInfo = vi.fn();
+        const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher, getVoucherInfo }) });
+
+        const pending = expect(
+          service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+        ).rejects.toThrow(AfipRequestUncertainError);
+        await vi.advanceTimersByTimeAsync(20_000);
+        await pending;
+
+        expect(getVoucherInfo).not.toHaveBeenCalled(); // getLastVoucher "después" no avanzó -- nada que reconciliar
+        const invoice = [...invoiceRepo.invoices.values()][0]!;
+        expect(invoice.status).toBe('FAILED_UNCERTAIN');
+        expect(invoice.afipContacted).toBe(true); // createNextVoucher() SÍ se invocó -- ambiguo, no "reintentable solo"
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1) -- retryExisting() respeta uncertainClearedAt', () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { PadronService } from './padron.service.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
@@ -194,5 +194,57 @@ describe('PadronService.getIvaReceptorTypes', () => {
     const result = await buildService(client).getIvaReceptorTypes();
 
     expect(result).toEqual([]);
+  });
+
+  // D-20 (Wave 9 sub-bloque 3, 17/09/2026, gate `architecture-governor`,
+  // condición C2 de la segunda pasada) -- espejo de los tests homónimos de
+  // getTaxpayerByCuit (:138) y resolveCuitByDni (:165). Antes de este
+  // bloque, getIvaReceptorTypes() ni siquiera pasaba por callPadron() --
+  // ahora sí, y este test fija ese cambio de contrato deliberado (una
+  // excepción real del SDK pasa de colarse cruda -- 500 genérico -- a
+  // AfipPadronUnavailableError -- 503) al mismo nivel que sus dos
+  // hermanos, no solo declarado en un docblock.
+  it('excepción real del SDK (no "no encontrado"): AfipPadronUnavailableError, no un 500 crudo', async () => {
+    const client = fakeArcaClient({
+      getIvaReceptorTypes: vi.fn().mockRejectedValue(new Error('ECONNRESET')),
+    });
+
+    await expect(buildService(client).getIvaReceptorTypes())
+      .rejects.toBeInstanceOf(AfipPadronUnavailableError);
+  });
+});
+
+// D-20 (Wave 9 sub-bloque 3, 17/09/2026, gate `architecture-governor` --
+// HOLD de la primera pasada, que solo cubría arca-sdk-billing.adapter.ts).
+// Las 3 llamadas reales de PadronService ahora pasan por withAfipTimeout()
+// DENTRO de callPadron() -- un timeout tiene que salir como
+// AfipPadronUnavailableError (503), igual que cualquier otra falla del
+// SDK, no como un error genérico.
+describe('PadronService -- D-20 timeout (20_000ms, vía callPadron -> AfipPadronUnavailableError)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('getTaxpayerByCuit colgado (nunca resuelve) -- AfipPadronUnavailableError a los 20_000ms, no un error crudo', async () => {
+    const client = fakeArcaClient({ getTaxpayerDetails: vi.fn(() => new Promise(() => { /* AFIP colgada */ })) });
+
+    const pending = expect(buildService(client).getTaxpayerByCuit('20111111112')).rejects.toBeInstanceOf(AfipPadronUnavailableError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('resolveCuitByDni colgado -- AfipPadronUnavailableError a los 20_000ms', async () => {
+    const client = fakeArcaClient({ getTaxIDByDocument: vi.fn(() => new Promise(() => { /* AFIP colgada */ })) });
+
+    const pending = expect(buildService(client).resolveCuitByDni('11111111')).rejects.toBeInstanceOf(AfipPadronUnavailableError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+  });
+
+  it('getIvaReceptorTypes colgado -- AfipPadronUnavailableError a los 20_000ms (antes de este bloque ni pasaba por callPadron())', async () => {
+    const client = fakeArcaClient({ getIvaReceptorTypes: vi.fn(() => new Promise(() => { /* AFIP colgada */ })) });
+
+    const pending = expect(buildService(client).getIvaReceptorTypes()).rejects.toBeInstanceOf(AfipPadronUnavailableError);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
   });
 });

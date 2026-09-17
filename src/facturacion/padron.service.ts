@@ -46,6 +46,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import { resolveAfipClient, buildAfipClient } from './afip-client.factory.js';
 import type { AfipClientFactory } from './afip-client.factory.js';
 import { AfipPadronUnavailableError } from '../domain/errors.js';
+import { withAfipTimeout } from './afip-request.timeout.js';
 import { logger } from '../logger.js';
 
 /**
@@ -61,6 +62,21 @@ import { logger } from '../logger.js';
  * real del fault. Esto la traduce a un error de dominio (503, es un
  * problema de infraestructura externa) y deja el error crudo en el log
  * del servidor para poder diagnosticar la próxima vez que pase.
+ *
+ * D-20 (Wave 9 sub-bloque 3, 17/09/2026, gate `architecture-governor` --
+ * HOLD de la primera pasada): las 3 llamadas reales al SDK de este
+ * archivo (`getTaxpayerByCuit`/`resolveCuitByDni`/`getIvaReceptorTypes`,
+ * las tres detrás de rutas autenticadas de autocompletado,
+ * `POST/GET /api/customers/padron/...`) ahora van envueltas en
+ * `withAfipTimeout()` (`afip-request.timeout.ts`, mismo mecanismo y valor
+ * que `arca-sdk-billing.adapter.ts`) DENTRO del `fn()` que recibe este
+ * helper -- así un timeout entra por el mismo `catch` que cualquier otra
+ * falla del SDK y sale como `AfipPadronUnavailableError`/503, no como un
+ * error genérico. Antes de este bloque, `getIvaReceptorTypes()` ni
+ * siquiera pasaba por `callPadron()` (inconsistente con los otros dos
+ * métodos) -- corregido acá como efecto colateral necesario para poder
+ * envolverlo con el mismo patrón; no había ningún test que fijara su
+ * forma de error anterior (era simplemente lo que el SDK tirara crudo).
  */
 async function callPadron<T>(operation: string, fn: () => Promise<T>): Promise<T> {
   try {
@@ -117,7 +133,7 @@ export class PadronService {
   async getTaxpayerByCuit(cuit: string): Promise<TaxpayerLookupResult | null> {
     const client = await resolveAfipClient(this.businessProfileRepo, this.afipCredentialsRepo, this.clientFactory);
     const details = await callPadron('getTaxpayerByCuit', () =>
-      client.registerScopeFiveService.getTaxpayerDetails(Number(cuit)),
+      withAfipTimeout(client.registerScopeFiveService.getTaxpayerDetails(Number(cuit)), 'getTaxpayerByCuit'),
     );
     if (!details) return null;
     return this.mapTaxpayerDetails(cuit, details);
@@ -127,7 +143,7 @@ export class PadronService {
   async resolveCuitByDni(dni: string): Promise<string | null> {
     const client = await resolveAfipClient(this.businessProfileRepo, this.afipCredentialsRepo, this.clientFactory);
     const result = await callPadron('resolveCuitByDni', () =>
-      client.registerScopeThirteenService.getTaxIDByDocument(dni),
+      withAfipTimeout(client.registerScopeThirteenService.getTaxIDByDocument(dni), 'resolveCuitByDni'),
     );
     const first = result.idPersona?.[0];
     return first != null ? String(first) : null;
@@ -136,7 +152,9 @@ export class PadronService {
   /** `claseCmp` opcional (mismo parámetro que expone el SDK) -- sin él, ARCA devuelve el catálogo completo. */
   async getIvaReceptorTypes(claseCmp?: string): Promise<IvaReceptorTypeOption[]> {
     const client = await resolveAfipClient(this.businessProfileRepo, this.afipCredentialsRepo, this.clientFactory);
-    const result = await client.electronicBillingService.getIvaReceptorTypes(claseCmp);
+    const result = await callPadron('getIvaReceptorTypes', () =>
+      withAfipTimeout(client.electronicBillingService.getIvaReceptorTypes(claseCmp), 'getIvaReceptorTypes'),
+    );
     return (result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id, description: t.desc }));
   }
 
