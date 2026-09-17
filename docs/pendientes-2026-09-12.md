@@ -33,6 +33,20 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
+- **`D-02-LOG-REDACTION-RUNTIME-VERIFY-001` (17/09/2026, fix de secretos en
+  logs ya en código y gate-aprobado, commit `e593f07`) — falta confirmar
+  contra runtime real, no solo contra el banco de prueba en memoria de
+  `src/logger.test.ts`.** Test 3 de `logger.test.ts` es un chequeo de TEXTO
+  sobre `app.ts` (no ejercita `createApp()` porque requiere Postgres), así
+  que "app.ts cablea el serializer" nunca se probó contra el proceso real.
+  Acción puntual que lo cierra: levantar el servidor real (local con
+  Postgres, o produccion tras el deploy) y hacer un login real (`POST
+  /api/auth/login` o el flujo de `me.routes.ts`), y confirmar en la línea
+  de log emitida: (1) no aparece `req.headers` (el objeto entero, no solo
+  `authorization`); (2) `req.url` no lleva query string si el request la
+  tenía; (3) el header de respuesta trae `"set-cookie":"[Redacted]"`, no el
+  JWT en claro. Se corta de acá (no se tacha) y pasa a `docs/resuelto.md`
+  con la línea de log real como evidencia, recién cuando alguien la corre.
 - **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` (17/09/2026, fix de
   `SCHEMA-VERSION-GATE-NOT-PERMANENT-001` ya en código, `docs/resuelto.md`)
   — 3 verificaciones que el fix en sí NO cubre, todas antes de dar por
