@@ -11,6 +11,8 @@
  * | NEON_SSL        | No          | 'true' para forzar SSL con rejectUnauthorized |
  * | DB_POOL_MAX     | No          | Máx conexiones del pool (default: 10)          |
  * | DB_POOL_IDLE_MS | No          | Idle timeout en ms (default: 30 000)          |
+ * | DB_STATEMENT_TIMEOUT_MS | No | Máx duración de una query (default: 30 000) — ver config/env.ts |
+ * | DB_IDLE_IN_TRANSACTION_TIMEOUT_MS | No | Máx tiempo con tx abierta sin actividad (default: 30 000) |
  *
  * ## SSL y Neon
  *
@@ -28,7 +30,7 @@
 import pg from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
-import { getNeonSsl, getDatabaseUrl, getDbPoolMax, getDbPoolIdleMs } from '../config/env.js';
+import { getNeonSsl, getDatabaseUrl, getDbPoolMax, getDbPoolIdleMs, getDbStatementTimeoutMs, getDbIdleInTransactionTimeoutMs } from '../config/env.js';
 
 const { Pool } = pg;
 
@@ -95,6 +97,11 @@ function getPool(): InstanceType<typeof Pool> {
     max:                     getDbPoolMax(),
     idleTimeoutMillis:       getDbPoolIdleMs(),
     connectionTimeoutMillis: 5_000,
+    // D-20 sub-bloque 4 (17/09/2026) -- ver docblock de
+    // getDbStatementTimeoutMs() en config/env.ts para el contexto
+    // completo (F12-12, valor generoso a propósito hasta D-17/F12-06).
+    statement_timeout: getDbStatementTimeoutMs(),
+    idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
     ssl: sslConfig(),
   });
 

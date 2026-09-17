@@ -121,6 +121,24 @@ describe('tenant.middleware — LRU de pools', () => {
 
     delete process.env.MAX_TENANT_POOLS;
   });
+
+  // D-20 sub-bloque 4 (17/09/2026, F12-12) -- exactamente el pool que el
+  // hallazgo describe (`max: 5`, la conexión trabada más fácil de agotar
+  // de todo el repo).
+  it('D-20: el pool de tenant lleva statement_timeout e idle_in_transaction_session_timeout', async () => {
+    delete process.env.DB_STATEMENT_TIMEOUT_MS;
+    delete process.env.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS;
+    const pg = await import('pg');
+    const { getTenantClient } = await import('./tenant.middleware.js');
+    const platformRepo = fakePlatformRepo();
+
+    await getTenantClient('biz-a', platformRepo);
+
+    const PoolMock = pg.default.Pool as unknown as { mock: { calls: Array<[Record<string, unknown>]> } };
+    const poolConfig = PoolMock.mock.calls[0]![0];
+    expect(poolConfig['statement_timeout']).toBe(30_000);
+    expect(poolConfig['idle_in_transaction_session_timeout']).toBe(30_000);
+  });
 });
 
 describe('tenant.middleware — chequeo de schema_version (fail-soft)', () => {

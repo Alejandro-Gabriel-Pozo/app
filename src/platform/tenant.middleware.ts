@@ -41,7 +41,7 @@ import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
 import { logger } from '../logger.js';
-import { getMaxTenantPools } from '../config/env.js';
+import { getMaxTenantPools, getDbStatementTimeoutMs, getDbIdleInTransactionTimeoutMs } from '../config/env.js';
 
 const { Pool } = pg;
 type PgPool = InstanceType<typeof Pool>;
@@ -110,6 +110,12 @@ export async function getTenantClient(
     max:                    5,
     idleTimeoutMillis:      30_000,
     connectionTimeoutMillis: 5_000,
+    // D-20 sub-bloque 4 (17/09/2026, F12-12) -- exactamente el caso que
+    // el hallazgo describe: con max: 5, una query trabada retiene una de
+    // las 5 conexiones del tenant sin límite. Valor generoso a propósito
+    // -- ver docblock de getDbStatementTimeoutMs() en config/env.ts.
+    statement_timeout: getDbStatementTimeoutMs(),
+    idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
     ssl: sslConfig(),
   });
 

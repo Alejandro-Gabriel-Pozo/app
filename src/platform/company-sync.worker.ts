@@ -26,6 +26,7 @@ import { decryptConnectionString } from './tenant-db.setup.js';
 import { logger } from '../logger.js';
 import { AdaptivePoller } from '../workers/adaptive-poller.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
+import { getDbStatementTimeoutMs, getDbIdleInTransactionTimeoutMs } from '../config/env.js';
 
 const BATCH_SIZE = 20;
 const MAX_RETRIES = 5;
@@ -125,7 +126,18 @@ export class CompanyCatalogPropagationWorker {
       const canonicalRecipe = await this.companyRepo.getCompanyRecipeItems(row.companyProductId);
 
       const connectionString = await decryptConnectionString(targetBusiness.dbUrlEncrypted);
-      const client = new pg.Client({ connectionString: stripSslMode(connectionString), ssl: sslConfig() });
+      const client = new pg.Client({
+        connectionString: stripSslMode(connectionString),
+        ssl: sslConfig(),
+        // D-20 sub-bloque 4 (17/09/2026, F12-12) -- applyToTenant() es
+        // SELECT/INSERT/UPDATE acotado por fila (DML, no DDL) -- distinto
+        // de applyTenantSchema()/migrate-tenants.ts pese a la nota del
+        // docblock del archivo (esa nota habla de "conexión de vida
+        // corta", no de que corra DDL). Seguro de acotar con
+        // statement_timeout, igual que los pools que sirven requests.
+        statement_timeout: getDbStatementTimeoutMs(),
+        idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
+      });
       try {
         await client.connect();
         await this.applyToTenant(client, companyProduct, canonicalRecipe, row.targetBusinessId);

@@ -25,7 +25,7 @@ import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
 import { sslConfig } from './db/pg.client.js';
 import { logger } from './logger.js';
-import { getPort, getPlatformDatabaseUrl } from './config/env.js';
+import { getPort, getPlatformDatabaseUrl, getDbIdleInTransactionTimeoutMs } from './config/env.js';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +48,15 @@ async function main(): Promise<void> {
       // Antes decidía por NODE_ENV en vez de NEON_SSL, un tercer criterio
       // distinto para la misma conexión.
       ssl: sslConfig(),
+      // D-20 sub-bloque 4 (17/09/2026, F12-12) -- este pool aplica
+      // platform.schema.sql (DDL), no requests -- a propósito SIN
+      // statement_timeout (abortar una migración a mitad de camino en
+      // cada deploy es peor que esperar, mismo criterio que Neon en D-20
+      // sub-bloque 2). idle_in_transaction_session_timeout SÍ es seguro
+      // acá -- solo dispara si la conexión queda con una tx abierta SIN
+      // ejecutar nada, no mientras el DDL sigue en curso (ver docblock de
+      // getDbIdleInTransactionTimeoutMs() en config/env.ts).
+      idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
     });
     await pool.query(sql);
     await pool.end();

@@ -185,6 +185,28 @@ describe('CompanyCatalogPropagationWorker', () => {
       expect(endMock).toHaveBeenCalledOnce(); // conexión de vida corta, cerrada siempre
     });
 
+    // D-20 sub-bloque 4 (17/09/2026, F12-12) -- applyToTenant() es DML
+    // acotado, no DDL (ver docblock de company-sync.worker.ts) -- seguro
+    // de acotar con statement_timeout, a diferencia de
+    // applyTenantSchema()/tenant-db.setup.ts.
+    it('D-20: el Client lleva statement_timeout e idle_in_transaction_session_timeout', async () => {
+      delete process.env.DB_STATEMENT_TIMEOUT_MS;
+      delete process.env.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS;
+      const pg = await import('pg');
+      const companyRepo = makeCompanyRepo({
+        getPendingPropagation: vi.fn(async () => [makeRow()]),
+      });
+      const worker = new CompanyCatalogPropagationWorker(companyRepo, makePlatformRepo());
+
+      await worker.poll();
+
+      const ClientMock = pg.default.Client as unknown as { mock: { calls: Array<[Record<string, unknown>]> } };
+      const lastCallIndex = ClientMock.mock.calls.length - 1;
+      const clientConfig = ClientMock.mock.calls[lastCallIndex]![0];
+      expect(clientConfig['statement_timeout']).toBe(30_000);
+      expect(clientConfig['idle_in_transaction_session_timeout']).toBe(30_000);
+    });
+
     it('si el producto canónico ya no existe, marca processed sin conectarse a ningún tenant', async () => {
       const companyRepo = makeCompanyRepo({
         getPendingPropagation: vi.fn(async () => [makeRow()]),

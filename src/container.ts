@@ -29,7 +29,7 @@ import { stripSslMode, sslConfig } from './db/pg.client.js';
 import { PgTransactionManager } from './db/pg.transaction-manager.js';
 import type { TransactionManager } from './db/transaction-manager.js';
 import { logger } from './logger.js';
-import { requirePlatformDatabaseUrl, getPlatformDatabaseUrl } from './config/env.js';
+import { requirePlatformDatabaseUrl, getPlatformDatabaseUrl, getDbStatementTimeoutMs, getDbIdleInTransactionTimeoutMs } from './config/env.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -56,6 +56,16 @@ export function createPlatformPool(): SqlClient {
       // colgaría el build para siempre, bloqueando todo deploy futuro.
       // Mismo valor que ya usa applyTenantSchema() por tenant.
       connectionTimeoutMillis: 10_000,
+      // D-20 sub-bloque 4 (17/09/2026, F12-12) -- este pool sirve requests
+      // (BusinessPlan, PlatformRepository) tanto en el proceso vivo como
+      // en migrate-tenants.ts (que lo usa SOLO para listar/actualizar
+      // businesses -- la migración de schema.sql en sí corre en un
+      // pg.Client aparte, applyTenantSchema(), que NO lleva
+      // statement_timeout a propósito -- ver config/env.ts). Seguro de
+      // acotar acá. Valor generoso a propósito -- ver docblock de
+      // getDbStatementTimeoutMs() en config/env.ts.
+      statement_timeout: getDbStatementTimeoutMs(),
+      idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
     });
     _platformPool.on('error', (err) => {
       logger.error({ err: err.message }, '[platform] Error en pool central');

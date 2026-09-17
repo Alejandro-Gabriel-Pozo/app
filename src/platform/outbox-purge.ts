@@ -41,6 +41,7 @@ import { decryptConnectionString } from './tenant-db.setup.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { SqlDomainEventRepository } from '../repositories/sql.domain-event.repository.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
+import { getDbStatementTimeoutMs, getDbIdleInTransactionTimeoutMs } from '../config/env.js';
 
 /** A7.6 (docs/criterios-negocio.md), decisión del dueño 10/09/2026 — ver
  * docs/diseno-outbox-backoff-2026-09-10.md. */
@@ -65,6 +66,15 @@ async function purgeOutboxForTenant(connectionString: string): Promise<number> {
     connectionString: stripSslMode(connectionString),
     ssl: sslConfig(),
     connectionTimeoutMillis: 10_000,
+    // D-20 sub-bloque 4 (17/09/2026, F12-12) -- un DELETE acotado por
+    // retención (DML, no DDL). Seguro de acotar: esta purga ya es
+    // fail-soft por diseño (ver docblock del archivo) -- si el DELETE se
+    // corta por timeout en un tenant con mucho volumen acumulado, ESE
+    // tenant queda pendiente para la próxima corrida, sin bloquear a los
+    // demás. Valor generoso a propósito -- ver getDbStatementTimeoutMs()
+    // en config/env.ts.
+    statement_timeout: getDbStatementTimeoutMs(),
+    idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
   });
   try {
     await client.connect();

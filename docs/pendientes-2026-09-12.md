@@ -1469,6 +1469,146 @@ anteriores.
   costo operativo hoy -- la copia sin consumidor SÍ tiene el timeout de
   D-20 (queda protegida si algún día gana un caller), así que no es una
   superficie insegura, solo duplicada.
+- **`D-20-STATEMENT-TIMEOUT-VALUE-VERIFY-001` (17/09/2026, Wave 9
+  sub-bloque 4, `statement_timeout`/`idle_in_transaction_session_timeout`
+  ya en código y verde en 7 conexiones a Postgres --
+  `src/config/env.ts::getDbStatementTimeoutMs()`/
+  `getDbIdleInTransactionTimeoutMs()`, 30s cada uno) — decisión explícita
+  del dueño (`AskUserQuestion`, 17/09/2026): "generoso ahora, revisar
+  después de D-17/F12-06", NO el default silencioso de un fence.**
+  El propio hallazgo (F12-12,
+  `docs/auditoria-integral-fase12-2026-09-16.md:907-951`) advierte que
+  este valor es *"una decisión de negocio disfrazada de parámetro"* y
+  recomienda fijarlo recién DESPUÉS de resolver F12-01 (N+1 de reservas,
+  ~1,2s medidos para 200 filas -- `D-17`, todavía **sin implementar**,
+  Wave 10), F12-06 (chequeo de disponibilidad secuencial, ~2,5s medidos,
+  mismo estado) **y F12-09 (indeterminada -- corrección del gate, segunda
+  pasada, 17/09/2026: la primera versión de este ítem citaba solo los
+  primeros dos determinantes; el texto real de F12-12 nombra tres)** --
+  fijarlo antes calibra el número contra el comportamiento PATOLÓGICO en
+  vez del sano. Se preguntó explícitamente en vez de resolverlo
+  unilateralmente (mismo criterio que "preguntas de alcance pueden
+  esconder una decisión de negocio" del `CLAUDE.md` raíz) y el dueño
+  eligió cerrar el hueco de protección de capacidad ahora, dejando el
+  ajuste fino para después.
+  **Corrección del gate sobre QUÉ compara "generoso":** `statement_timeout`
+  acota un STATEMENT individual, no una request completa -- F12-01/F12-06
+  son agregados de REQUEST (401/169 queries chicas cada uno), no la
+  duración de un solo statement, así que comparar 30s contra esos dos
+  agregados es la comparación equivocada (generosa igual, no peligrosa,
+  pero no la que el ítem original afirmaba hacer). El calibre correcto es
+  el statement individual más lento + espera de lock -- hoy, medido, eso
+  es órdenes de magnitud menor a 30s; el único caso conocido que sí supera
+  ampliamente 30s (aplicar schema.sql completo, ~50s pre-D-08) está en el
+  grupo DDL, explícitamente excluido más abajo. F12-09 (`UNION` sobre
+  historial fiscal completo) es el statement individual potencialmente
+  largo sin medir -- se des-riesga hoy porque su ruta no tiene consumidor
+  conocido (`NO_CONSUMER_ROUTES`), no porque esté descartado.
+  Acción puntual que cierra este ítem: cuando D-17/F12-06 aterricen,
+  volver a medir F12-01/F12-06 con las correcciones aplicadas y bajar
+  `DB_STATEMENT_TIMEOUT_MS`/`DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` (o los
+  defaults en `config/env.ts`) a un valor calibrado contra el
+  comportamiento SANO. Se corta de acá (no se tacha) y pasa a
+  `docs/resuelto.md` con la medición real, recién cuando alguien la corre.
+  **Split deliberado entre 7 conexiones, no un valor uniforme:** las que
+  SIRVEN REQUESTS o hacen trabajo DML acotado por-item
+  (`container.ts`, `tenant.middleware.ts`, `pg.client.ts`,
+  `company-sync.worker.ts`, `outbox-purge.ts`) llevan AMBOS timeouts; las
+  que corren DDL de migración en cada deploy
+  (`server.ts::platform.schema.sql`,
+  `tenant-db.setup.ts::applyTenantSchema()`) llevan SOLO
+  `idle_in_transaction_session_timeout` -- a propósito SIN
+  `statement_timeout`, porque abortar una migración a mitad de camino en
+  un deploy (`push = deploy`) es peor que esperar, mismo criterio ya
+  aplicado a Neon en D-20 sub-bloque 2. Verificado con test dedicado
+  (`tenant-db.setup.test.ts`) que fija la ausencia, no solo la presencia
+  -- negative-test aplicado: agregar `statement_timeout` ahí a mano rompe
+  ese test. **Verificado por el gate contra Postgres 16 real (conexión
+  directa, sin pooler)**, no solo por lectura de código: los dos valores
+  se materializan (`current_setting()` → `30s`/`30s`), un
+  `statement_timeout` corto cancela con SQLSTATE `57014`, un
+  `idle_in_transaction_session_timeout` corto termina la sesión con
+  `25P03`, y un `client.query(schemaSQL)` multi-statement con un
+  `pg_sleep(35)` adentro completa igual bajo
+  `idle_in_transaction_session_timeout: 30000` (sin `statement_timeout`)
+  -- confirma que el grupo DDL es seguro tal como está diseñado.
+- **`D-20-STATEMENT-TIMEOUT-POOLER-VERIFY-001` (17/09/2026, Wave 9
+  sub-bloque 4, gate `architecture-governor`, condición C1 de la segunda
+  pasada) — los dos timeouts viajan como PARÁMETROS DE STARTUP de la
+  conexión (verificado leyendo `node_modules/pg/lib/client.js:558-565`),
+  y producción conecta SIEMPRE vía el endpoint `-pooler` de Neon
+  (PgBouncer) tanto para la plataforma como para cada tenant
+  (`docs/INCIDENT_LOG_2026-08-08.md:56-116`, regla permanente;
+  `src/platform/neon-provisioning.ts` arma la connection string con
+  `pooled: 'true'`) -- NUNCA verificado contra un pooler real, solo
+  contra Postgres directo (ver el ítem de arriba).**
+  Dos modos de falla posibles, ninguno detectable por este bloque tal
+  como está: (A) el pooler RECHAZA el parámetro de startup → la conexión
+  falla con FATAL -- fail-loud: la primera query de `migrate:tenants`
+  fallaría, el build de Render fallaría, Render NO promueve la versión
+  nueva (la instancia vieja sigue sirviendo) -- blast radius acotado pero
+  real. (B) el pooler DESCARTA el parámetro en silencio → toda la suite
+  verde, `SHOW statement_timeout` vuelve al default del server, y D-20
+  queda "cerrado" en el código con cero protección real en producción --
+  exactamente el modo de falla que el `CLAUDE.md` raíz narra ("aparenta
+  una protección que no era completa"). Acción puntual que lo cierra,
+  de una sola vez y de solo lectura (no escribe nada, no hace falta
+  backup): contra la connection string real de plataforma y la de un
+  tenant real (post-`stripSslMode()`, mismo shape que usa el código),
+  conectar con `statement_timeout`/`idle_in_transaction_session_timeout`
+  seteados en 30000 y correr
+  `SELECT current_setting('statement_timeout') st, current_setting('idle_in_transaction_session_timeout') it`
+  -- criterio de aceptación: la conexión conecta Y las dos columnas leen
+  `30s`. Si cualquiera de las dos condiciones falla, este bloque NO se
+  considera cerrado tal como está -- el fix pasa a ser `options:
+  '-c statement_timeout=30000'` (forma alternativa que algunos poolers sí
+  respetan) o un hook de `connect` que emita `SET` explícito, cada uno
+  con su propia salvedad de pooler, y eso es un gate nuevo, no un ajuste
+  de valor. **Bloquea declarar D-20/F12-12 cerrado y bloquea mover
+  cualquier parte de este bloque a `docs/resuelto.md`** -- hasta correr
+  esta verificación, "el timeout existe en producción" es una inferencia,
+  no un hecho confirmado. No bloquea commitear el código (la mitigación
+  de fallo es fail-loud vía el build, no silenciosa) -- si bloquea pushear.
+
+---
+
+## Deuda de tests declarada por el gate (no bloqueante, no es verificación de entorno)
+
+Distinto de `## 🔍 Verificaciones pendientes` de arriba: eso es código
+listo que falta correr contra un entorno real. Esto es código listo y
+CORRECTO (confirmado por lectura + `tsc` limpio) al que le falta un test
+que lo fije -- no depende de ningún entorno externo para cerrarse, solo
+de escribir el test.
+
+- **`D-20-STATEMENT-TIMEOUT-TEST-COVERAGE-001` (17/09/2026, Wave 9
+  sub-bloque 4, gate `architecture-governor`, condición C4 de la segunda
+  pasada -- reclasificado desde `D-20-STATEMENT-TIMEOUT-VALUE-VERIFY-001`,
+  que lo tenía mezclado con el residuo de valor pese a no ser una
+  verificación de entorno real.)** 4 de las 7 conexiones a Postgres de
+  D-20 sub-bloque 4 tienen test que verifica la config real pasada al
+  constructor (`tenant.middleware.test.ts`, `company-sync.worker.test.ts`,
+  `outbox-purge.test.ts`, `tenant-db.setup.test.ts`). Las 3 restantes
+  (`container.ts`, `pg.client.ts`, `server.ts`) no tienen ningún test que
+  instancie su `Pool`/`Client` real -- ninguna tenía test alguno antes de
+  este bloque (`pg.client.ts` es además el pool legado que F14-05/F11-18
+  ya recomendaron retirar, sin caller real hoy) y crear infraestructura
+  de test nueva (`vi.mock('pg', ...)` desde cero) para eso quedó fuera de
+  alcance de un bloque de config. **Solución recomendada por el gate, no
+  implementada todavía:** en vez de 3 harnesses nuevos, una cerca de
+  arquitectura -- `src/tests/architecture/db-connection-timeout-policy.test.ts`
+  -- que enumere TODA construcción `new Pool(`/`new pg.Client(` en `src/`
+  (excluyendo tests) y verifique que cada una pasa `statement_timeout` Y
+  `idle_in_transaction_session_timeout` de `config/env.ts`, con un
+  allowlist del grupo DDL (`server.ts`, `tenant-db.setup.ts::applyTenantSchema`)
+  con motivo, verificado en las dos direcciones. Sería el **duodécimo**
+  artefacto manual del repo (cuenta corrida, ver la nota de numeración en
+  "Contratos" de `app-main/CLAUDE.md`) -- mismo criterio que los once
+  anteriores. Cierra de una sola vez la cobertura de los 3 sitios sin
+  test Y protege contra un 8vo sitio de conexión que alguien agregue más
+  adelante sin ninguno de los dos timeouts -- ni `tsc` ni un `vi.mock`
+  nuevo por archivo detectarían eso. No decidido todavía si se implementa
+  como bloque propio o junto con el bloque de calibración de valor
+  (D-17/F12-06).
 
 ---
 

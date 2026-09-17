@@ -325,4 +325,28 @@ describe('applyTenantSchema', () => {
 
     expect(version).toBe(CURRENT_SCHEMA_VERSION);
   });
+
+  // D-20 sub-bloque 4 (17/09/2026, F12-12) -- applyTenantSchema() corre
+  // DDL (schema.sql) en CADA deploy, contra CADA tenant -- a propósito
+  // SIN statement_timeout (abortar una migración a mitad de camino en un
+  // deploy es peor que esperar). idle_in_transaction_session_timeout SÍ
+  // debe estar -- no tiene el mismo riesgo (ver docblock de
+  // getDbIdleInTransactionTimeoutMs() en config/env.ts). Esta es
+  // exactamente la propiedad que distingue este cliente del resto de los
+  // pools de D-20 sub-bloque 4 -- si algún día alguien le agrega
+  // statement_timeout "por consistencia" sin leer este comentario, este
+  // test lo agarra.
+  it('D-20: lleva idle_in_transaction_session_timeout pero NUNCA statement_timeout (DDL, no requests)', async () => {
+    delete process.env.DB_STATEMENT_TIMEOUT_MS;
+    delete process.env.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS;
+    const pg = await import('pg');
+    const { applyTenantSchema } = await import('./tenant-db.setup.js');
+
+    await applyTenantSchema('postgresql://fake');
+
+    const ClientMock = pg.default.Client as unknown as { mock: { calls: Array<[Record<string, unknown>]> } };
+    const clientConfig = ClientMock.mock.calls[0]![0];
+    expect(clientConfig['idle_in_transaction_session_timeout']).toBe(30_000);
+    expect(clientConfig['statement_timeout']).toBeUndefined();
+  });
 });

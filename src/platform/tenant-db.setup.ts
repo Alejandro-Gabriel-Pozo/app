@@ -35,7 +35,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
-import { getDbEncryptionKey, getDbEncryptionKeyOld } from '../config/env.js';
+import { getDbEncryptionKey, getDbEncryptionKeyOld, getDbIdleInTransactionTimeoutMs } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
 // Schema loader — fuente de verdad única, resuelta desde este archivo
@@ -561,6 +561,14 @@ export async function applyTenantSchema(connectionString: string): Promise<numbe
     connectionString: stripSslMode(connectionString),
     ssl: sslConfig(),
     connectionTimeoutMillis: 10_000,
+    // D-20 sub-bloque 4 (17/09/2026, F12-12) -- aplica schema.sql (DDL) a
+    // CADA tenant en CADA deploy -- a propósito SIN statement_timeout,
+    // mismo criterio que server.ts::platform.schema.sql (ver su
+    // comentario): abortar esta migración a mitad de camino en un deploy
+    // es peor que esperar. idle_in_transaction_session_timeout sí es
+    // seguro -- ver docblock de getDbIdleInTransactionTimeoutMs() en
+    // config/env.ts.
+    idle_in_transaction_session_timeout: getDbIdleInTransactionTimeoutMs(),
   });
   try {
     await client.connect();

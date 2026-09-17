@@ -208,6 +208,74 @@ export function getDbPoolIdleMs(): number {
   return readIntEnv('DB_POOL_IDLE_MS', 30_000);
 }
 
+/**
+ * D-20 sub-bloque 4 (17/09/2026, Wave 9 --
+ * docs/auditoria-integral-fase12-2026-09-16.md:907-951, F12-12): ningún
+ * pool tenía `statement_timeout` -- una query trabada retenía una de las
+ * `max: 5` conexiones del pool sin límite (el tenant entero se queda sin
+ * BD con solo 5 queries colgadas).
+ *
+ * **Valor deliberadamente generoso, decisión explícita del dueño
+ * (17/09/2026), no un default sin pensar:** el propio hallazgo F12-12
+ * advierte que este número es "una decisión de negocio disfrazada de
+ * parámetro" y recomienda fijarlo recién DESPUÉS de resolver F12-01 (N+1
+ * de reservas, ~1,2s para 200 filas, `D-17`, todavía sin implementar --
+ * Wave 10), F12-06 (chequeo de disponibilidad secuencial, ~2,5s, mismo
+ * estado) **y F12-09 (indeterminada -- corrección del gate, 17/09/2026,
+ * segunda pasada: la primera versión de este docblock citaba solo los
+ * primeros dos determinantes; el propio texto de F12-12 nombra tres)** --
+ * fijarlo antes calibraría el número contra el comportamiento PATOLÓGICO
+ * en vez del sano.
+ *
+ * **Corrección del gate sobre QUÉ mide este número:** `statement_timeout`
+ * acota un STATEMENT individual, no una request completa -- F12-01/F12-06
+ * son agregados de REQUEST (401/169 queries chicas cada uno), no la
+ * duración de un solo statement. Comparar 30s contra esos dos agregados
+ * es la comparación equivocada (aunque generosa, no peligrosa). El
+ * calibre correcto es el statement individual más lento + espera de lock
+ * -- hoy, medido, eso es órdenes de magnitud menor a 30s (ver
+ * `docs/pendientes-2026-09-12.md` para el detalle completo, incluida la
+ * excepción real de statement largo ya excluida más abajo). Puesto ahora,
+ * generoso a propósito, para cerrar el hueco de protección de capacidad
+ * sin bloquear en D-17 -- residuo registrado en
+ * `docs/pendientes-2026-09-12.md` para revisar el valor (probablemente
+ * bajarlo) una vez que D-17/F12-06 aterricen.
+ *
+ * Aplica SOLO a pools que SIRVEN REQUESTS (container.ts, tenant.middleware.ts,
+ * pg.client.ts) y a los clientes de trabajo acotado por-item
+ * (company-sync.worker.ts, outbox-purge.ts) -- NO a los clientes de
+ * DDL/migración de una sola vez (server.ts::platform.schema.sql,
+ * tenant-db.setup.ts::applyTenantSchema()), que corren en cada deploy
+ * (`push = deploy`) y pueden legítimamente tardar más que cualquier
+ * query de request -- un statement_timeout ahí abortaría una migración a
+ * mitad de camino, el mismo riesgo que ya se evitó a propósito con Neon
+ * en D-20 sub-bloque 2 (abortar una saga es peor que esperar). Esos dos
+ * SÍ reciben `getDbIdleInTransactionTimeoutMs()` -- ese no tiene el mismo
+ * riesgo, ver su propio docblock.
+ */
+export function getDbStatementTimeoutMs(): number {
+  return readIntEnv('DB_STATEMENT_TIMEOUT_MS', 30_000);
+}
+
+/**
+ * D-20 sub-bloque 4 (ver `getDbStatementTimeoutMs()` arriba para el
+ * contexto completo del hallazgo F12-12). A diferencia de
+ * `statement_timeout`, este SÍ se aplica también a los clientes de DDL/
+ * migración de una sola vez -- `idle_in_transaction_session_timeout` solo
+ * dispara cuando una transacción está ABIERTA pero SIN ejecutar nada (un
+ * bug de aplicación: `BEGIN` sin `COMMIT`/`ROLLBACK` posterior, una
+ * conexión que se cuelga entre dos statements), no mientras un statement
+ * legítimamente largo sigue en curso -- `schema.sql`/`platform.schema.sql`
+ * se mandan como un único mensaje multi-statement (protocolo simple de
+ * Postgres, transacción implícita), sin gaps de inactividad entre
+ * sentencias, así que este timeout nunca debería dispararse contra una
+ * migración sana. Mismo valor (30s) que `statement_timeout` -- generoso,
+ * mismo residuo de revisión.
+ */
+export function getDbIdleInTransactionTimeoutMs(): number {
+  return readIntEnv('DB_IDLE_IN_TRANSACTION_TIMEOUT_MS', 30_000);
+}
+
 export function getMaxTenantPools(): number {
   return readIntEnv('MAX_TENANT_POOLS', 200);
 }
