@@ -47,6 +47,40 @@ cuando se pushea.
   tenía; (3) el header de respuesta trae `"set-cookie":"[Redacted]"`, no el
   JWT en claro. Se corta de acá (no se tacha) y pasa a `docs/resuelto.md`
   con la línea de log real como evidencia, recién cuando alguien la corre.
+- **`D-17-F12-02-F12-03-RESIDUE-VERIFY-001` (17/09/2026, Wave 10, commit
+  `b57e89a`, `docs/resuelto.md`) — F12-02 y F12-03
+  (`docs/auditoria-integral-fase12-2026-09-16.md:264/320`) quedan aliviados
+  POR CONSTRUCCIÓN por el mismo cambio que cerró F12-01/D-17, pero ninguno
+  de los dos se remidió de forma independiente contra su propio escenario
+  medido -- "inferido del mismo código compartido" no es lo mismo que
+  "medido" (regla del `CLAUDE.md` raíz).**
+  - **F12-02 (pool de 5 conexiones del tenant saturado por un listado -- 15ms
+    → 600ms medido antes del fix).** `getFiltered()` pasó de 401/101 queries
+    secuenciales a 3 -- la superficie que saturaba el pool prácticamente
+    desaparece por construcción, pero nadie volvió a correr el escenario
+    real (un listado de 200 concurrente con otra query trivial en el mismo
+    pool de 5) para confirmar la latencia post-fix. Acción puntual que lo
+    cierra: repetir la medición de F12-02 (`docs/auditoria-integral-fase12-2026-09-16.md:264`)
+    contra Postgres real con el código de este commit, confirmar que la
+    query trivial ya no sube de ~15ms.
+  - **F12-03 (la sección crítica con `FOR UPDATE` sostiene el lock durante 21
+    round-trips, no 1 -- M8: 10 reservas solapadas, 335ms de lock a RTT
+    15ms).** Este es el caso más directo de los dos -- `getActiveInRange()`
+    (la MISMA función privada que hidrata con `forUpdate: true`, usada por
+    `getActiveForResourceInRangeWithLock()`/`getActiveForServiceInRangeWithLock()`)
+    quedó tocada por este commit: ahora llama a `rowsToReservations()`
+    (batch) en vez de `Promise.all(rows.map(rowToReservation))` fila por
+    fila, con el lock ya tomado -- de 1 (lock) + 2N (hidratación) a 1 + 2
+    round-trips totales, sin importar cuántas reservas solapadas haya.
+    Debería bajar el tiempo de lock sostenido de forma casi proporcional a
+    N, pero el escenario M8 (10 reservas solapadas dentro de un `BEGIN`
+    real, medir queries + ms de lock) no se volvió a correr después del
+    cambio. Acción puntual que lo cierra: repetir M8 contra Postgres real
+    con el código de este commit y confirmar el número nuevo (esperado:
+    ~3 queries, no 21).
+  Se corta de acá (no se tacha) y cada uno pasa a `docs/resuelto.md` por
+  separado, con la medición real, recién cuando alguien la corre -- no se
+  asume que "comparten código" alcanza para declararlos cerrados.
 - **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` (17/09/2026, fix de
   `SCHEMA-VERSION-GATE-NOT-PERMANENT-001` ya en código, `docs/resuelto.md`)
   — sub-ítems (a) y (b) confirmados contra el push real (commit `8ceff54`,

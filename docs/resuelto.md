@@ -22,6 +22,57 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ## 17/09/2026
 
+- **`D-17` (Wave 10 del plan de ejecución integral, `docs/plan-ejecucion-integral-2026-09-16.md`).**
+  Origen: `docs/auditoria-integral-fase15-2026-09-16.md:499-521` (F12-01) --
+  N+1 en `SqlReservationRepository.getFiltered()`/`getActiveInRange()`
+  privada: resolvían `resource` y `lines` POR FILA
+  (`rowToReservation()` -> 1+2N round-trips). Commit `b57e89a`. Batchea vía
+  `rowsToReservations()`/`getLinesForReservations()` -- una query
+  `resources WHERE id = ANY($1)`, una `reservation_lines WHERE
+  reservation_id = ANY($1)`, armado en memoria -- mismo patrón que
+  `sql.order.repository.ts:143-170`/`sql.customer.repository.ts:111-133`.
+  Medido contra Postgres real, antes y después del cambio (script
+  descartable primero, reemplazado por el test permanente de abajo):
+  **401→3 queries para 200 filas, 101→3 para 50** (criterio de aceptación
+  del hallazgo era `<=4`). Alcance deliberadamente acotado a los dos call
+  sites que el hallazgo mide -- los otros 6 métodos de lectura de
+  `sql.reservation.repository.ts` siguen fila por fila a propósito (no son
+  el hot path medido), declarado en el commit.
+  Gate `architecture-governor` (ronda D-17): APROBADO CON CONDICIONES,
+  las 4 cumplidas en el mismo commit `b57e89a`:
+  - **C1** -- test nuevo,
+    `src/tests/integration/reservation-getfiltered-batch-resolution.integration.test.ts`
+    (Postgres real): 2 recursos distintos + 2 reservas con líneas
+    distintas a través de `getFiltered()`, confirma que cada reserva
+    devuelve SU `resource.id` y SUS `lines`, no las de otra -- el riesgo
+    real que el gate señaló (un `Map` mal indexado) y que ningún test
+    existente detectaba. Fija `queryCount <= 4` de forma permanente y
+    reproducible, reemplazando el script descartable de medición. **Guard
+    verificado con dientes:** se introdujo un mis-keying deliberado en
+    `rowsToReservations()` (recurso por índice en vez de por id, líneas de
+    todas las reservas mezcladas) y el test falló como se esperaba (`3`
+    líneas en vez de `1`) -- confirmado y revertido antes de commitear, no
+    queda en el diff.
+  - **C2** -- unit tests de `getManyByIds()` (nuevo método de
+    `ResourceRepository`, 2 implementaciones) en
+    `sql.resource.repository.test.ts`/`in-memory.resource.repository.test.ts`:
+    `[]` no corre query / devuelve `[]`; mapea varias filas sin filtrar
+    por `active`/`deleted_at` (R2, `docs/criterios-datos.md` -- misma
+    semántica que `getById()`).
+  - **C3** -- `docs/pendientes-2026-09-12.md` (línea exacta corrida por el
+    residuo F12-02/F12-03 agregado en el mismo commit -- buscar la frase
+    "D-17, **implementado**", no citar por número de línea) corregido en el
+    mismo commit que el código (ya no dice "D-17 sin implementar");
+    F12-06 (disponibilidad secuencial) sigue abierto, el ítem de
+    calibración de `statement_timeout` no se cierra todavía.
+  - **C4** -- esta entrada + el residuo de F12-02/F12-03 registrado abajo,
+    en `pendientes-2026-09-12.md`, sección Verificaciones pendientes.
+  Verificado antes de commitear: `tsc` limpio, `lint`/`lint:arch` limpios
+  (313 módulos, 0 violaciones), 180 archivos/2487 tests unitarios verdes,
+  51 archivos/386 tests de integración verdes contra Postgres 16 real
+  (incluye el test nuevo). **No pusheado a esta fecha** -- confirmar con
+  `git log origin/main --oneline | grep b57e89a`.
+
 - **`SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001`, sub-ítems (a) y (b).**
   Origen: `docs/pendientes-2026-09-12.md`. Las dos verificaciones pre-push/
   post-deploy del fix `SCHEMA-VERSION-GATE-NOT-PERMANENT-001`, corridas
