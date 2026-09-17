@@ -125,12 +125,24 @@ ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_lodging BOOLEAN NOT 
 -- este campo en producción.
 ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_exclusive BOOLEAN NOT NULL DEFAULT FALSE;
 
--- Backfill UNA SOLA VEZ (gateado por schema_migrations, no por el valor de
--- la columna) -- schema.sql se re-corre completo en cada migrate:tenants
--- (idempotente por diseño), así que un UPDATE sin este guard pisaría para
--- siempre cualquier decoupling manual que el dueño haga más adelante
--- (ej. marcar is_exclusive = FALSE en una categoría de alojamiento que deja
--- de ser exclusiva) cada vez que se vuelva a correr.
+-- Backfill gateado por schema_migrations (no por el valor de la columna)
+-- -- schema.sql se re-corre completo en cada migrate:tenants (idempotente
+-- por diseño), así que un UPDATE sin este guard pisaría para siempre
+-- cualquier decoupling manual que el dueño haga más adelante (ej. marcar
+-- is_exclusive = FALSE en una categoría de alojamiento que deja de ser
+-- exclusiva) cada vez que se vuelva a correr.
+--
+-- "UNA SOLA VEZ" es la INTENCIÓN, no una garantía que este guard cumpla
+-- para todo tenant (corrección 17/09/2026, retrospectiva Waves 1-7,
+-- erp-audit-orchestrator, reproducido contra Postgres real): la fila
+-- version=42 solo existe en un tenant si 42 era CURRENT_SCHEMA_VERSION en
+-- un deploy que migró a ESE tenant -- applyTenantSchema() inserta solo
+-- la versión actual, nunca rellena versiones intermedias. Un tenant
+-- aprovisionado/migrado por primera vez con CURRENT_SCHEMA_VERSION > 42
+-- (como tenant-hotel-los-alamos, verificado sin la fila 42 hoy) nunca
+-- tiene esta fila -- el UPDATE de abajo se re-ejecuta en CADA deploy para
+-- ese tenant, sin límite. Ver docs/pendientes-2026-09-12.md,
+-- SCHEMA-VERSION-GATE-NOT-PERMANENT-001 -- sin fix decidido todavía.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 42) THEN
     UPDATE resource_categories SET is_exclusive = is_lodging WHERE is_lodging = TRUE;

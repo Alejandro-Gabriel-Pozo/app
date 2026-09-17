@@ -103,10 +103,29 @@ abajo, apenas termina de usarse (caso 21 — la garantía más fuerte de las
 18: no depende de nada externo, la propia corrida se encarga), o una
 condición sobre un valor que solo puede tomarse una vez en la vida útil de
 la fila (casos 15, 16 — `next_value = 1` es el `DEFAULT` de una fila
-recién insertada, nunca un valor al que la secuencia vuelve). Es la misma
-garantía que ya tienen los 2 backfills gateados por versión — la
-diferencia es *cómo* se logra (constraint de schema vs. guard de
-versión), no si se logra.
+recién insertada, nunca un valor al que la secuencia vuelve).
+
+**Corrección 17/09/2026 (retrospectiva Waves 1-7, `erp-audit-orchestrator`)
+— esta frase decía que era "la misma garantía que ya tienen los 2
+backfills gateados por versión". Es FALSA, y quedó demostrado con
+Postgres real, no solo por lectura de código.** Un auto-limitante
+estructural no depende de que nadie haya corrido nada antes — la propia
+fila (o la propia columna) hace la condición irrepetible. Un
+`WHERE version = 42` depende de que ese número exacto haya sido
+`CURRENT_SCHEMA_VERSION` en un deploy que migró a ESE tenant en
+particular: `applyTenantSchema()` (`tenant-db.setup.ts:569-572`) inserta
+solo la versión ACTUAL, nunca rellena las intermedias. Reproducido: el
+mismo bloque `DO $$ ... IF NOT EXISTS (... version = 42) ... UPDATE ...`
+corrió DOS veces seguidas contra la misma BD, pisando `is_exclusive` la
+segunda vez, cuando la fila 42 estaba ausente. Verificado contra los 2
+tenants reales (17/09/2026): `tenant-hotel-los-alamos`
+(`br-square-leaf-axzvu903`, aprovisionado 30/08/2026) genuinamente NO
+tiene la fila 42 en `schema_migrations` — el hueco está vivo hoy, no es
+solo un riesgo futuro — aunque hoy no toca ningún dato real (0 filas en
+`resource_categories WHERE is_lodging AND NOT is_exclusive` en los 2
+tenants). Ver `docs/pendientes-2026-09-12.md`,
+`SCHEMA-VERSION-GATE-NOT-PERMANENT-001`, para el detalle completo y las
+4 opciones de fix (ninguna decidida todavía).
 
 ## Lo que este documento NO garantiza
 

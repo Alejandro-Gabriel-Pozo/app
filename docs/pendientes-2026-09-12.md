@@ -33,111 +33,278 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
-- **`5fb2487`** (Wave 1 / D-21, plan de ejecución integral, 16/09/2026) —
-  `seedResource()` (`src/tests/integration/helpers/seed.ts:93`) ya no
-  defaultea a `'Habitación 101'` fijo (colisionaba con
-  `uq_resources_name`, schema v59) — ahora usa
-  `` `Habitación ${randomUUID().slice(0, 8)}` ``, único por llamada.
-  Gateado (`architecture-governor`, APPROVED WITH CONDITIONS, ambas
-  cumplidas en el commit), típecheck/lint/lint:arch/suite unitaria
-  verdes — pero **sin `TEST_DATABASE_URL` en este entorno, la corrida
-  real contra Postgres (objetivo 382/0 — 380 del baseline de Fase 15 +
-  2 tests nuevos de `helpers/seed.test.ts`) no se ejecutó.** Acción
-  puntual: `TEST_DATABASE_URL=... npm run test:integration` y confirmar
-  `Test Files … / Tests …` en 0 fallos. Si algo queda rojo, distinguir
-  si es una falla NUEVA o una de las 227 que D-21 (Fase 15) ya advertía
-  que nadie puede asegurar hoy (`seedResource()` tapaba el resto del
-  `beforeAll` en 145/153 fallas medidas). **Relacionado con el ítem
-  `073a8d4` de más abajo** (el mismo `uq_resources_name` nunca corrió
-  contra Postgres real) — esta corrida, si sale verde, confirma también
-  el `23505`/409 `RESOURCE_NAME_CONFLICT` de ese ítem en el camino feliz
-  del seed, pero NO cubre el escenario que `073a8d4` pide (dos recursos
-  con nombres normalizados iguales insertados a propósito) — no cerrar
-  `073a8d4` solo con esta corrida, son pruebas distintas del mismo
-  índice. Tampoco cubre F13-02 (una BD por archivo de test, resultados
-  potencialmente order-dependent) — finding separado, sin bloque
-  asignado todavía.
-- **`668e16c`** (Wave 2 / P-01/D-03, plan de ejecución integral,
-  16/09/2026) — `tenantMiddleware()` rechaza con 403 tokens CUSTOMER en
-  rutas de staff, y 2 endpoints dedicados de catálogo
-  (`GET /api/customer/categories`, `GET /api/customer/bookable-services`)
-  reemplazan el camino roto que usaba el portal. Gate-aprobado en 2
-  rondas, tsc/lint/lint:arch/suite unitaria verdes (incluidas las 7
-  cercas RBAC/arquitectura). **2 verificaciones sin correr en este
-  entorno:**
-  - `TEST_DATABASE_URL=... npx vitest run src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`
-    — confirmar los 4 casos en verde: 403 FORBIDDEN + body exacto
-    (`{code: 'FORBIDDEN', message: '...'}`) + cero escritura cruzada a
-    nombre de B, para las 4 rutas mutantes originales de F5-01.
-  - Abrir el wizard "Nueva reserva" del portal
+- **Retrospectiva Waves 1-7 (17/09/2026) — Postgres 16.13 local real,
+  confirmado en esta sesión.** `5fb2487` (D-21), la mitad automatizada de
+  `668e16c` (Wave 2), `4c4a17b` (AFIP) y `d5d27c4` (auditoría de
+  transiciones de reserva) quedaban acá esperando exactamente esto — ver
+  `docs/resuelto.md` para la evidencia completa de la corrida (comando,
+  conteo, hash). Lo que sigue es lo que ESA corrida dejó todavía abierto,
+  reescrito con ancla re-chequeada (regla 2 de "Pendientes — revalidar
+  antes de arrastrar", `CLAUDE.md`):
+  - **F13-02** (una BD por archivo de test, resultados potencialmente
+    order-dependent) — mencionado junto a D-21 pero nunca resuelto por
+    esa corrida; sigue sin bloque asignado.
+  - **Wave 2, mitad manual** — abrir el wizard "Nueva reserva" del portal
     (`/portal/{businessSlug}/cuenta/reservas`) logueado como un cliente
     real, contra un negocio con categorías y servicios agendables
     cargados, y confirmar que el `<select>` de categoría se llena y el
     flujo completo (categoría → servicio → disponibilidad → confirmar)
-    funciona de punta a punta. Sin esta corrida, "el wizard vuelve a
-    funcionar" es lectura de código (repos + queries verificados,
-    contrato de respuesta idéntico al de las rutas de staff que
-    reemplaza), no un hecho observado.
-  Relacionado, no bloqueante: la "capa 2" (cerca RBAC molde
-  `ESCAPE_ROUTES`) que la decisión del dueño pedía junto con el rechazo
-  por actor sigue sin implementar — bloque siguiente declarado, no una
-  verificación de esta corrida.
-- **Fase 2 de la auditoría, 5 bloques (15/09/2026) — verificaciones contra
-  Postgres real, ninguna corrida en este entorno (sin `TEST_DATABASE_URL`)**:
+    funciona de punta a punta. Esto sigue sin correr (necesita frontend +
+    browser, no solo backend) — "el wizard vuelve a funcionar" es lectura
+    de código + la mitad automatizada ya confirmada, no un hecho
+    observado todavía. (La nota que este ítem tenía sobre "la capa 2
+    sigue sin implementar" estaba stale — `c1777e5`/`72c3f9b` ya la
+    resolvieron, commits posteriores a cuando se escribió esta nota; ver
+    `docs/resuelto.md`, entrada `CUSTOMER-RBAC-ACTOR-FENCE-001`.)
   - **`089ca3e`** (limpieza SSL/migraciones/PDF) — el cambio de SSL en los 3
     `pg.Client` (`tenant-db.setup.ts::applyTenantSchema()`,
-    `company-sync.worker.ts`, `outbox-purge.ts`) no se verificó contra la
-    flota real de tenants de producción — si algún tenant tiene un
-    certificado que hoy no validaría con `rejectUnauthorized: true`, el
-    cambio lo rompe. El dueño ya autorizó el cambio igual (decisión #4 de
-    `docs/decisiones-auditoria-fase2-2026-09-15.md`). Acción puntual:
+    `company-sync.worker.ts`, `outbox-purge.ts`) sigue sin verificarse
+    contra la flota real de tenants de PRODUCCIÓN (Neon) — Postgres local
+    no prueba nada sobre certificados de Neon. Acción puntual sin cambios:
     confirmar contra la flota real antes del próximo deploy, o correr
     `npm run migrate:tenants` contra un tenant descartable con
     `NEON_SSL=true` primero.
-  - **`073a8d4`** (unicidad de nombre de recurso, F2-13) — el índice único
-    parcial `uq_resources_name` nunca corrió contra Postgres real; solo se
-    ejercitó el catch del `23505` con un mock. Acción puntual: aplicar
-    `applyTenantSchema()` contra un tenant de prueba, insertar dos
-    recursos con nombres normalizados iguales, confirmar el `23505` real y
-    el 409 `RESOURCE_NAME_CONFLICT` resultante.
-  - **`4c4a17b`** (credenciales AFIP, F2-05+F2-06) — `afip-credentials-
-    transactional.integration.test.ts` compila y se saltea limpio sin
-    `TEST_DATABASE_URL`. Acción puntual: `TEST_DATABASE_URL=... npx vitest
-    run src/tests/integration/afip-credentials-transactional.integration.test.ts`
-    — confirmar la atomicidad real (rollback de las 2 escrituras si falla
-    una) y que la fila de `audit_log` no contiene el valor del secreto.
-  - **`d5d27c4`** (auditoría de transiciones de reserva, D-10) — las
-    aserciones reales sobre `audit_log` (filas creadas, `changed_by`
-    correcto, 0 filas si el guard RESERVA-10 tira) viven en
-    `reservation.service.integration.test.ts`,
-    `cancellation-refund.integration.test.ts` y
-    `reservation-cancel-invoice-toctou.integration.test.ts`, con
-    `skipIfNoDb`. Acción puntual: `TEST_DATABASE_URL=... npx vitest run
-    src/tests/integration/reservation.service.integration.test.ts
-    src/tests/integration/cancellation-refund.integration.test.ts
-    src/tests/integration/reservation-cancel-invoice-toctou.integration.test.ts`.
-  - **D-14 (contrato canónico de paginación, RESUELTO
-    15/09/2026 — reemplaza el ítem anterior sobre `bf29137`/tope
-    provisorio de 100 que estaba acá)** —
-    `reservations-unpaginated-limit.integration.test.ts` sigue sin poder
-    correr contra Postgres real en este entorno (sin `TEST_DATABASE_URL`).
-    Ya no es "verificar un tope provisorio": ahora hay que confirmar el
-    contrato canónico completo contra una base real —
-    `limit`/`offset` (default 50 / tope 200 vía `resolveReservationsLimit()`,
-    clamp-and-report, nunca 400), envelope SIEMPRE
-    `{data, limit, offset, total, hasMore}`, y el desempate
-    `ORDER BY ..., id [ASC|DESC]` en los 5 listados (reservations +
-    orders/products/cash-register-shift/customers). Acción puntual:
-    `TEST_DATABASE_URL=... npm run test:integration` (excluido de `npm
-    test` por `vitest.config.ts`, corre solo por esa vía) y confirmar que
+  - **D-14, contrato canónico de paginación — PARCIALMENTE confirmado,
+    no completo.** `reservations-unpaginated-limit.integration.test.ts`
+    corrió verde contra Postgres real y confirma el único caso que prueba:
     `getFiltered({})` sin `limit`/`offset` devuelve exactamente 50 filas
-    (`RESERVATIONS_DEFAULT_LIMIT`, no las 100 del tope provisorio
-    anterior) contra Postgres real, no solo contra el repo in-memory (ya
-    confirmado en verde). Confirmar también, sembrando filas con
-    `start_time`/`opened_at`/`created_at`/`display_name`/`name` empatados
-    a propósito, que el desempate por `id` evita duplicados/faltantes
-    entre páginas (motivo del cambio: `erpnext#49037`, citado en el
-    grounding de D-14, docs/decisiones-auditoria-fase2-2026-09-15.md #12).
+    (`RESERVATIONS_DEFAULT_LIMIT`), sembrando 51 vs Postgres real, no solo
+    in-memory. **Sigue sin confirmar** (el archivo no lo prueba — es 1
+    solo test, no una suite del contrato completo): el tope 200
+    (`RESERVATIONS_MAX_LIMIT`, clamp-and-report con `limit` explícito
+    >200), el envelope `{data, limit, offset, total, hasMore}` a nivel
+    HTTP/ruta (este test es de repositorio, no de ruta), y el desempate
+    `ORDER BY ..., id [ASC|DESC]` en los otros 4 listados
+    (orders/products/cash-register-shift/customers) ni en reservations
+    mismo (motivo del cambio: `erpnext#49037`, citado en el grounding de
+    D-14, `docs/decisiones-auditoria-fase2-2026-09-15.md` #12). Acción
+    puntual: escribir los tests que falten (tope 200, envelope por ruta,
+    tie-break con filas empatadas a propósito en los 5 listados) — no
+    alcanza con re-correr lo que ya existe.
+- **`RESOURCE-NAME-INTERNAL-WHITESPACE-001` — `uq_resources_name` NO
+  normaliza espacios internos, hallazgo nuevo, confirmado contra Postgres
+  real (17/09/2026, retrospectiva Waves 1-7).** Reemplaza al ítem
+  `073a8d4` (F2-13) que pedía justo esta verificación — la corrida reveló
+  que el mecanismo está INCOMPLETO, no solo "sin correr". `uq_resources_name`
+  (`schema.sql:4555-4556`, índice único parcial sobre `upper(btrim(name))`
+  WHERE `active = TRUE` — ancla re-chequeada por el gate, desplazada +12
+  líneas por el comentario nuevo de `schema.sql:128` de este mismo
+  commit) usa `btrim()`, que solo saca espacios al PRINCIPIO/FINAL
+  — no colapsa espacios internos repetidos. Reproducido: insertar
+  `'Habitacion 101'` y luego `'  habitacion   101 '` (triple espacio
+  interno) en la MISMA categoría/ubicación — el segundo INSERT no choca
+  contra el índice (`upper(btrim(...))` da `'HABITACION 101'` vs
+  `'HABITACION   101'`, distintos por los espacios internos) — dos "mismo
+  nombre" a ojo humano, ambos activos, sin conflicto. Control: insertar un
+  tercero con SOLO diferencia de mayúsculas/espacios al borde (sin espacio
+  interno extra) sí choca con `23505 duplicate key ... uq_resources_name`
+  como se espera — confirma que el mecanismo funciona para el caso que
+  prueba, solo no para espacios internos. **Mismo patrón `upper(btrim(name))`
+  se repite en otros 2 lugares** (mismo hueco, no verificado empíricamente
+  todavía, mismo mecanismo así que con alta probabilidad de compartir el
+  bug): `excl_rate_plans_overlapping_validity` (`schema.sql:4092-4097`,
+  `upper(btrim(name))` en `:4095`, tarifas de servicios) e `industries.key`
+  (`platform.schema.sql:1315`, catálogo
+  de rubros de plataforma). Relacionado con R6 de `docs/criterios-datos.md`
+  ("Normalización en la escritura, unicidad en la base") — la fila R6 de
+  la tabla de esa doc (línea 338) dice "❌ Sin constraint en maestros",
+  que ya está stale (los 3 constraints sí existen) y ahora hay que
+  corregirla a algo como "⚠️ constraint existe, normalización incompleta
+  (espacios internos)" en vez de re-marcarla ✅ sin más. **Bloque no
+  decidido:** el fix (`regexp_replace(upper(btrim(name)), '\s+', ' ', 'g')`
+  o similar) es un cambio de índice único en 3 tablas, con el riesgo real
+  de que datos YA existentes en producción violen la unicidad más estricta
+  una vez migrados (hay que medir duplicados reales antes de aplicar, no
+  asumir 0 como se hizo con `customer_rates`/D-07). Ninguna de las Waves
+  8-16 del plan integral lo cubre.
+- **`SCHEMA-VERSION-GATE-NOT-PERMANENT-001` — ALTA, hallazgo nuevo
+  (17/09/2026, retrospectiva Waves 1-7) — cruza Wave 4 (D-07(c),
+  `a4950db`), Wave 5 (D-08, `13630cf`) y Wave 6 (D-09, `aa8e369`). Dos
+  agentes en la misma retrospectiva (`auditor-estructura`, hallazgo 1;
+  `erp-audit-orchestrator`) lo encontraron por separado — el segundo lo
+  reprodujo contra Postgres real y contra los 2 tenants reales, dato que
+  cambia la severidad del ítem, no solo su redacción.**
+  `applyTenantSchema()` (`src/platform/tenant-db.setup.ts:558-580`) inserta
+  UNA SOLA fila en `schema_migrations` por corrida —
+  `INSERT ... VALUES ($1) ON CONFLICT DO NOTHING` con
+  `[CURRENT_SCHEMA_VERSION]` (hoy 60, `:540`) — nunca rellena las
+  versiones intermedias. Todo gate `IF NOT EXISTS (... WHERE version = N)`
+  en `schema.sql` depende de que N haya sido `CURRENT_SCHEMA_VERSION`
+  exacto en un deploy que migró a ESE tenant — no de un estado
+  estructural.
+  **No es un riesgo futuro (v61) — el gate v42 YA está roto hoy, con
+  datos reales, verificado, aunque hoy no toca nada (ver medición
+  abajo).** `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`,
+  aprovisionado 30/08/2026, después de que v42 dejara de ser CURRENT el
+  28/08) **no tiene la fila 42** en `schema_migrations` — confirmado por
+  `SELECT version FROM schema_migrations` contra el tenant real
+  (17/09/2026): `{44,45,46,47,48,49,50,51,52,54,55,59}`, sin 42. `production`
+  (`br-snowy-tree-ax5wmq70`) sí la tiene. Afecta a los 2 backfills v42 de
+  `is_exclusive` (`schema.sql:146-150` categorías, guard en `:3828`
+  reservas — anclas re-chequeadas por el gate DESPUÉS de que el comentario
+  nuevo de este mismo commit desplazara `schema.sql` +12 líneas; las citas
+  viejas `:135-137`/`:3815-3823` ya no apuntan a lo mismo) — **no** a los
+  3 DML v60 de D-07(c) (esos siguen bien mientras `CURRENT_SCHEMA_VERSION`
+  sea 60; se rompen recién en el PRÓXIMO bump, ver más abajo).
+  **Reproducido (Postgres 16.13 local, `erp-audit-orchestrator`):**
+  tenant con `schema_migrations = {61}` (sin 42) + una categoría de
+  alojamiento con `is_exclusive = false` (editable por el dueño vía
+  `PUT /api/categories/:id`, `src/reservas/categories.routes.ts:186` — no
+  hace falta SQL a mano) + 2 reservas CONFIRMED solapadas sobre un recurso
+  de cupo compartido (legítimo con `is_exclusive = false`) → redeploy →
+  `UPDATE ... SET is_exclusive_resource = rc.is_exclusive` choca contra
+  `reservations_no_overlap_exclusive` (el EXCLUDE ya existe desde la
+  primera corrida gracias al guard de D-08) →
+  `ERROR: conflicting key value violates exclusion constraint` →
+  `applyTenantSchema()` lanza → `migrateBusiness()` → `ok:false` →
+  `migrate-tenants.ts:127` `process.exit(1)` → **el build de Render entero
+  falla, no solo el de ese tenant** (el `buildCommand` encadena con
+  `&&`). Variante silenciosa (sin solape): el mismo redeploy revierte
+  calladamente `is_exclusive` FALSE→TRUE sobre una categoría real,
+  volviendo exclusivo un alojamiento de cupo compartido y rechazando
+  reservas legítimas desde ese momento — sin error, sin log de negocio.
+  **Por qué D-08/D-09 lo agravan:** antes de D-09 un redeploy con versión
+  cacheada igual saltaba el tenant sin conectarse — el UPDATE casi nunca
+  se re-ejecutaba. D-09 sacó ese atajo (`schema.sql` corre en el 100% de
+  los deploys, para el 100% de los tenants) y D-08 hizo que el EXCLUDE ya
+  exista desde la primera corrida (antes se creaba recién al agregarse la
+  constraint) — juntas, el conflicto aparece de entrada en vez de más
+  adelante.
+  **Medición read-only contra los 2 tenants reales (17/09/2026, mismo
+  criterio que D-07/Apéndices B/D — solo SELECT, autorizado):**
+  `tenant-hotel-los-alamos` y `production` dan **0 filas** en
+  `resource_categories WHERE is_lodging AND NOT is_exclusive` y **0
+  pares** de reservas solapadas en cupo compartido — **hoy el hueco está
+  estructuralmente vivo pero no tiene ningún dato real que tocar: si el
+  deploy corriera ahora mismo, no fallaría ni revertiría nada, en el
+  estado actual de los 2 tenants.**
+  **Corrección del gate (condición 2): en este servicio push = deploy, no
+  dos decisiones separadas.** `render.yaml` no tiene `autoDeploy` (Render
+  lo asume `true`) y el `buildCommand` termina en `migrate:tenants` —
+  `docs/conocimiento/runbook-deploy-render.md:14-35` lo dice en los
+  términos más fuertes que tiene: *"todo push a `main` escribe en TODAS
+  las tenant DB ... No hay una autorización de 'push' separada de una
+  autorización de 'deploy' en este servicio — son la misma decisión, y
+  hay que pedirla así ... no como si fueran dos pasos donde el segundo
+  pudiera reconsiderarse después del primero."* Por eso este ítem se
+  etiqueta **"requiere decisión del dueño ANTES DEL PUSH (= deploy en
+  este servicio)"**, no "antes del próximo deploy" como si push y deploy
+  fueran cosas distintas con un checkpoint en el medio — no lo son acá.
+  La medición reduce la urgencia (0 filas hoy), no mueve el momento de la
+  decisión: sigue siendo antes de este push puntual, no de uno futuro.
+  **Paso operativo, no opcional:** la medición de arriba es puntual
+  (17/09/2026) — antes de pushear estos 19 commits, re-correr las mismas
+  2 consultas (`SELECT version FROM schema_migrations` en los 2 tenants;
+  `SELECT ... resource_categories WHERE is_lodging AND NOT is_exclusive`)
+  contra los 2 tenants reales, y dejar el resultado con la fecha/hora de
+  ESA corrida — no citar la de este commit como si siguiera vigente sin
+  re-verificar.
+  **v60 (los 3 DML de D-07(c)) es distinto: hoy no tiene el hueco** —
+  todo tenant real ya tiene la fila 60 mientras `CURRENT_SCHEMA_VERSION`
+  siga siendo 60 — **pero se reabre solo, automáticamente, en el
+  PRÓXIMO bump a 61**, mismo mecanismo. Mitigante parcial ya existente
+  para v60 (no para v42): `schema-redeploy-idempotent.integration.test.ts`
+  usa `applyTenantSchema()` real, así que ese bump pondría esos 3 tests
+  en rojo en CI — un canario, no un fix.
+  **Bloqueante antes del próximo bump de `CURRENT_SCHEMA_VERSION`, y
+  deuda ya activa para v42 aunque no urgente hoy** — radio =
+  `applyTenantSchema()`, corre contra todas las tenant DB en cada
+  deploy, el bloque de mayor riesgo de toda esta retrospectiva.
+  2 afirmaciones falsas corregidas en el mismo commit que encontró esto
+  (mismo criterio que las correcciones de conteo de endpoints que este
+  repo ya aplica): `docs/inventario-dml-schema-2026-09-16.md` (decía que
+  el gate de versión da "la misma garantía" que un auto-limitante
+  estructural) y el comentario de `schema.sql:128` ("Backfill UNA SOLA
+  VEZ" como garantía, no como intención).
+  Direcciones posibles, ninguna decidida: **(A)** `(SELECT COALESCE(MAX(version),0)
+  FROM schema_migrations) >= N` en vez de `= N` — una línea por gate,
+  cierra v42 y v60 para tenants viejos y nuevos, cambia la semántica a
+  "este tenant ya pasó este cutover"; **(B)** que `applyTenantSchema()`
+  siembre la historia completa de versiones-cutover en la primera
+  aplicación; **(C)** reemplazar los backfills v42 por garantías
+  auto-limitantes estructurales (el patrón que el propio inventario
+  prefiere para sus 18 casos); **(D)** retirar los 2 `UPDATE` de v42
+  (medir antes si su población legacy ya está hecha donde hacía falta).
+  Pregunta de negocio aparte, no técnica: ahora que `is_exclusive` es
+  editable por el dueño, ¿debe seguir existiendo algún camino que lo
+  re-derive de `is_lodging`? Requiere decisión del dueño. Para las
+  opciones (A), (C) y (D), ninguna de las Waves 8-16 del plan integral lo
+  cubre. **Calificación del gate (condición 5) sobre la opción (B):**
+  Wave 15 extrae `tenant-provisioning.service.ts` sobre los 4 caminos de
+  aprovisionamiento (`docs/plan-ejecucion-integral-2026-09-16.md`, oleada
+  15) y es, por diseño del propio plan, el bloque de mayor riesgo de todo
+  el roadmap — cambiar la semántica de siembra de `applyTenantSchema()`
+  (que es lo que pide la opción B) colisiona directo con ese bloque. Si
+  se elige (B), secuenciar DESPUÉS de Wave 15, no antes ni en paralelo —
+  mismo criterio que `MIGRATE-TENANTS-CONCURRENT-DDL-001` ya declara para
+  su propio alcance. 2 BD de scratch quedaron en el
+  Postgres local del `erp-audit-orchestrator` (`audit_v60_probe`,
+  `audit_v60_hoy`) — no se borraron por la restricción de no ejecutar
+  limpieza destructiva sin permiso; reproducibles, borrar cuando se
+  quiera.
+- **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
+  retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
+  bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`
+  (`getJwtExpiresInRaw()`, `config/env.ts`) a un solo lugar, pero el
+  idioma compuesto `parseExpiresIn(getJwtExpiresInRaw())` ("raw → segundos")
+  no tiene helper compartido — Wave 7 bloque 4 (`d4c3923`) agregó un
+  CUARTO call-site idéntico sin que nadie lo notara, porque el bloque 3
+  consolidó la variable, no la composición. Los 4: `security/auth.service.ts:99`,
+  `security/customer.auth.service.ts:63`, `api/routes/customer.routes.ts:698`,
+  `platform/business.routes.ts:206`. `config/env.ts:242-243` declara a
+  propósito que no hostea el parser (correcto — invertiría la dependencia
+  config→security), pero nadie puso el helper del otro lado. Efecto
+  colateral concreto: `security/auth.service.ts:313,319` loguea
+  `'[AuthService] JWT_EXPIRES_IN inválido...'` — con 3 de los 4 llamadores
+  fuera de `AuthService`, un `JWT_EXPIRES_IN` mal configurado en el alta
+  pública de negocio (`business.routes.ts`) emitiría un warning que apunta
+  al módulo equivocado. Riesgo bajo: extraer `getJwtTtlSeconds()` desde
+  `security/auth.service.ts` (dueño natural de `parseExpiresIn()`) +
+  actualizar los 4 call sites — ya hay tests que fijan el TTL en
+  `business.routes.test.ts` y `auth.service.test.ts:46` que confirmarían
+  el refactor sin romperse.
+- **Hallazgos menores, todos nuevos (17/09/2026, retrospectiva Waves 1-7,
+  `auditor-estructura`, hallazgos 4/7/8 + 1 encontrado al verificar el 7)**:
+  - `config/env.ts:115` (`getNodeEnv`) y `:143` (`getCorsOrigin`) — 0
+    consumidores en todo `src/` (medido export por export); `isProduction()`
+    y `getCorsOriginSetting()` ya cubren los casos reales. Un módulo cuya
+    tesis es "punto único de lectura" no debería nacer con superficie sin
+    llamador.
+  - `config/env.ts:181` (`requirePlatformDatabaseUrl()`) usa el prefijo
+    `[container]` en su mensaje de error en vez de `[env]` (declarado
+    deliberado — "mismo mensaje que los 2 call sites de `container.ts`" —
+    pero deja el módulo de config nombrando a su consumidor). **Verificado
+    al revisar esto:** `container.ts:116-124` (`createAppContainer()`)
+    NUNCA llamó a `requirePlatformDatabaseUrl()` — sigue con su propio
+    `if (!getPlatformDatabaseUrl()) throw new Error('[container] ...')`
+    duplicado a mano, mismo texto exacto. Solo `container.ts:44`
+    (`createPlatformPool()`) sí usa `requirePlatformDatabaseUrl()`. O sea
+    que ni siquiera es "2 call sites con el mismo mensaje por decisión" —
+    es 1 call site consolidado + 1 call site que Wave 7 bloque 3 no
+    migró, con el mismo texto por coincidencia de haber copiado el
+    mensaje. Ningún test depende del string exacto (grep confirmado).
+    Riesgo cero: reemplazar las 6 líneas de `createAppContainer()` por
+    `requirePlatformDatabaseUrl();` (ignorando el valor, igual que hace
+    hoy con `getPlatformDatabaseUrl()`) y recién ahí el prefijo `[env]`
+    queda consistente sin duplicar nada.
+  - `platform.auth.middleware.ts:54` firma con `expiresIn = 3_600`
+    hardcodeado — no hay `PLATFORM_JWT_EXPIRES_IN` ni getter en
+    `config/env.ts` (su docblock tampoco lo lista entre "qué NO vive
+    acá"). Parcialmente conocido (el residuo C4 de P-11/D-15 lo menciona
+    de pasada al explicar por qué no se toca el default de
+    `auth.middleware.ts:113`), nunca como ítem propio con ancla. Es
+    diseño (dos TTL con dos fuentes), no refactor — no decidido.
+    **Tercera afirmación falsa encontrada, esta por el gate (condición 4,
+    misma clase que las 2 que este commit ya corrige en
+    `inventario-dml-schema`/`schema.sql:128`):**
+    `platform.auth.middleware.ts:10` documenta *"PLATFORM_JWT_EXPIRES_IN —
+    duración del token en segundos (default: 3600 = 1 hora)"* como si
+    fuera una variable de entorno real y configurable — no lo es, nada en
+    `src/` la lee (grep confirmado). El docblock describe una
+    configurabilidad que no existe. No se corrige el docblock en este
+    commit (es parte del mismo diseño no decidido de arriba — corregirlo
+    bien es resolver la asimetría, no solo borrar la mentira) pero queda
+    registrado junto al hallazgo, no aparte.
   - **`dd48592`** (horizonte de ventana de mantenimiento en dos tramos,
     D-03) — el test de atomicidad (`maintenance-window.service.test.ts`,
     caso "(d) atomicidad") corre contra `InMemoryTransactionManager` (sin
@@ -982,27 +1149,19 @@ anteriores.
   (Wave 7, 16/09/2026)** — el ítem de checklist dice *"No existe ninguna
   variable `DATABASE_URL` genérica sin prefijo en el código o en Render"*.
   El retiro de `repair-tenant-db` sacó el ÚNICO escritor de esa variable,
-  pero `src/db/pg.client.ts:82` (`const rawUrl = process.env.DATABASE_URL;`)
-  sigue siendo un LECTOR sin prefijo — ya señalado por
+  pero sigue habiendo un LECTOR sin prefijo — ya señalado por
   `docs/auditoria-integral-fase14-2026-09-16.md:370` como "la misma clase
-  de riesgo que F11-02 describe para `repair-tenant-db`". El criterio de
-  éxito de la Etapa 8 (`fase16:543`, "el ítem del checklist queda cumplido
-  o explícitamente derogado") NO se cumple todavía con este bloque —
-  bloque aparte, no decidido: ¿retirar el lector también, o
-  derogar explícitamente el ítem del incident log?
-- **`CONFIG-ENV-BASELINE-001` -- 2 formas de `process.env` sin cubrir por
-  la cerca de conteo (Wave 7, 16/09/2026, gate `architecture-governor`,
-  condición C7)** — `src/tests/architecture/process-env-usage-count.test.ts`
-  solo cuenta clave LITERAL (`process.env.X`/`process.env['X']`). Dos
-  formas reales del árbol quedan invisibles: `process.env[name]` con
-  clave dinámica (`src/platform/neon-provisioning.ts:56`, resuelve
-  `NEON_API_KEY`/`NEON_PROJECT_ID`/`NEON_TEMPLATE_BRANCH_ID`) y
-  `process.env` como objeto completo (`src/api/docs-exposure.ts:52`).
-  Documentado en el propio docblock de la cerca. Bloqueante para el
-  bloque 3 (`src/config/env.ts`): ese bloque NO puede declarar "0 fuera
-  de config/env.ts" completo sin cerrar esto primero (extender
-  `PROCESS_ENV_RE` para cubrir las dos formas, o migrar esos 2 usos y
-  ampliar las zonas exentas con motivo).
+  de riesgo que F11-02 describe para `repair-tenant-db`". **Ancla
+  re-chequeada (17/09/2026, retrospectiva Waves 1-7, `auditor-estructura`,
+  hallazgo 2b) — se movió, la sustancia sigue igual:** ya no es
+  `src/db/pg.client.ts:82` (esa línea está en blanco hoy); el lector real
+  es `src/db/pg.client.ts:83` → `getDatabaseUrl()`, definido en
+  `src/config/env.ts:195` (Wave 7 bloque 3, `0662053`, lo migró junto con
+  el resto de `process.env` pero sin sacarle el prefijo faltante). El
+  criterio de éxito de la Etapa 8 (`fase16:543`, "el ítem del checklist
+  queda cumplido o explícitamente derogado") NO se cumple todavía —
+  bloque aparte, no decidido: ¿retirar el lector también, o derogar
+  explícitamente el ítem del incident log?
 - **P-11/D-15 (Wave 7 bloque 4, "3 bloques chicos", 17/09/2026) -- tope de
   paginación NO se tocó, contradicción con D-14 resuelta por el dueño vía
   `AskUserQuestion`, no en silencio** --
@@ -1075,10 +1234,13 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   `/api/business/modules` y `/api/business/plan-limits` **no tienen
   ningún `authorize()`** y hoy responden con los módulos/límites de plan
   del negocio del token a CUALQUIER identidad autenticada, incluido
-  CUSTOMER (`docs/rbac-matriz-endpoints.md:427-428` ya los documenta como
+  CUSTOMER (`docs/rbac-matriz-endpoints.md:434-435` ya los documenta como
   "cualquier usuario ve los de SU PROPIO negocio" — frase escrita
   pensando en STAFF, nunca evaluada para el actor CUSTOMER). Preexistente,
-  **no introducido por D-03**.
+  **no introducido por D-03**. (Ancla corregida 17/09/2026, retrospectiva
+  Waves 1-7, `auditor-estructura`, hallazgo 6 — la cita original
+  `:427-428` ya estaba mal cuando se escribió este ítem en `c1777e5`, esas
+  líneas eran `business.routes.ts`/`auth.routes.ts`, no drift posterior.)
   **Evidencia corregida por el gate (ronda de `c1777e5`, contra el claim
   original de esta sesión):** `GET /api/business/modules` **no tiene
   consumidor conocido en `appfrontend-main` hoy** — el gating de módulos
@@ -1324,6 +1486,28 @@ plan de ejecución integral (16/09/2026, ver `docs/resuelto.md`).**
   promueve). Riesgo real: dos builds de Render solapados sobre el mismo
   tenant. Bloque no decidido: agregar `pg_advisory_lock` (o
   `pg_try_advisory_lock` con reintento) a `applyTenantSchema()`.
+  **Reproducido empíricamente (17/09/2026, retrospectiva Waves 1-7,
+  Postgres 16.13 local real, no inferido del código):** 5
+  `applyTenantSchema()` concurrentes contra la MISMA BD tenant. Corrida 1
+  (BD recién creada, primer deploy simulado) — 1 de 5 OK, 4 de 5
+  `duplicate key value violates unique constraint
+  "pg_extension_name_index"` (`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`,
+  `schema.sql:12` — el check-then-act de `CREATE EXTENSION IF NOT EXISTS`
+  tiene la misma clase de carrera que los guards `DO $$` de D-08, aunque
+  no es un guard que este bloque haya escrito). Corrida 2 (BD YA migrada a
+  v60, redeploy simulado — el caso de estado estacionario, el que D-09
+  vuelve frecuente) — 1 de 5 OK, 4 de 5 `tuple concurrently updated`
+  (colisión de catálogo en el `ALTER TABLE ... ADD CONSTRAINT`/`ADD COLUMN
+  IF NOT EXISTS` de otra sesión). Post-mortem: `schema_migrations` quedó
+  en v60 y el conteo de constraints `chk_%`/`excl_%` en 50 — consistente,
+  sin filas a medias — confirma empíricamente (no solo por lectura del
+  código) que el perdedor revierte entero. **No se implementa el fix acá
+  todavía** — es exactamente el "bloque no decidido" de arriba, y ninguna
+  de las Waves 8-16 del plan integral lo cubre (verificado contra
+  `docs/plan-ejecucion-integral-2026-09-16.md` §3: la oleada 15 toca
+  "saga de aprovisionamiento"/`tenant-provisioning.service.ts`, que es la
+  ruta de alta de un tenant NUEVO, no `migrate-tenants.ts` en sí) — huérfano
+  real, no solo teórico.
 - **`MIGRATE-TENANTS-DEPLOY-AVAILABILITY-001` — un tenant inalcanzable
   ahora tumba el deploy de TODOS (Wave 6 / D-09, gate
   `architecture-governor`, 16/09/2026, `aa8e369`).** Antes de D-09, un

@@ -1652,3 +1652,59 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   `CUSTOMER_PERMISSION_GROUPS` queda fuera de cobertura de
   `roles-catalog-sync.test.ts`, ver ese ítem para el detalle).
   Origen: `pendientes-2026-09-12.md`.
+
+- **`5fb2487`** (Wave 1 / D-21) — ✅ **verificación contra Postgres real
+  CONFIRMADA (17/09/2026, retrospectiva Waves 1-7, Postgres 16.13 local,
+  no Neon).** `TEST_DATABASE_URL=... npm run test:integration` →
+  `Test Files 49 passed (49)` / `Tests 383 passed (383)`, incluyendo
+  `helpers/seed.test.ts` (2 tests, el caso que este ítem pedía: dos
+  `seedResource()` sin `name` no colisionan con `uq_resources_name`).
+  0 fallos — ninguna de las 227 fallas que D-21 (Fase 15) advertía que
+  nadie podía asegurar quedó expuesta por esta corrida. Origen:
+  `pendientes-2026-09-12.md`.
+
+- **`668e16c`** (Wave 2 / P-01/D-03), mitad automatizada — ✅ **verificación
+  contra Postgres real CONFIRMADA (17/09/2026, retrospectiva Waves 1-7).**
+  `TEST_DATABASE_URL=... npx vitest run
+  src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`
+  → 4/4 tests verdes: 403 FORBIDDEN con el body exacto
+  (`{code: 'FORBIDDEN', ...}`) y cero escritura cruzada a nombre de B,
+  para las 4 rutas mutantes originales de F5-01. **La mitad manual (abrir
+  el wizard del portal en un browser real) sigue sin correr** — queda en
+  `pendientes-2026-09-12.md`, no se cierra acá. Origen:
+  `pendientes-2026-09-12.md`.
+
+- **`4c4a17b`** (credenciales AFIP, F2-05+F2-06) — ✅ **verificación contra
+  Postgres real CONFIRMADA (17/09/2026, retrospectiva Waves 1-7).**
+  `TEST_DATABASE_URL=... npx vitest run
+  src/tests/integration/afip-credentials-transactional.integration.test.ts`
+  → 2/2 tests verdes: atomicidad real confirmada (rollback de las 2
+  escrituras si falla una) y la fila de `audit_log` no contiene el valor
+  del secreto. Origen: `pendientes-2026-09-12.md`.
+
+- **`d5d27c4`** (auditoría de transiciones de reserva, D-10) — ✅
+  **verificación contra Postgres real CONFIRMADA (17/09/2026,
+  retrospectiva Waves 1-7).** `TEST_DATABASE_URL=... npx vitest run
+  src/tests/integration/reservation.service.integration.test.ts
+  src/tests/integration/cancellation-refund.integration.test.ts
+  src/tests/integration/reservation-cancel-invoice-toctou.integration.test.ts`
+  → 3 archivos, 44/44 tests verdes (22+19+3), incluyendo el caso TOCTOU
+  real entre `cancelReservation()` y `requestInvoice()` sobre la misma
+  reserva (RESERVA-10: `requestInvoice()` espera el lock y ve la reserva
+  ya `CANCELLED` una vez liberado). Origen: `pendientes-2026-09-12.md`.
+
+- **`CONFIG-ENV-BASELINE-001`** (Wave 7, gate `architecture-governor`
+  condición C7, 16/09/2026) — ✅ **RESUELTO, no detectado como tal hasta la
+  retrospectiva (17/09/2026, `auditor-estructura`, hallazgo 2a).** Las 2
+  formas de `process.env` que la cerca de conteo no cubría al escribirse
+  este ítem (`process.env[name]` con clave dinámica en
+  `neon-provisioning.ts`, `process.env` como objeto completo en
+  `docs-exposure.ts`) quedaron cerradas por el propio Wave 7 bloque 3
+  (`0662053`): `requireEnv()` se movió a recibir el valor ya resuelto
+  (`neon-provisioning.ts:65`, ya no lee `process.env`), y
+  `process-env-usage-count.test.ts:68` extendió `PROCESS_ENV_RE` a las 3
+  formas (literal, bracket, bare object). El ítem se había quedado
+  citando su propia condición de bloqueo ("Bloqueante para el bloque 3")
+  después de que ese bloque ya corriera y la resolviera — quedó abierto
+  por descuido de bookkeeping, no porque el trabajo faltara. Origen:
+  `pendientes-2026-09-12.md`.

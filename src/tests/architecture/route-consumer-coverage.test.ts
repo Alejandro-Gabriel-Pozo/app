@@ -11,8 +11,12 @@ const INVENTORY_MD = join(REPO_ROOT, 'docs/inventario-rutas.md');
  * D-23(1) (16/09/2026, Wave 3 del plan de ejecución integral,
  * docs/auditoria-integral-fase14-2026-09-16.md F14-01 -- "35 de 262
  * endpoints (13%) no tienen ningún consumidor, y nada en el repo puede
- * detectarlo", cita textual de F14-01 -- inventario hoy: 264, ver
- * docs/inventario-rutas.md). `docs/inventario-rutas.md` dice QUÉ RUTAS EXISTEN
+ * detectarlo", cita textual de F14-01 -- inventario al escribirse esta
+ * cerca: 264; corrección Wave 7/D-06 (16/09/2026, retiro de
+ * repair-tenant-db): 263, ver docs/inventario-rutas.md -- esta cita no se
+ * había actualizado hasta la retrospectiva de Waves 1-7 (17/09/2026,
+ * auditor-estructura). No afecta la mecánica de la cerca (parsea el
+ * archivo, no el número). `docs/inventario-rutas.md` dice QUÉ RUTAS EXISTEN
  * (`CONTRACT-COVERAGE-001`); `docs/rbac-matriz-endpoints.md` + 7 cercas
  * dicen QUIÉN PUEDE PEGARLES; nada decía QUIÉN LAS USA -- esta cerca es
  * ese tercer artefacto. Mismo patrón que `CLOSURE_MOUNTS`/
