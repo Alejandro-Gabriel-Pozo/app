@@ -27,7 +27,6 @@ import { CancellationPolicyService } from './cancellation-policy.service.js';
 import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateCancellationPolicySchema, UpdateCancellationPolicySchema } from '../api/schemas/cancellation-policy.schemas.js';
-import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
@@ -65,7 +64,6 @@ export function createCancellationPoliciesRouter(_container: AppContainer): Rout
       const policy  = await service.createPolicy(req.businessId!, body.minDaysBeforeCheckin, body.refundPercentage, body.policyResolutionTiming);
       res.status(201).json(policy);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -86,7 +84,6 @@ export function createCancellationPoliciesRouter(_container: AppContainer): Rout
       );
       res.json(policy);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });

@@ -40,7 +40,7 @@ import { BusinessPlan } from '../types/enums.js';
 import type { AppContainer } from '../container.js';
 import type { PlatformRepository } from './platform.repository.js';
 import type { CompanyRepository } from './company.repository.js';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 
 const CreateCompanySchema = z.object({ name: z.string().min(1).max(255) });
 const LinkCompanySchema   = z.object({ companyId: z.string().min(1) });
@@ -74,7 +74,6 @@ export function createCompaniesRouter(
 
       res.status(201).json(company);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -93,7 +92,6 @@ export function createCompaniesRouter(
       await platformRepo.linkBusinessToCompany(businessId, company.id);
       res.status(204).send();
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });

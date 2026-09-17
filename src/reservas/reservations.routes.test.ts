@@ -27,6 +27,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import { createReservationsRouter } from './reservations.routes.js';
 import type { AppContainer } from '../container.js';
 import { ReservationStatus } from '../types/enums.js';
@@ -196,9 +197,12 @@ describe('reservations.routes', () => {
       const req = { db: fakeDb(state), query: { from: 'ayer' } } as unknown as Request;
       const res = fakeRes();
 
-      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+      let caught: unknown;
+      await handler(req, res, (err) => { caught = err; });
 
-      expect(res.statusCode).toBe(400);
+      expect(caught).toBeInstanceOf(ZodError);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
     });
 
     // D-02 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) --
@@ -210,9 +214,12 @@ describe('reservations.routes', () => {
       const req = { db: fakeDb(state), query: { from: '2026-01-01T00:00:00.000Z' } } as unknown as Request;
       const res = fakeRes();
 
-      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+      let caught: unknown;
+      await handler(req, res, (err) => { caught = err; });
 
-      expect(res.statusCode).toBe(400);
+      expect(caught).toBeInstanceOf(ZodError);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
     });
 
     // D-14: a diferencia del contrato page/limit viejo, `limit` ya NO

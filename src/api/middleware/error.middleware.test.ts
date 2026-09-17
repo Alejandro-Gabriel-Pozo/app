@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { errorHandler } from './error.middleware.js';
 import { DomainError } from '../../domain/errors.js';
 import { logger } from '../../logger.js';
@@ -177,5 +178,36 @@ describe('error.middleware -- MID-LOG-001 política de logging de DomainError', 
     errorHandler(new TestDomainError('CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED'), fakeReq(), res, vi.fn());
     expect(res.statusCode).toBe(422);
     expect(logger.error).not.toHaveBeenCalled();
+  });
+});
+
+// D-16 (17/09/2026, Wave 9, gate `architecture-governor` -- condición F4 de
+// la primera pasada). Tras mover ~18 *.routes.ts a delegar TODO ZodError con
+// next(err)/next(parsed.error), este es el ÚNICO lugar que sigue armando el
+// body de un 400 de validación -- y hasta este bloque, NINGÚN test en el
+// repo fijaba esa forma exacta. `error-400-single-shape.test.ts` (la cerca
+// de arquitectura del mismo bloque) verifica que nada MÁS la construya, pero
+// no verifica CÓMO la construye este archivo -- ese hueco es este test.
+describe('error.middleware -- forma canónica de un ZodError (D-16, la única que appfrontend/src/lib/http.ts sabe parsear)', () => {
+  it('un ZodError produce { code, message, errors: flatten() } -- errors.fieldErrors trae el mensaje por campo', () => {
+    const Schema = z.object({ amount: z.number().positive() });
+    const parsed = Schema.safeParse({ amount: -5 });
+    if (parsed.success) throw new Error('el fixture del test debería fallar la validación');
+
+    const res = fakeRes();
+    errorHandler(parsed.error, fakeReq(), res, vi.fn());
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      code:    'VALIDATION_ERROR',
+      message: 'Datos de entrada inválidos',
+      errors:  parsed.error.flatten(),
+    });
+    // La forma que appfrontend/src/lib/http.ts realmente lee -- si esto deja
+    // de estar poblado, el frontend vuelve a mostrar "Error inesperado"
+    // aunque el test de arriba (comparación estructural con flatten()) siga
+    // pasando con un flatten() vacío por algún cambio futuro del schema.
+    const body = res.body as { errors: { fieldErrors: Record<string, string[]> } };
+    expect(body.errors.fieldErrors['amount']?.length).toBeGreaterThan(0);
   });
 });

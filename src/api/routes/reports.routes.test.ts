@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createReportsRouter } from './reports.routes.js';
 import type { ReportService } from '../../services/report.service.js';
 import type { Request, Response } from 'express';
@@ -187,10 +188,12 @@ describe('GET /api/reports/*', () => {
     const req = { query: { to: '2026-08-31' } } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect((res as unknown as { body: { code: string } }).body.code).toBe('VALIDATION_ERROR');
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(service.generateOccupancyReport).not.toHaveBeenCalled();
   });
 
@@ -201,9 +204,12 @@ describe('GET /api/reports/*', () => {
     const req = { query: { from: '2026-02-30', to: '2026-08-31' } } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(service.generateOccupancyReport).not.toHaveBeenCalled();
   });
 

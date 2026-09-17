@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import type * as CashRegisterServiceModule from './cash-register.service.js';
 
@@ -120,9 +121,12 @@ describe('GET /api/cash-register', () => {
   it('400 si limit no es numérico, en vez de mandar NaN a listShifts', async () => {
     const res = fakeRes();
 
-    await getHandler(router, 'get', '/')(fakeReq({ query: { limit: 'abc' } }), res, () => { throw new Error('no next()'); });
+    let caught: unknown;
+    await getHandler(router, 'get', '/')(fakeReq({ query: { limit: 'abc' } }), res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(listShifts).not.toHaveBeenCalled();
   });
 });
@@ -173,9 +177,12 @@ describe('POST /api/cash-register/open', () => {
   it('400 VALIDATION_ERROR con openingAmount negativo', async () => {
     const res = fakeRes();
 
-    await getHandler(router, 'post', '/open')(fakeReq({ body: { openingAmount: -5 } }), res, () => { throw new Error('no next()'); });
+    let caught: unknown;
+    await getHandler(router, 'post', '/open')(fakeReq({ body: { openingAmount: -5 } }), res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(openShift).not.toHaveBeenCalled();
   });
 
@@ -203,9 +210,12 @@ describe('POST /api/cash-register/close', () => {
   it('400 VALIDATION_ERROR con closingAmountCounted negativo', async () => {
     const res = fakeRes();
 
-    await getHandler(router, 'post', '/close')(fakeReq({ body: { closingAmountCounted: -1 } }), res, () => { throw new Error('no next()'); });
+    let caught: unknown;
+    await getHandler(router, 'post', '/close')(fakeReq({ body: { closingAmountCounted: -1 } }), res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(closeShift).not.toHaveBeenCalled();
   });
 

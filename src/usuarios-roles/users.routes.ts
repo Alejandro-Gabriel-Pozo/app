@@ -39,7 +39,7 @@
  */
 
 import { Router, type Request } from 'express';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
@@ -242,10 +242,6 @@ export function createUsersRouter(
 
         res.status(201).json({ ...member, email: identity.email, fullName: identity.fullName, dni: identity.dni, phone: identity.phone });
       } catch (err) {
-        if (err instanceof ZodError) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-          return;
-        }
         next(err);
       }
     },
@@ -352,10 +348,6 @@ export function createUsersRouter(
         const updated = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
         res.json(updated);
       } catch (err) {
-        if (err instanceof ZodError) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-          return;
-        }
         next(err);
       }
     },

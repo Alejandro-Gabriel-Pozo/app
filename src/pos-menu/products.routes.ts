@@ -79,7 +79,7 @@ import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles }     from '../security/roles.js';
 import { randomUUID } from 'crypto';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import type { Product, ProductVariant, CreateProductInput, CreateProductVariantInput } from './product.entities.js';
 import type { InventoryLevel } from '../repositories/inventory-level.repository.js';
 import { compact } from '../api/utils/compact.js';
@@ -221,7 +221,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       });
       res.status(201).json(withStock(product, product.hasVariants ? undefined : level));
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -268,7 +267,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       }
       res.json(product);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -308,7 +306,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       const level = await new SqlInventoryLevelRepository(req.db!).get({ productId: null, productVariantId: variant.id, locationId });
       res.status(201).json(variantWithStock(variant, level));
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -325,7 +322,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       }
       res.json(variant);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -366,7 +362,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       });
       res.status(201).json(item);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -383,7 +378,6 @@ export function createProductsRouter(_container: AppContainer): Router {
       });
       res.json(item);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -507,10 +501,6 @@ export function createProductsRouter(_container: AppContainer): Router {
 
       res.status(201).json({ movementId });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-        return;
-      }
       next(err);
     }
   });
@@ -596,10 +586,6 @@ export function createProductsRouter(_container: AppContainer): Router {
 
       res.status(201).json({ movementId });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-        return;
-      }
       next(err);
     }
   });
@@ -682,10 +668,6 @@ export function createProductsRouter(_container: AppContainer): Router {
 
       res.status(201).json({ movementId });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-        return;
-      }
       next(err);
     }
   });
@@ -756,10 +738,6 @@ export function createProductsRouter(_container: AppContainer): Router {
 
       res.status(201).json({ movementId, components });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-        return;
-      }
       next(err);
     }
   });

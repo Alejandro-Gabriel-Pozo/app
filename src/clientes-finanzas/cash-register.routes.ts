@@ -29,7 +29,7 @@ import { SqlBusinessProfileRepository } from '../repositories/sql.business-profi
 import { authorize } from '../security/auth.middleware.js';
 import { Roles }     from '../security/roles.js';
 import { OpenShiftSchema, CloseShiftSchema } from '../api/schemas/request.schemas.js';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 
 /**
  * GET /api/cash-register (nivel 2 de cobertura de Zod, 25/08/2026,
@@ -52,10 +52,6 @@ function buildService(req: Request): CashRegisterService {
     new SqlFinancialTransactionRepository(req.db!),
     new SqlBusinessProfileRepository(req.db!),
   );
-}
-
-function validationError(res: Response, errors: { path: string; message: string }[]): void {
-  res.status(400).json({ code: 'VALIDATION_ERROR', errors });
 }
 
 export function createCashRegisterRouter(_container: AppContainer): Router {
@@ -83,7 +79,6 @@ export function createCashRegisterRouter(_container: AppContainer): Router {
       });
       res.json(shifts);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -104,8 +99,7 @@ export function createCashRegisterRouter(_container: AppContainer): Router {
     try {
       const parsed = OpenShiftSchema.safeParse(req.body);
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const shift = await buildService(req).openShift({
         businessId: req.businessId!,
@@ -125,8 +119,7 @@ export function createCashRegisterRouter(_container: AppContainer): Router {
     try {
       const parsed = CloseShiftSchema.safeParse(req.body);
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const shift = await buildService(req).closeShift({
         businessId: req.businessId!,

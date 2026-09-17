@@ -42,7 +42,7 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
@@ -190,10 +190,6 @@ export function createUserInvitationsRouter(
 
       res.status(201).json(invitation);
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });
@@ -280,10 +276,6 @@ export function createInvitationAcceptanceRouter(
         requiresPassword: !existingIdentity,
       });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });
@@ -340,10 +332,6 @@ export function createInvitationAcceptanceRouter(
 
       res.status(201).json({ email: invitation.email, businessName: invitation.businessName, requiresLogin: true });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });

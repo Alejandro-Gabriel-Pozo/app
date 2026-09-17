@@ -14,7 +14,7 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
 import { RoleService } from './role.service.js';
@@ -130,7 +130,6 @@ export function createRolesRouter(platformRepo: PlatformRepository, container: A
       const role = await buildService(req).createRole(businessId, body.name, body.permissionGroups, req.user!.id);
       res.status(201).json(role);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       handleDomainError(err, res, next);
     }
   });
@@ -161,7 +160,6 @@ export function createRolesRouter(platformRepo: PlatformRepository, container: A
       }
       res.json(role);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       handleDomainError(err, res, next);
     }
   });

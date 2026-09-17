@@ -44,7 +44,6 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { ZodError } from 'zod';
 import { authorize, authorizeAny } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
 import type { AppContainer } from '../container.js';
@@ -114,7 +113,6 @@ export function createCreditNoteRequestsRouter(_container: AppContainer): Router
         });
         res.json(updated);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },

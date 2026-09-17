@@ -14,7 +14,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { SqlLocationRepository } from '../../platform/location.repository.js';
@@ -49,10 +49,6 @@ export function createLocationsRouter(): Router {
         });
         res.status(201).json(location);
       } catch (err) {
-        if (err instanceof ZodError) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-          return;
-        }
         next(err);
       }
     },

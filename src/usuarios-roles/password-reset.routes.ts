@@ -19,7 +19,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 import { generatePasswordResetToken, hashPasswordResetToken } from '../security/password-reset-token.js';
 import { hashPassword } from '../security/user.store.js';
 import { passwordResetEmail } from '../email/templates.js';
@@ -160,10 +160,6 @@ export function createPasswordResetRouter(
 
       res.json(GENERIC_REQUEST_RESPONSE);
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });
@@ -187,10 +183,6 @@ export function createPasswordResetRouter(
       }
       res.json({ email: resetToken.identityEmail });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });
@@ -210,10 +202,6 @@ export function createPasswordResetRouter(
 
       res.json({ email: resetToken.identityEmail, requiresLogin: true });
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
-        return;
-      }
       next(err);
     }
   });

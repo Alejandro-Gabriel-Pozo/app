@@ -78,7 +78,6 @@ import {
   GetOrdersQuerySchema,
   type CreateOrderItemBody,
 } from '../api/schemas/request.schemas.js';
-import { ZodError } from 'zod';
 
 function buildOrderService(req: Request, _container: AppContainer): OrderService {
   const productService = new ProductService(
@@ -140,10 +139,6 @@ function param(req: Request, key: string): string {
   return String(req.params[key]);
 }
 
-function validationError(res: Response, errors: { path: string; message: string }[]): void {
-  res.status(400).json({ code: 'VALIDATION_ERROR', errors });
-}
-
 function stripItemUndefined(item: CreateOrderItemBody): CreateOrderItemInput {
   return {
     itemType:         item.itemType,
@@ -190,7 +185,6 @@ export function createOrdersRouter(container: AppContainer): Router {
       const orders = await service.listOrders({ businessId: req.businessId!, ...optionalFilters });
       res.json(orders);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -201,8 +195,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     try {
       const parsed = CreateOrderSchema.safeParse(req.body);
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const service    = buildOrderService(req, container);
       const locationId = await resolveDefaultLocationId(req.db!, parsed.data.locationId);
@@ -272,8 +265,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     try {
       const parsed = CompleteOrderSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const order = await buildOrderService(req, container).completeOrder(
         param(req, 'id'),
@@ -319,8 +311,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       const parsed = CancelWithCreditNoteSchema.safeParse(req.body);
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const orderId = param(req, 'id');
       try {
@@ -387,8 +378,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     try {
       const parsed = CreateOrderItemSchema.safeParse(req.body);
       if (!parsed.success) {
-        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
-        return;
+        return next(parsed.error);
       }
       const item = await buildOrderService(req, container).addItem(
         param(req, 'id'),

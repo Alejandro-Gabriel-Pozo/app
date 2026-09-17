@@ -321,6 +321,47 @@ cuando se pushea.
   del payload en la clave, o comparar amount/allocations contra la fila
   existente y devolver 409 si difieren) — no decidido todavía, no
   implementado.
+- **`VALIDATION-ERROR-LITERAL-RESIDUE-001` — MEDIA-BAJA, hallazgo nuevo
+  (17/09/2026, Wave 9 / D-16, gate `architecture-governor`, condición de
+  la segunda pasada — `docs/auditoria-integral-fase15-2026-09-16.md:466-494`).**
+  D-16 unificó las formas A/B/C (+ un 5º caso sin Zod) de 400 de
+  validación en TODO `*.routes.ts` que las tenía detectadas por la
+  auditoría original o por el propio gate. Quedan 4 sitios más, de la
+  MISMA clase (`code: 'VALIDATION_ERROR'` armado a mano, sin pasar por
+  `error.middleware.ts`) pero de severidad menor — el frontend
+  (`appfrontend/src/lib/http.ts`) SÍ muestra el `message` real en estos
+  casos (no el literal "Error inesperado" de las Formas A/B), solo sin
+  mapeo por campo. Congelados con su conteo exacto en
+  `VALIDATION_ERROR_LITERAL_ALLOWLIST` de
+  `src/tests/architecture/error-400-single-shape.test.ts` (regla 2) para
+  que no se pudran en silencio:
+  - `src/reservas/bookable-services.routes.ts:275,279` — 2 checks
+    manuales (`resourceId`/`date` obligatorios en el query de
+    `/available-slots`), sin Zod.
+  - `src/facturacion/invoices.routes.ts:337,345` — 2, `status` de query
+    inválido/obligatorio en `GET /`. **`invoices.routes.test.ts:198-207`
+    afirma hoy el body no-canónico** — el bloque que arregle esto tiene
+    que actualizar ese test también, mismo patrón que los 36 tests
+    tocados por D-16.
+  - `src/facturacion/credit-note-requests.routes.ts:74` — 1, `state` de
+    query obligatorio en `GET /`.
+  - `src/pos-menu/orders.routes.ts:284` — 1, DISTINTO de los otros tres:
+    no es un check de validación manual sino `InvalidPaymentInfoError`
+    (error de DOMINIO) mapeado a `code: 'VALIDATION_ERROR'` con solo
+    `message` — encontrado recién al escribir la regla 2 de la cerca, ni
+    la auditoría original ni la primera pasada del gate lo habían visto.
+    **Verificado por el gate (17/09/2026, segunda pasada): NO requiere
+    decidir un `code` distinto.** `InvalidPaymentInfoError extends
+    DomainError` con `code: 'VALIDATION_ERROR'`, y `domainErrorStatus()`
+    (`error.middleware.ts`) ya mapea ese código a 400 con el mismo
+    `{ code, message }` que produciría delegar con `next(err)` — el fix
+    acá es un no-op comprobado, no una pregunta de diseño abierta.
+  Para los 3 checks manuales, el fix es el mismo patrón que D-16 (delegar
+  a `next()`, con un `ValidationError`/schema chico); para
+  `orders.routes.ts:284` alcanza con borrar la construcción manual y
+  dejar que `next(err)` propague — no decidido todavía si se hace en un
+  bloque propio o junto con otro bloque de `*.routes.ts` de estos mismos
+  archivos.
 - **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
   retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
   bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`

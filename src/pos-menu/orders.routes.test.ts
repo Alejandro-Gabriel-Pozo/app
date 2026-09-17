@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createOrdersRouter } from './orders.routes.js';
 import {
@@ -130,9 +131,12 @@ describe('orders.routes', () => {
     const req = baseReq({ query: { from: 'ayer' } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.statusCode).toBe(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(listOrders).not.toHaveBeenCalled();
   });
 
@@ -157,9 +161,12 @@ describe('orders.routes', () => {
     const req = baseReq({ body: { locationId: 'loc-1', items: [] } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(createOrder).not.toHaveBeenCalled();
   });
 
@@ -273,8 +280,11 @@ describe('orders.routes', () => {
 
     req = baseReq({ params: { id: 'ord-1' }, body: { paymentMethod: 'BITCOIN' } } as Partial<Request>);
     res = fakeRes();
-    await handler(req, res, () => { throw new Error('no next'); });
-    expect(res.status).toHaveBeenCalledWith(400);
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
 
     completeOrder.mockRejectedValueOnce(new InvalidPaymentInfoError('cardInstallments solo aplica con CARD'));
     req = baseReq({ params: { id: 'ord-1' }, body: { paymentMethod: 'CASH' } } as Partial<Request>);
@@ -326,8 +336,11 @@ describe('orders.routes', () => {
 
     req = baseReq({ params: { id: 'ord-1' }, body: { itemType: 'RESERVATION' } } as Partial<Request>);
     res = fakeRes();
-    await handler(req, res, () => { throw new Error('no next'); });
-    expect(res.status).toHaveBeenCalledWith(400);
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
 
     addItem.mockRejectedValueOnce(new OrderNotEditableError('ord-1', 'CONFIRMED'));
     req = baseReq({

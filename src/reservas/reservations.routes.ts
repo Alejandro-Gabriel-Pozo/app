@@ -108,7 +108,6 @@ import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.reposi
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema } from '../api/schemas/request.schemas.js';
 import { resolveReservationsLimit } from './reservation.repository.js';
-import { ZodError } from 'zod';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
@@ -305,7 +304,6 @@ export function createReservationsRouter(container: AppContainer): Router {
         };
         await respondWithReservationsList(repo, filters, res);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -524,11 +522,16 @@ export function createReservationsRouter(container: AppContainer): Router {
   // `authorizeCreditNoteCancellation()` (el 1ro es el escape de órdenes):
   // `confirmedBy` sale del JWT verificado server-side, NUNCA del body (A2.2).
   //
-  // Validación con `safeParse` + `{path,message}[]`, NO `.parse()`/`ZodError`
-  // como el resto de este archivo -- desvío DELIBERADO: los dos escapes
-  // (órdenes y reservas) comparten `CancelWithCreditNoteSchema` y el mismo
-  // flujo de frontend, así que responden con la misma forma de error. Mismo
-  // criterio que `orders.routes.ts:316-358` (`buildCancelOrderWithCreditNoteService`).
+  // Validación con `safeParse` + `next(parsed.error)`, igual que
+  // `orders.routes.ts` (`buildCancelOrderWithCreditNoteService`) -- los dos
+  // escapes comparten `CancelWithCreditNoteSchema` y el mismo flujo de
+  // frontend, así que responden con la MISMA forma de error: la canónica de
+  // `error.middleware.ts`, no una armada acá (corregido 17/09/2026, D-16,
+  // gate `architecture-governor` -- antes esta ruta construía su propio
+  // body `{ code, errors: [...] }` sin pasar por `next()`, mientras
+  // `orders.routes.ts` ya delegaba; las dos rutas de `ESCAPE_ROUTES`
+  // habrían quedado con formas de error DISTINTAS pese al comentario de
+  // arriba, que ya afirmaba lo contrario).
   //
   // `res.json({ reservation: toReservationDto(...), ... })`, NUNCA
   // `res.json(result)` a secas -- `Reservation.status`/`customer`/`resource`
@@ -541,11 +544,7 @@ export function createReservationsRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next) => {
       const parsed = CancelWithCreditNoteSchema.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({
-          code: 'VALIDATION_ERROR',
-          errors: parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
-        });
-        return;
+        return next(parsed.error);
       }
       const reservationId = req.params['id']!;
       try {

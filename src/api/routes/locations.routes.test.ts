@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createLocationsRouter } from './locations.routes.js';
 import type { Request, Response } from 'express';
 
@@ -85,9 +86,12 @@ describe('POST /api/locations', () => {
     const req = { body: {}, db: fakeDb(async () => ({ rows: [] })) } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   it('rechaza con 400 si name está vacío', async () => {
@@ -96,8 +100,11 @@ describe('POST /api/locations', () => {
     const req = { body: { name: '' }, db: fakeDb(async () => ({ rows: [] })) } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 });

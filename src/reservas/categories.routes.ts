@@ -22,7 +22,7 @@
  *
  * ## Códigos HTTP de respuesta (POST /)
  * 201 — Categoría creada correctamente.
- * 400 — Body inválido (Zod). Body: { code: 'VALIDATION_ERROR', errors }
+ * 400 — Body inválido (Zod). Body: { code: 'VALIDATION_ERROR', message, errors: flatten() } -- forma canónica de error.middleware.ts (D-16, 17/09/2026).
  * 401 — JWT sin business_id. Body: { code: 'TOKEN_MISSING_BUSINESS', message }
  * 402 — Límite de plan alcanzado. Body: { code: 'PLAN_LIMIT_REACHED',
  *        message, plan, limit }
@@ -48,7 +48,6 @@ import {
   UpdateCategorySchema,
 } from '../api/schemas/category.schemas.js';
 import type { CategoryField } from './resource-category.types.js';
-import { ZodError } from 'zod';
 import { SqlCategoryRepository } from './sql.category.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
@@ -148,10 +147,6 @@ export function createCategoryRouter(container: AppContainer): Router {
       );
       res.status(201).json(category);
     } catch (err) {
-      if (err instanceof ZodError) {
-        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-        return;
-      }
       // 402 Payment Required — semántica correcta para límite de plan.
       // Incluye `plan` y `limit` para que el frontend los muestre
       // sin hardcodear valores.
@@ -189,7 +184,6 @@ export function createCategoryRouter(container: AppContainer): Router {
       );
       res.json(category);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });

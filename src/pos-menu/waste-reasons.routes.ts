@@ -30,7 +30,6 @@ import { WasteReasonService } from './waste-reason.service.js';
 import { SqlWasteReasonRepository } from '../repositories/sql.waste-reason.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateWasteReasonSchema, UpdateWasteReasonSchema } from '../api/schemas/waste.schemas.js';
-import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
@@ -68,7 +67,6 @@ export function createWasteReasonsRouter(_container: AppContainer): Router {
       const reason  = await service.createReason(req.businessId!, body.name);
       res.status(201).json(reason);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -87,7 +85,6 @@ export function createWasteReasonsRouter(_container: AppContainer): Router {
       );
       res.json(reason);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });

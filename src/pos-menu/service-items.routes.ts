@@ -35,7 +35,6 @@ import { ServiceItemService } from './service-item.service.js';
 import { SqlServiceItemRepository } from './sql.service-item.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateServiceItemSchema, UpdateServiceItemSchema } from '../api/schemas/service-item.schemas.js';
-import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact } from '../api/utils/compact.js';
@@ -81,7 +80,6 @@ export function createServiceItemsRouter(_container: AppContainer): Router {
       }) as CreateServiceItemInput);
       res.status(201).json(item);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -103,7 +101,6 @@ export function createServiceItemsRouter(_container: AppContainer): Router {
       );
       res.json(item);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });

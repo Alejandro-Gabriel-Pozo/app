@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createCancellationPoliciesRouter } from './cancellation-policies.routes.js';
 import type { AppContainer } from '../container.js';
 import type { Request, Response } from 'express';
@@ -159,10 +160,12 @@ describe('POST /api/cancellation-policies', () => {
     const req = { db: fakeDb([]), businessId: 'biz-1', body: { minDaysBeforeCheckin: 7, refundPercentage: 150 } } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no next'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   // CANCEL-POLICY-SCOPE-BASE-001 (14/09/2026) -- sin policyResolutionTiming en el
@@ -200,10 +203,12 @@ describe('POST /api/cancellation-policies', () => {
     } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no next'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 });
 
@@ -231,9 +236,12 @@ describe('PUT /api/cancellation-policies/:id', () => {
     } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no next'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   it('actualiza policyResolutionTiming y lo audita', async () => {

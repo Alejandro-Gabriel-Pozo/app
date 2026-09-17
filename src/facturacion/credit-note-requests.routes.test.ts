@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createCreditNoteRequestsRouter } from './credit-note-requests.routes.js';
 import { buildInvoiceService } from './invoices.routes.js';
@@ -179,9 +180,12 @@ describe('credit-note-requests.routes', () => {
       const req = baseReq({ params: { id: 'cnr-1' }, body: { outcome: 'EMITIDA' } });
       const res = fakeRes();
 
-      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+      let caught: unknown;
+      await handler(req, res, (err) => { caught = err; });
 
-      expect(res.status).toHaveBeenCalledWith(400);
+      expect(caught).toBeInstanceOf(ZodError);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
       expect(resolveCreditNoteRequestManually).not.toHaveBeenCalled();
     });
 
@@ -190,9 +194,12 @@ describe('credit-note-requests.routes', () => {
       const req = baseReq({ params: { id: 'cnr-1' }, body: { outcome: 'ALGO_RARO' } });
       const res = fakeRes();
 
-      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+      let caught: unknown;
+      await handler(req, res, (err) => { caught = err; });
 
-      expect(res.status).toHaveBeenCalledWith(400);
+      expect(caught).toBeInstanceOf(ZodError);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
     });
 
     it('409 -- propaga CreditNoteRequestInvalidTransitionError a next() (fila que no está en EN_REVISION_MANUAL)', async () => {

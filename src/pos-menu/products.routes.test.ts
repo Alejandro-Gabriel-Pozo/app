@@ -24,6 +24,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createProductsRouter } from './products.routes.js';
 import { ProductService, InsufficientStockError } from './product.service.js';
@@ -233,6 +234,14 @@ describe('products.routes', () => {
     await handler(req, res, () => { throw new Error('no debería llamar next()'); });
   }
 
+  async function expectZodError(handler: (req: Request, res: Response, next: (err?: unknown) => void) => Promise<void>, req: Request, res: Response) {
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+  }
+
   // ── Producto ────────────────────────────────────────────────────────────
   it('GET / -- lista productos con stock enriquecido', async () => {
     const handler = getHandler(router, 'get', '/');
@@ -268,9 +277,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'post', '/');
     const req = baseReq({ body: { locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'VALIDATION_ERROR' }));
+    await expectZodError(handler, req, res);
     expect(createProduct).not.toHaveBeenCalled();
   });
 
@@ -278,8 +285,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'post', '/');
     const req = baseReq({ body: { name: 'Coca-Cola', basePrice: -1, locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
     expect(createProduct).not.toHaveBeenCalled();
   });
 
@@ -287,8 +293,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'post', '/');
     const req = baseReq({ body: { name: 'Sandwich', basePrice: 50, productType: 'RETAIL', assembleOnDemand: true, locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
     expect(createProduct).not.toHaveBeenCalled();
   });
 
@@ -342,8 +347,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'put', '/:id');
     const req = baseReq({ params: { id: 'prod-1' }, body: { basePrice: 'gratis' } } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
     expect(updateProduct).not.toHaveBeenCalled();
   });
 
@@ -380,8 +384,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'post', '/:id/variants');
     const req = baseReq({ params: { id: 'prod-1' }, body: { locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
     expect(createVariant).not.toHaveBeenCalled();
   });
 
@@ -436,8 +439,7 @@ describe('products.routes', () => {
       body: { componentProductId: 'comp-1', componentVariantId: 'var-1', quantityPerUnit: 2 },
     } as Partial<Request>);
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
     expect(addRecipeItem).not.toHaveBeenCalled();
   });
 
@@ -609,8 +611,7 @@ describe('products.routes', () => {
     const handler = getHandler(router, 'post', '/stock/production');
     const req = baseReq({ body: { quantity: 5 } } as Partial<Request>); // sin productId
     const res = fakeRes();
-    await expectHappy(handler, req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
+    await expectZodError(handler, req, res);
   });
 
   // ── Empresas multipropiedad ─────────────────────────────────────────────

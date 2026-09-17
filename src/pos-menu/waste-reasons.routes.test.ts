@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createWasteReasonsRouter } from './waste-reasons.routes.js';
 import { WasteReasonService } from './waste-reason.service.js';
@@ -135,9 +136,12 @@ describe('waste-reasons.routes', () => {
     const req = baseReq({ body: { name: '' } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(createReason).not.toHaveBeenCalled();
   });
 
@@ -159,9 +163,12 @@ describe('waste-reasons.routes', () => {
     const req = baseReq({ params: { id: 'wr-1' }, body: { active: 'sí' } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(updateReason).not.toHaveBeenCalled();
   });
 

@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createAuditLogRouter } from './audit-log.routes.js';
 import type { PlatformRepository, Identity } from '../../platform/platform.repository.js';
 import type { Request, Response } from 'express';
@@ -103,7 +104,13 @@ describe('GET /api/audit-log', () => {
     expect(body[0]?.changedByName).toBe('Usuario desconocido');
   });
 
-  it('rechaza con 400 si faltan entity/entityId', async () => {
+  it('D-16 (17/09/2026, Wave 9): si faltan entity/entityId, delega con next(ZodError) -- no responde 400 a mano', async () => {
+    // Antes esta ruta respondía { code: 'VALIDATION_ERROR', message: '...' }
+    // por su cuenta, SIN el campo `errors` que el resto del contrato de
+    // validación manda -- una quinta forma de 400 (ver docblock de
+    // audit-log.routes.ts). Ahora un query param faltante se valida con
+    // Zod y termina en next(err), igual que las otras ~20 rutas de este
+    // mismo bloque -- error.middleware.ts es el único que responde 400.
     const platformRepo = { findIdentitiesByIds: vi.fn() } as unknown as PlatformRepository;
     const router = createAuditLogRouter(platformRepo);
     const handler = getHandler(router);
@@ -111,8 +118,11 @@ describe('GET /api/audit-log', () => {
     const req = { db: fakeDbWithEntries([]), query: {} } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 });

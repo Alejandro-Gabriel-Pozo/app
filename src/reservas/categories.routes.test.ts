@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createCategoryRouter } from './categories.routes.js';
 import { BusinessPlan } from '../types/enums.js';
 import type { AppContainer } from '../container.js';
@@ -198,10 +199,12 @@ describe('POST /api/categories', () => {
     const req = { db: fakeDb([]), user: { id: 'identity-1', businessId: 'biz-1' }, body: {} } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no next'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   it('402 PLAN_LIMIT_REACHED si ya se alcanzó maxCategories', async () => {
@@ -248,9 +251,12 @@ describe('PUT /api/categories/:id', () => {
     } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no next'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 });
 

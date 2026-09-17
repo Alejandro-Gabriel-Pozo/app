@@ -16,7 +16,6 @@
  */
 
 import { Router } from 'express';
-import { ZodError } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { ReportService } from '../../services/report.service.js';
@@ -42,7 +41,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateOccupancyReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -65,7 +63,6 @@ export function createReportsRouter(service: ReportService): Router {
         );
         res.json(summary);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -87,7 +84,6 @@ export function createReportsRouter(service: ReportService): Router {
         );
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -110,7 +106,6 @@ export function createReportsRouter(service: ReportService): Router {
         );
         res.json(resources);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -128,7 +123,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateAccountsReceivableReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -146,7 +140,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateSalesByProductReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -164,7 +157,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateWasteReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -182,7 +174,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateTicketSummaryReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -200,7 +191,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateNewVsRecurringReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -218,7 +208,6 @@ export function createReportsRouter(service: ReportService): Router {
         const report = await service.generateAppliedRatesReport(from, to);
         res.json(report);
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -236,7 +225,6 @@ export function createReportsRouter(service: ReportService): Router {
         const deleted = await service.purgeOldRecords(before);
         res.json({ deleted });
       } catch (err) {
-        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },

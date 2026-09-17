@@ -20,10 +20,23 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { z } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { SqlAuditLogRepository, type AuditLogEntry } from '../../repositories/audit-log.repository.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
+
+// D-16 (17/09/2026, Wave 9) -- antes era un `if` a mano que respondía
+// `{ code: 'VALIDATION_ERROR', message: '...' }` SIN el campo `errors`
+// que el resto del contrato de validación (`error.middleware.ts`) siempre
+// manda -- una quinta forma de 400, ni siquiera basada en Zod. Convertido
+// a un schema chico + `.parse()` para que un query param faltante termine
+// en el mismo `catch (err) { next(err); }` de acá abajo, como todo el
+// resto del repo después de este bloque.
+const AuditLogQuerySchema = z.object({
+  entity:   z.string().min(1, 'entity es obligatorio'),
+  entityId: z.string().min(1, 'entityId es obligatorio'),
+});
 
 export function createAuditLogRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
@@ -33,16 +46,7 @@ export function createAuditLogRouter(platformRepo: PlatformRepository): Router {
     authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const entity   = String(req.query['entity']   ?? '');
-        const entityId = String(req.query['entityId'] ?? '');
-
-        if (!entity || !entityId) {
-          res.status(400).json({
-            code: 'VALIDATION_ERROR',
-            message: 'entity y entityId son obligatorios como query params.',
-          });
-          return;
-        }
+        const { entity, entityId } = AuditLogQuerySchema.parse(req.query);
 
         const entries = await new SqlAuditLogRepository(req.db!).findByEntity(entity, entityId);
 

@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createServiceItemsRouter } from './service-items.routes.js';
 import { ServiceItemService } from './service-item.service.js';
@@ -135,9 +136,12 @@ describe('service-items.routes', () => {
     const req = baseReq({ body: { name: '', price: 500 } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(createItem).not.toHaveBeenCalled();
   });
 
@@ -146,9 +150,12 @@ describe('service-items.routes', () => {
     const req = baseReq({ body: { name: 'x', price: -1 } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(createItem).not.toHaveBeenCalled();
   });
 
@@ -170,9 +177,12 @@ describe('service-items.routes', () => {
     const req = baseReq({ params: { id: 'si-1' }, body: { active: 'sí' } } as Partial<Request>);
     const res = fakeRes();
 
-    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(updateItem).not.toHaveBeenCalled();
   });
 

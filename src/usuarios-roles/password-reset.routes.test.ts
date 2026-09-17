@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { createPasswordResetRouter } from './password-reset.routes.js';
 import type { PlatformRepository, PasswordResetToken, Identity, Membership } from '../platform/platform.repository.js';
 import type { EmailSender } from '../email/email.sender.js';
@@ -149,9 +150,12 @@ describe('POST /api/password-resets/request', () => {
     const req = { body: { email: 'no-es-un-email' } } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => {});
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(platformRepo.findIdentityByEmail).not.toHaveBeenCalled();
   });
 });
@@ -229,9 +233,12 @@ describe('POST /api/password-resets/accept', () => {
     const req = { body: { token: 'un-token-cualquiera', newPassword: 'corta' } } as unknown as Request;
     const res = fakeRes();
 
-    await handler(req, res, () => {});
+    let caught: unknown;
+    await handler(req, res, (err) => { caught = err; });
 
-    expect(res.status).toHaveBeenCalledWith(400);
+    expect(caught).toBeInstanceOf(ZodError);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
     expect(platformRepo.updateIdentityPassword).not.toHaveBeenCalled();
   });
 

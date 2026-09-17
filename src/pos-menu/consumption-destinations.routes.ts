@@ -29,7 +29,6 @@ import { ConsumptionDestinationService } from './consumption-destination.service
 import { SqlConsumptionDestinationRepository } from '../repositories/sql.consumption-destination.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateConsumptionDestinationSchema, UpdateConsumptionDestinationSchema } from '../api/schemas/consumption.schemas.js';
-import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
@@ -67,7 +66,6 @@ export function createConsumptionDestinationsRouter(_container: AppContainer): R
       const destination = await service.createDestination(req.businessId!, body.name);
       res.status(201).json(destination);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -86,7 +84,6 @@ export function createConsumptionDestinationsRouter(_container: AppContainer): R
       );
       res.json(destination);
     } catch (err) {
-      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
