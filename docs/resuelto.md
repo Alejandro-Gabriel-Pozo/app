@@ -66,6 +66,23 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   - **(c)** sigue sin cerrar — limpieza de BD de scratch, no bloqueante,
     permanece en `pendientes-2026-09-12.md`.
 
+- **`D-20-STATEMENT-TIMEOUT-POOLER-VERIFY-001`, cerrado por completo.**
+  Origen: `docs/pendientes-2026-09-12.md`. La mitad que quedó abierta arriba
+  (pool por-tenant de `tenant.middleware.ts`) se confirmó con evidencia real
+  del dueño, 17/09/2026: login de staff real contra dos URLs de producción
+  de `appfrontend` (`https://reservasapp-git-main-alepozod.vercel.app/login`
+  y `https://reservasapp-mg15sdbl9-alepozod.vercel.app/login`, ambas
+  apuntando a `app-chny.onrender.com`) y carga exitosa de la pantalla de
+  Reservas (datos reales, sin error). Ese request pasa por
+  `tenant.middleware.ts:117` (con `statement_timeout` seteado) contra el
+  pooler real de Neon — confirma que el pooler reenvía el startup parameter
+  también para ese pool, no solo para el de plataforma. Con esto, las DOS
+  mitades del residuo quedan cerradas: `createPlatformPool()` (por
+  `migrate-tenants` en el deploy) y el pool por-tenant (por este login).
+  Nada indica que el sandbox pueda reproducir esta verificación por su
+  cuenta — quedó cerrada por el dueño, no por esta sesión, y así se deja
+  registrado.
+
 ## 14/09/2026
 
 - **`CITY-LEDGER-AR-REPORT-ROW-FRONTEND-MIRROR-001`.** Origen:
