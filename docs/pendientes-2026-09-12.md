@@ -93,6 +93,77 @@ cuando se pushea.
     todavía (test de arquitectura que parsee los `MAX(version) < N` de
     `schema.sql`, importe `CURRENT_SCHEMA_VERSION` real y asegure que
     todo N sea `<= CURRENT_SCHEMA_VERSION`).
+- **`D-20-STATEMENT-TIMEOUT-POOLER-VERIFY-001` (17/09/2026, fix de
+  `statement_timeout`/`idle_in_transaction_session_timeout` ya en código y
+  gate-aprobado, commit `2dcad0d`) — el forwarding del pooler de Neon
+  (PgBouncer, endpoint `-pooler`) de estos dos valores como startup
+  parameters del wire protocol de Postgres NUNCA se probó, ni en esta
+  sesión ni en ninguna anterior.** Intentado en esta sesión por dos
+  caminos, los dos bloqueados por la red del sandbox, no por el código:
+  (1) `pg.Client` TCP directo contra el endpoint `-pooler` — timeout de
+  conexión, confirmado además con un test crudo de `/dev/tcp` (sin salida
+  TCP del sandbox, solo HTTPS vía proxy); (2) `@neondatabase/serverless`
+  vía WebSocket (mismo wire protocol, tunelizado sobre HTTPS/443) — `403`
+  explícito del proxy de organización al intentar el CONNECT hacia el host
+  de Neon (`connect_rejected`, política de organización, no ausencia de
+  ruta). Las herramientas MCP de Neon (`run_sql`/`run_sql_transaction`) SÍ
+  funcionaron, pero ejecutan del lado del servidor de Neon, no a través del
+  wire protocol TCP/startup-parameters que usa `pg.Client` en este código
+  — confirmaron que Postgres acepta y lee de vuelta `SET
+  statement_timeout`/`SET idle_in_transaction_session_timeout` dentro de
+  una misma sesión (evidencia necesaria pero no suficiente: no prueba que
+  el pooler reenvíe el startup parameter en la conexión real de la app).
+  **Acción puntual que lo cierra:** en el próximo deploy a Render, revisar
+  los logs de arranque/queries del proceso real contra `PLATFORM_DATABASE_URL`/
+  tenant DBs (mismo log que confirma (b) del ítem
+  `SCHEMA-VERSION-GATE-FIX-PRE-PUSH-VERIFY-001` más arriba) y, si hace
+  falta una confirmación explícita, correr una vez
+  `SELECT current_setting('statement_timeout'), current_setting('idle_in_transaction_session_timeout')`
+  desde dentro del proceso desplegado (no desde este sandbox) contra una
+  conexión de Group A (`container.ts`/`pg.client.ts`). **Corrección
+  17/09/2026 (gate `architecture-governor`, ronda de push) — la afirmación
+  original de este ítem ("impacto silencioso, no regresivo") estaba
+  incompleta y quedó corregida en el mismo commit que la invalida (mismo
+  precedente que la cita "254→259" del `CLAUDE.md`).** `pg` manda
+  `statement_timeout`/`idle_in_transaction_session_timeout` como *startup
+  parameters* del wire protocol — un PgBouncer que no los tenga en
+  `ignore_startup_parameters` **rechaza la conexión entera**, no los
+  ignora en silencio. Eso no es "queda como estaba" en todos los casos.
+  El radio real está acotado por el reparto de conexiones, verificado por
+  el gate: el pool de plataforma (`container.ts:67`) SÍ lleva
+  `statement_timeout` y lo usa `migrate:tenants` — si el pooler rechazara
+  el parámetro, **el build de Render falla y no se despliega** (canario
+  involuntario, cubre ese camino). El hueco real: `applyTenantSchema()`
+  (las conexiones de tenant que el build sí ejercita) deliberadamente NO
+  lleva `statement_timeout`, así que el build puede quedar verde usando
+  solo conexiones sin ese parámetro, y el primer request autenticado de
+  **staff** post-deploy (que sí pasa por `tenant.middleware.ts:117`, con
+  `statement_timeout`) sería donde aparecería un rechazo de conexión, si
+  lo hubiera — no `/health` (no toca BD). Verificación post-deploy: un
+  login/request de staff real contra el proceso desplegado.
+- **`D-22-SCHEMA-DIRTY-DATA-VERIFY-001` (17/09/2026, `schema.sql` actual
+  aplicado exitosamente contra un branch descartable de Neon forkeado de
+  `tenant-hotel-los-alamos` — 431/431 statements, sin error) — la corrida
+  NO ejercitó el escenario específico de D-22 (datos preexistentes que
+  violan un constraint/guard nuevo).** El branch forkeado tenía historial
+  real de `schema_migrations` (v46→v59, no una plantilla vacía) pero 0
+  filas en `resources`/`reservations`/`customers`/`financial_transactions`
+  — mismo estado que reportó D-07 para los 2 tenants reales ("0 filas
+  candidatas y 0 filas totales" en varias tablas). Además, la corrida
+  aplicó los 431 statements crudos de `schema.sql` en 11 tandas separadas
+  (una transacción por tanda, no una transacción única como hace
+  `applyTenantSchema()` en producción vía `client.query(schemaSQL)`) — así
+  que tampoco reproduce la atomicidad real del deploy. **Riesgo para ESTE
+  push puntual: bajo** (no hay filas reales que puedan estar "sucias" en
+  ninguno de los 2 tenants hoy). **Brecha real, no resuelta:** el camino
+  sigue sin ningún test que cubra el día en que sí haya volumen de datos
+  real — ni un fixture con filas "sucias" a propósito (violando un CHECK
+  nuevo a mano) para confirmar que los guards `pg_constraint`/versión (D-08,
+  D-07(c)) realmente evitan romper el deploy en ese caso, en vez de asumir
+  que un 431/431 contra 0 filas alcanza. Acción puntual: diseñar un
+  fixture de datos "sucios" contra un branch descartable y correr
+  `applyTenantSchema()` real (no statements sueltos) contra él — no
+  decidido todavía quién lo prioriza ni cuándo.
 - **Retrospectiva Waves 1-7 (17/09/2026) — Postgres 16.13 local real,
   confirmado en esta sesión.** `5fb2487` (D-21), la mitad automatizada de
   `668e16c` (Wave 2), `4c4a17b` (AFIP) y `d5d27c4` (auditoría de
