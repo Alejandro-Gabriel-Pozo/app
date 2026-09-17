@@ -6,6 +6,7 @@ import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { ResourceRepository } from './resource.repository.js';
+import type { PhysicalResource } from './resource.entities.js';
 import type { ReservationLine } from './reservation.types.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { CancellationPolicySnapshot } from './cancellation-policy.repository.js';
@@ -344,7 +345,7 @@ export class SqlReservationRepository implements ReservationRepository {
        ${forUpdate ? 'FOR UPDATE' : ''}`,
       [id, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
     );
-    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+    return this.rowsToReservations(result.rows);
   }
 
   async getActiveForResourceInRange(
@@ -456,7 +457,7 @@ export class SqlReservationRepository implements ReservationRepository {
     sql += ` OFFSET $${params.length}`;
 
     const result = await this.sqlClient.query<ReservationRow>(sql, params);
-    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+    return this.rowsToReservations(result.rows);
   }
 
   async countFiltered(
@@ -496,6 +497,52 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   private async rowToReservation(row: ReservationRow): Promise<Reservation> {
+    const resource = await this.resourceRepository.getById(row.resource_id);
+    if (!resource) throw new ResourceNotFoundError(row.resource_id);
+
+    const lines = await this.getLines(row.id);
+
+    return this.buildReservation(row, resource, lines);
+  }
+
+  /**
+   * D-17 (17/09/2026, docs/auditoria-integral-fase12-2026-09-16.md F12-01)
+   * — versión batch de `rowToReservation()` para listados: en vez de un
+   * `resourceRepository.getById()` + un `getLines()` POR FILA (1+2N
+   * round-trips, medido en 401 queries para 200 filas), resuelve recursos
+   * y líneas en una query cada uno y arma en memoria — mismo patrón que
+   * `sql.order.repository.ts:143-170` (cabecera + hijos batcheados por
+   * `IN`/`ANY`). Usada por `getFiltered()` (el hot path medido) y
+   * `getActiveInRange()` (los 4 chequeos de disponibilidad, incluido el
+   * que corre bajo `FOR UPDATE` — F12-03: acorta el lock de 21 round-trips
+   * a 3). Los demás métodos de este archivo (getByCustomerId,
+   * getByResourceId, getByStatus, getByDateRange,
+   * getApprovedLateCheckoutsForDate, getPendingWithExpiredDeposit) NO se
+   * tocan -- el hallazgo D-17 no los mide y no son el hot path; siguen
+   * usando `rowToReservation()` fila por fila. Si algún día pesan, mismo
+   * patrón, mismo criterio que ya declara el comentario de `getLines()`.
+   */
+  private async rowsToReservations(rows: ReservationRow[]): Promise<Reservation[]> {
+    if (rows.length === 0) return [];
+
+    const resourceIds = [...new Set(rows.map((row) => row.resource_id))];
+    const resources = await this.resourceRepository.getManyByIds(resourceIds);
+    const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+
+    const linesByReservationId = await this.getLinesForReservations(rows.map((row) => row.id));
+
+    return rows.map((row) => {
+      const resource = resourceById.get(row.resource_id);
+      if (!resource) throw new ResourceNotFoundError(row.resource_id);
+      return this.buildReservation(row, resource, linesByReservationId.get(row.id) ?? []);
+    });
+  }
+
+  private buildReservation(
+    row: ReservationRow,
+    resource: PhysicalResource,
+    lines: ReservationLine[],
+  ): Reservation {
     // customer_id/customer_name/customer_email son el "congelado" de R9
     // (criterios-datos.md) -- reservas ya no envuelve esto en la clase
     // Customer completa de clientes-finanzas (Fase 7, D1), es su propia
@@ -506,13 +553,8 @@ export class SqlReservationRepository implements ReservationRepository {
       email:    row.customer_email ?? undefined,
     };
 
-    const resource = await this.resourceRepository.getById(row.resource_id);
-    if (!resource) throw new ResourceNotFoundError(row.resource_id);
-
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
-
-    const lines = await this.getLines(row.id);
 
     return Reservation.restore({
       id:            row.id,
@@ -574,6 +616,35 @@ export class SqlReservationRepository implements ReservationRepository {
       unitDate:      new Date(row.unit_date),
       price:         parseFloat(row.price),
     }));
+  }
+
+  /**
+   * D-17 -- versión batch de `getLines()`, usada por `rowsToReservations()`.
+   * Una sola query con `ANY($1)` en vez de una por reserva; agrupa en
+   * memoria. `reservationIds` vacío no corre query.
+   */
+  private async getLinesForReservations(
+    reservationIds: string[],
+  ): Promise<Map<string, ReservationLine[]>> {
+    const byReservation = new Map<string, ReservationLine[]>();
+    if (reservationIds.length === 0) return byReservation;
+
+    const result = await this.sqlClient.query<{ id: string; reservation_id: string; unit_date: string; price: string }>(
+      `SELECT id, reservation_id, unit_date, price FROM reservation_lines
+       WHERE reservation_id = ANY($1) ORDER BY unit_date ASC`,
+      [reservationIds],
+    );
+    for (const row of result.rows) {
+      const line: ReservationLine = {
+        id:            row.id,
+        reservationId: row.reservation_id,
+        unitDate:      new Date(row.unit_date),
+        price:         parseFloat(row.price),
+      };
+      if (!byReservation.has(row.reservation_id)) byReservation.set(row.reservation_id, []);
+      byReservation.get(row.reservation_id)!.push(line);
+    }
+    return byReservation;
   }
 
   /** D7 (22/08/2026) — ver docblock de `AppliedRateReportRow` (customer-rate.repository.ts). */

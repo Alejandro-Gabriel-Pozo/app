@@ -22,6 +22,14 @@ export interface ResourceRepository {
    */
   saveWithClient?(client: SqlClient, resource: PhysicalResource): Promise<void>;
   getById(id: string): Promise<PhysicalResource | undefined>;
+
+  /**
+   * D-17 (17/09/2026, N+1 de reservas) — misma semántica que `getById()`:
+   * NO filtra por active/deleted_at (R2, docs/criterios-datos.md). Usado
+   * por `SqlReservationRepository` para resolver recursos en batch en vez
+   * de un `getById()` por fila. `ids` vacío devuelve `[]` sin query.
+   */
+  getManyByIds(ids: string[]): Promise<PhysicalResource[]>;
   getByCategory(categoryId: string): Promise<PhysicalResource[]>;
   getAll(): Promise<PhysicalResource[]>;
   getByName(name: string): Promise<PhysicalResource | undefined>;

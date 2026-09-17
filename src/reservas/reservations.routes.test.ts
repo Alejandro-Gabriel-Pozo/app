@@ -86,8 +86,14 @@ function fakeDb(state: ReturnType<typeof makeState>) {
       return { rows: [...state.reservations.values()] };
     }
     if (text.includes('FROM resources')) {
-      const [id] = params as [string];
-      const row = state.resources.get(id);
+      // D-17 (17/09/2026) -- getManyByIds() batchea con `WHERE r.id = ANY($1)`
+      // (params[0] es un array de ids), a diferencia de getById()
+      // (`WHERE r.id = $1`, params[0] es un string). Mismo fake, las dos formas.
+      const [param] = params as [string | string[]];
+      if (Array.isArray(param)) {
+        return { rows: param.map((id) => state.resources.get(id)).filter((row) => row !== undefined) };
+      }
+      const row = state.resources.get(param);
       return { rows: row ? [row] : [] };
     }
     if (text.includes('FROM customers')) {

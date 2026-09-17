@@ -24,6 +24,13 @@ export class InMemoryResourceRepository implements ResourceRepository {
     return this.resources.get(id);
   }
 
+  /** D-17 (17/09/2026) — batch de getById(), misma semántica (sin filtrar por estado). */
+  async getManyByIds(ids: string[]): Promise<PhysicalResource[]> {
+    return ids
+      .map((id) => this.resources.get(id))
+      .filter((r): r is PhysicalResource => r !== undefined);
+  }
+
   async getByCategory(categoryId: string): Promise<PhysicalResource[]> {
     return Array.from(this.resources.values()).filter(
       (r) => r.categoryId === categoryId,

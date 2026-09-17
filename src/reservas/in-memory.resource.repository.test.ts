@@ -37,6 +37,21 @@ describe('InMemoryResourceRepository', () => {
     expect(cabins[0]!.id).toBe('c1');
   });
 
+  it('getManyByIds([]) devuelve [] sin tocar el mapa -- D-17', async () => {
+    await repo.save(new BookableResource('c1', 'Cabaña A', 150, 'cat-cabin'));
+
+    expect(await repo.getManyByIds([])).toEqual([]);
+  });
+
+  it('getManyByIds() devuelve los encontrados y omite los inexistentes -- D-17, misma semántica que getById() (sin filtrar por estado)', async () => {
+    await repo.save(new BookableResource('c1', 'Cabaña A', 150, 'cat-cabin'));
+    await repo.save(new BookableResource('c2', 'Cabaña B', 200, 'cat-cabin'));
+
+    const found = await repo.getManyByIds(['c1', 'no-existe', 'c2']);
+
+    expect(found.map((r) => r.id).sort()).toEqual(['c1', 'c2']);
+  });
+
   it('debe eliminar un recurso', async () => {
     await repo.save(new BookableResource('c1', 'Cabaña A', 150, 'cat-cabin'));
     const deleted = await repo.delete('c1');

@@ -119,6 +119,21 @@ export class SqlResourceRepository implements ResourceRepository {
     return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
   }
 
+  /**
+   * D-17 (17/09/2026, N+1 de reservas) — batch de `getById()`, misma
+   * semántica exacta (sin filtro active/deleted_at, R2) para no cambiar de
+   * qué recursos puede reconstruir una reserva histórica. `ids` vacío no
+   * corre query — evita un `= ANY('{}')` innecesario.
+   */
+  async getManyByIds(ids: string[]): Promise<PhysicalResource[]> {
+    if (ids.length === 0) return [];
+    const result = await this.sqlClient.query<ResourceRow>(
+      `${SELECT_WITH_CATEGORY} WHERE r.id = ANY($1)`,
+      [ids],
+    );
+    return result.rows.map((row) => this.rowToResource(row));
+  }
+
   async getByCategory(categoryId: string): Promise<PhysicalResource[]> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY}

@@ -1487,9 +1487,11 @@ anteriores.
   `docs/auditoria-integral-fase12-2026-09-16.md:907-951`) advierte que
   este valor es *"una decisión de negocio disfrazada de parámetro"* y
   recomienda fijarlo recién DESPUÉS de resolver F12-01 (N+1 de reservas,
-  ~1,2s medidos para 200 filas -- `D-17`, todavía **sin implementar**,
-  Wave 10), F12-06 (chequeo de disponibilidad secuencial, ~2,5s medidos,
-  mismo estado) **y F12-09 (indeterminada -- corrección del gate, segunda
+  ~1,2s medidos para 200 filas -- `D-17`, **implementado** (Wave 10,
+  17/09/2026, batch pattern en `sql.reservation.repository.ts`, 401→3 y
+  101→3 queries medidas contra Postgres real, ver `docs/resuelto.md`),
+  F12-06 (chequeo de disponibilidad secuencial, ~2,5s medidos, **todavía
+  sin implementar**) **y F12-09 (indeterminada -- corrección del gate, segunda
   pasada, 17/09/2026: la primera versión de este ítem citaba solo los
   primeros dos determinantes; el texto real de F12-12 nombra tres)** --
   fijarlo antes calibra el número contra el comportamiento PATOLÓGICO en
@@ -1511,8 +1513,9 @@ anteriores.
   historial fiscal completo) es el statement individual potencialmente
   largo sin medir -- se des-riesga hoy porque su ruta no tiene consumidor
   conocido (`NO_CONSUMER_ROUTES`), no porque esté descartado.
-  Acción puntual que cierra este ítem: cuando D-17/F12-06 aterricen,
-  volver a medir F12-01/F12-06 con las correcciones aplicadas y bajar
+  Acción puntual que cierra este ítem: D-17 ya aterrizó (Wave 10); cuando
+  F12-06 también aterrice, volver a medir F12-01/F12-06 con las
+  correcciones aplicadas y bajar
   `DB_STATEMENT_TIMEOUT_MS`/`DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` (o los
   defaults en `config/env.ts`) a un valor calibrado contra el
   comportamiento SANO. Se corta de acá (no se tacha) y pasa a
