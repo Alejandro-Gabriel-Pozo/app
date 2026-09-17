@@ -41,7 +41,7 @@ import type http from 'node:http';
 import * as Sentry from '@sentry/node';
 import { ZodError } from 'zod';
 import { DomainError, ValidationError } from './domain/errors.js';
-import { logger } from './logger.js';
+import { logger, redactedReqSerializer } from './logger.js';
 
 import { createResourcesRouter }         from './reservas/resources.routes.js';
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
@@ -141,10 +141,21 @@ export async function createApp(): Promise<{
 
   // -------------------------------------------------------------------------
   // 2. pino-http — log estructurado de cada request/response (1.1). `req.id`
-  //    autogenerado (UUID) queda disponible como correlación en el resto de
-  //    los logs de ese request si algún handler lo necesita.
+  //    autogenerado (entero incremental por proceso, NO un UUID -- corregido
+  //    17/09/2026, gate `architecture-governor`: pino-http@11's
+  //    reqIdGenFactory, logger.js:233-239) queda disponible como correlación
+  //    en el resto de los logs de ese request si algún handler lo necesita.
+  //
+  //    D-02 (17/09/2026, Wave 8): `serializers.req` se pasa ACÁ ADEMÁS de
+  //    en `logger.ts` -- `pino-http` arma su propio `req` serializer al
+  //    crear el child logger de cada request (verificado contra
+  //    pino-http@11, logger.js::wrapChild()) y lo prioriza sobre el de la
+  //    instancia base si no se lo pasamos explícito acá. Sin esto, cada
+  //    línea de tráfico seguiría emitiendo headers completos (Authorization,
+  //    cookies) y la query string entera pese al redact/serializer de
+  //    `logger.ts`. Misma función importada, no una copia.
   // -------------------------------------------------------------------------
-  app.use(pinoHttp({ logger }));
+  app.use(pinoHttp({ logger, serializers: { req: redactedReqSerializer } }));
 
   // -------------------------------------------------------------------------
   // 3. Helmet base — security headers globales, sin CSP.

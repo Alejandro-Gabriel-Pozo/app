@@ -163,6 +163,57 @@ cuando se pushea.
   una vez migrados (hay que medir duplicados reales antes de aplicar, no
   asumir 0 como se hizo con `customer_rates`/D-07). Ninguna de las Waves
   8-16 del plan integral lo cubre.
+- **`F8-06` (Wave 8 / D-02, 17/09/2026) — connection string con contraseña
+  en un mensaje de error libre, NO cerrado por el fix de D-02, corrección
+  del alcance que el propio plan integral le atribuía.**
+  `docs/auditoria-integral-fase16-2026-09-16.md:487` decía que el fix de
+  D-02 en `logger.ts` cierra esto "de paso" — no es cierto, y quedó
+  corregido acá para no repetir el mismo tipo de cita que este mismo repo
+  ya viene corrigiendo (afirmación sobre lo que un mecanismo cubre, sin
+  verificar contra el mecanismo real). `redact`/`serializers.req` de
+  `logger.ts` operan sobre PATHS de un objeto estructurado
+  (`req.headers.authorization`, etc.) — no pueden recortar una subcadena
+  dentro de un STRING de mensaje libre. El hallazgo real (F8-06),
+  **ancla re-chequeada 17/09/2026 (gate `architecture-governor`) — la
+  cita original de `docs/auditoria-integral-fase8-2026-09-15.md:599`
+  (`neon-provisioning.ts:136`) ya estaba stale al momento de escribir
+  este ítem, junto con su rango "Evidencia: :126-138"; regla 2 de
+  "Pendientes — revalidar antes de arrastrar" aplicada a un ítem recién
+  nacido, no a uno arrastrado.** Dos sitios reales de construcción, no
+  uno:
+  - `src/platform/neon-provisioning.ts:144-145` — dentro de
+    `provisionTenantDatabase()`, cuando `GET .../connection_uri` responde
+    2xx pero el body no trae `uri`/`connection_uri` (caso raro, requiere
+    un 2xx con shape inesperado). **Corrección 17/09/2026 (gate
+    `architecture-governor`, segunda pasada de D-02): este es el sitio que
+    de verdad contiene la contraseña, no el de abajo** — el propio
+    docblock de `neon-provisioning.ts` (líneas 20-25) documenta que el
+    connection string completo (con password) solo viene en el body 2xx
+    de `/connection_uri`; un shape inesperado en ESE 2xx es la única forma
+    de que este `throw` arrastre esa contraseña dentro de `raw`.
+  - `src/platform/neon-provisioning.ts:101` — dentro de `neonApiFetch()`,
+    dispara con CUALQUIER respuesta non-2xx de `/connection_uri` (rate
+    limit, 401, 500 de Neon, lo que sea), no documentado por ningún
+    análisis previo. **Corrección 17/09/2026: dispara MÁS SEGUIDO que el
+    de arriba, pero un body de error de Neon no trae connection string
+    — la afirmación anterior de este ítem ("más probable") medía
+    frecuencia de disparo, no probabilidad de fuga real, y priorizaba el
+    sitio equivocado para quien encare el fix.**
+  Ambos arman el mensaje con `raw.slice(0, 300)`, donde `raw` es el body
+  de esa misma llamada. Ese error se loguea
+  COMPLETO en 2 lugares: `logger.error({ err: provisionErr, businessId
+  })` (`business.routes.ts:185`, ancla re-verificada 17/09/2026 — era
+  `:183` en la primera versión de este ítem, esa línea es
+  `finalStatus = BusinessStatus.ACTIVE;`) y la rama genérica de
+  `error.middleware.ts:115` (`logger.error({ err })`) — pino serializa
+  `err` con `message`+`stack` completos, sin filtrar. **Bloque no
+  decidido:** el fix real es en el origen — no construir NINGUNO de los
+  2 mensajes con la respuesta cruda de Neon (extraer solo lo necesario
+  para diagnosticar), o `redact` del path completo `err.message` (que
+  arrasaría el diagnóstico que la política MID-LOG-001 protege en todo
+  el resto del sistema — no es un fix aceptable solo para este caso). No
+  es parte de
+  este bloque de D-02.
 - **`JWT-TTL-COMPOSITION-DUP-001` — MEDIA-BAJA, hallazgo nuevo (17/09/2026,
   retrospectiva Waves 1-7, `auditor-estructura`, hallazgo 3).** Wave 7
   bloque 3 (`0662053`) consolidó la LECTURA de `JWT_EXPIRES_IN`
