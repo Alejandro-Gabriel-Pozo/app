@@ -223,6 +223,33 @@ sincronía real entre los dos (no hay CI compartida). Y está VERDE hoy con
 `roles-de-fabrica/page.tsx` todavía desincronizado (8 de 9) -- verde acá
 no implica que los 3 catálogos del frontend estén al día.
 
+**`CITY-LEDGER-REVERSE-ROUTE-GROUP-FREEZE-001` (17/09/2026, Wave 11 del
+plan de ejecución integral, gate `architecture-governor` en el diseño,
+**duodécimo** artefacto manual del repo -- cuenta corrida, ver la nota de
+numeración en "Contratos"):** `POST /accounts-receivable/:id/reverse` es
+la única ruta del repo con dos `authorize(Roles.X)` encadenados
+(AND-composition -- exige `MANAGEMENT` **Y** `EMISOR_NOTA_CREDITO`, ADR
+`docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §3.7). Hasta esta
+Wave solo la cuenta total (`EXPECTED_AUTHORIZE_CALL_SITES`) la protegía --
+ve que hay 2 `authorize()`, no CUÁLES grupos, así que degradar
+`EMISOR_NOTA_CREDITO` a otro grupo cualquiera dejaba el conteo intacto y
+las 7 cercas RBAC que ya existían en verde.
+`src/tests/architecture/city-ledger-reverse-route-group-freeze.test.ts`
+congela el conjunto ORDENADO de grupos exacto y, a propósito, también que
+`authorizeAny(...)` no reemplace a los dos `authorize()` encadenados --
+esa función existe justo porque `authorize(A), authorize(B)` puede
+confundirse con OR cuando en realidad es AND, y reemplazarlos por
+`authorizeAny([A, B])` reabriría en silencio la asimetría RECEPTIONIST que
+el ADR §3.7 cerró por construcción, sin que `EXPECTED_AUTHORIZE_CALL_SITES`
+lo note (cuenta `authorize(`, no `authorizeAny(`). **Deliberadamente NO
+vive en `ESCAPE_ROUTES` de `credit-note-escape-containment.test.ts`**
+(decisión del gate, 17/09/2026): esa lista es una afirmación semántica
+sobre rutas que DISPARAN el escape fiscal con Nota de Crédito, no un
+helper genérico para congelar un grupo -- `reverseTransfer()` no comparte
+código, chokepoint ni service con ese escape. Mismo criterio ya usado por
+el propio repo para `POST /credit-note-requests/:id/resolve` (ver su
+docblock en `facturacion/credit-note-requests.routes.ts`).
+
 ## Contratos — spec OpenAPI vs rutas reales
 
 Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no
@@ -343,7 +370,7 @@ nombrándola).
 **Lo que este inventario NO dice, a propósito:** quién puede pegarle a
 cada ruta (`authorize(Roles.X)`/`requireModule(...)`/`authorizePlatform(...)`
 capturan el permiso en un closure — nada legible desde `app._router.stack`;
-esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
+esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 8 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
 17 de 263 -- corrección 16/09/2026, Wave 7/D-06, ver arriba: bajó junto
@@ -353,7 +380,7 @@ con el endpoint que documentaba). Depende de `NODE_ENV` — generado con `develo
 ## Consumo — qué ruta usa quién
 
 Tercera pregunta, distinta de las dos de arriba: `docs/inventario-rutas.md`
-dice qué existe, `docs/rbac-matriz-endpoints.md` + 7 cercas dicen quién
+dice qué existe, `docs/rbac-matriz-endpoints.md` + 8 cercas dicen quién
 puede pegarle — hasta el 16/09/2026 nada decía quién la usa de verdad.
 Nació de `docs/auditoria-integral-fase14-2026-09-16.md` F14-01: 35 de 262
 endpoints medidos sin un solo consumidor conocido en `appfrontend-main`,
