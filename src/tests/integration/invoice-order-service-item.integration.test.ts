@@ -78,12 +78,15 @@ class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
 }
 
 class FakeAccountsReceivableRepo implements Pick<
-  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'
+  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId' | 'getByIdWithLock' | 'getByFinancialTransactionIdWithLock'
 > {
   async getByFinancialTransactionId(): Promise<AccountReceivable | undefined> { return undefined; }
   async getPendingByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
   async getByStayId(): Promise<AccountReceivable[]> { return []; }
   async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
+  /** Wave 12 (18/09/2026) -- guard-espejo de InvoiceService; este archivo no lo ejercita. */
+  async getByIdWithLock(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getByFinancialTransactionIdWithLock(): Promise<AccountReceivable | undefined> { return undefined; }
 }
 
 class FakeReservationRepository implements Pick<ReservationRepository, 'getById'> {

@@ -49,6 +49,11 @@ class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
     return this.rows.get(id);
   }
 
+  /** Wave 12 (18/09/2026) -- guard-espejo de InvoiceService, no ejercitado por este archivo. */
+  async getByFinancialTransactionIdWithLock(_client: SqlClient, financialTransactionId: string): Promise<AccountReceivable | undefined> {
+    return [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
+  }
+
   async markRevertedWithClient(
     _client: SqlClient,
     id: string,

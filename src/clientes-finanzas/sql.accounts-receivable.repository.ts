@@ -104,6 +104,14 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
     return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
   }
 
+  async getByFinancialTransactionIdWithLock(client: SqlClient, financialTransactionId: string): Promise<AccountReceivable | undefined> {
+    const result = await client.query<AccountsReceivableRow>(
+      `SELECT * FROM accounts_receivable WHERE financial_transaction_id = $1 FOR UPDATE`,
+      [financialTransactionId],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
+  }
+
   async markInvoiced(id: string, invoiceRef?: string | null): Promise<AccountReceivable | undefined> {
     const result = await this.sqlClient.query<AccountsReceivableRow>(
       `UPDATE accounts_receivable

@@ -950,6 +950,35 @@ export class AccountsReceivableAlreadyInvoicedError extends DomainError {
 }
 
 /**
+ * Wave 12 (18/09/2026, gate `architecture-governor`, docs/diseno-reconciliacion-city-ledger-2026-09-12.md
+ * §7.2(b)) -- guard-espejo de `ArReversalRequiresCreditNoteError`
+ * (`clientes-finanzas/accounts-receivable.service.ts`, guard 8-bis de
+ * `reverseTransfer()`, que rechaza revertir un cargo con comprobante vivo o
+ * pendiente). Ese guard protege UNA dirección de la carrera; este protege
+ * la OPUESTA -- `InvoiceService.requestInvoice()`/`requestConsolidatedInvoice()`
+ * no tomaban ningún lock sobre `accounts_receivable` antes de pedir un CAE
+ * real a AFIP, así que ninguna de las dos rechazaba emitir un comprobante
+ * contra un cargo que `reverseTransfer()` ya había revertido -- en el
+ * camino individual esto ni siquiera dependía de una carrera de verdad
+ * (`resolveAccountsReceivableWarning()` nunca consulta `accounts_receivable`
+ * para el CHARGE contra la empresa, por diseño de §9.4, así que el mismo
+ * hueco es alcanzable en cualquier momento posterior a la reversa, no solo
+ * en una ventana de concurrencia). Se lanza ANTES de pedir el CAE (dentro
+ * de la transacción pre-AFIP que cada camino ya abre) -- nunca hay un
+ * comprobante huérfano que mandar a revisión manual, a diferencia del
+ * escape con Nota de Crédito (ahí el CAE ya existe para cuando se puede
+ * re-verificar).
+ */
+export class AccountsReceivableReversedCannotInvoiceError extends DomainError {
+  constructor(accountsReceivableId: string) {
+    super(
+      `La cuenta por cobrar "${accountsReceivableId}" fue revertida -- no se puede facturar un cargo ya revertido.`,
+      'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE',
+    );
+  }
+}
+
+/**
  * `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` (11/09/2026, gate
  * `architecture-governor`) — guard cruzado en
  * `InvoiceService.requestInvoice()` (camino INDIVIDUAL): el

@@ -135,6 +135,24 @@ export interface AccountsReceivableRepository {
   getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined>;
 
   /**
+   * Wave 12 (18/09/2026, gate `architecture-governor`, docs/diseno-reconciliacion-city-ledger-2026-09-12.md
+   * §7.2(b)) -- mismo contrato que `getByIdWithLock` (bloquea la fila
+   * dentro de una transacción ya abierta), indexado por
+   * `financial_transaction_id` en vez de `id`: `InvoiceService.requestInvoice()`
+   * (camino individual) solo tiene el id del CHARGE que va a facturar, no
+   * el id de la fila `accounts_receivable` -- pedirle que resuelva primero
+   * `getByFinancialTransactionId()` (sin lock) y recién después
+   * `getByIdWithLock()` (con el id ya resuelto) abriría de nuevo la misma
+   * ventana que este método cierra. Es el guard-espejo de guard 8-bis de
+   * `reverseTransfer()` (`accounts-receivable.service.ts` ~`:872-886`,
+   * que rechaza revertir un cargo con comprobante vivo/pendiente): guard
+   * 8-bis protege esa dirección, este método protege la opuesta -- emitir
+   * contra un cargo ya revertido. A lo sumo una fila (mismo índice único
+   * que `getByFinancialTransactionId`).
+   */
+  getByFinancialTransactionIdWithLock(client: SqlClient, financialTransactionId: string): Promise<AccountReceivable | undefined>;
+
+  /**
    * PENDIENTE_FACTURAR → FACTURADO. No-op (retorna undefined) si no está
    * en ese estado. `invoiceRef` opcional (F1-Pieza 3) -- N° de
    * comprobante anotado a mano, no genera ninguna factura real.

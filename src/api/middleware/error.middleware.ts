@@ -312,6 +312,11 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESOURCE_OCCUPIED':
     case 'RESOURCE_NOT_READY_FOR_CHECKIN':
     case 'CUSTOMER_RATE_CONFLICT':
+    // Wave 12 (18/09/2026, gate architecture-governor, §7.2(b)) -- ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE
+    // entra al mismo grupo que ACCOUNTS_RECEIVABLE_ALREADY_INVOICED de acá abajo: precondición de estado del
+    // recurso (AR ya revertida) no cumplida, request bien formado. Guard-espejo de los 3 AR_REVERSAL_* de acá
+    // abajo (esos rechazan revertir con comprobante vivo; este rechaza facturar con cargo revertido).
+    //
     // Bloque 3c-ii (14/09/2026, gate architecture-governor, Finding B) --
     // los 3 códigos de reverseTransfer() que NO son "documento fiscal ya
     // emitido" (ver AR_REVERSAL_REQUIRES_CREDIT_NOTE, grupo 422 más
@@ -322,6 +327,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'NO_BALANCE_TO_TRANSFER':
     case 'STAY_BALANCE_OWED':
     case 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED':
+    case 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE':
     case 'AR_REVERSAL_MISSING_GUEST_LINK':
     case 'AR_REVERSAL_MISSING_COMPANY_LINK':
     case 'AR_REVERSAL_CHARGE_NOT_SETTLED':

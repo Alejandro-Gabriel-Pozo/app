@@ -171,13 +171,16 @@ class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
 
 /** Ninguna de las dos órdenes de este archivo tiene cliente empresa -- nada que buscar/marcar. */
 class FakeAccountsReceivableRepo implements Pick<
-  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'
+  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId' | 'getByIdWithLock' | 'getByFinancialTransactionIdWithLock'
 > {
   async getByFinancialTransactionId(): Promise<AccountReceivable | undefined> { return undefined; }
   async getPendingByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
   /** §9.4 (13/09/2026) -- exposición de AR viva en `requestInvoice()`; este archivo no la ejercita. */
   async getByStayId(): Promise<AccountReceivable[]> { return []; }
   async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
+  /** Wave 12 (18/09/2026) -- guard-espejo de InvoiceService; este archivo no lo ejercita. */
+  async getByIdWithLock(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getByFinancialTransactionIdWithLock(): Promise<AccountReceivable | undefined> { return undefined; }
 }
 
 /** Los ítems de este archivo son PRODUCT -- `resolveOrderItemLine` nunca llama a esto. */

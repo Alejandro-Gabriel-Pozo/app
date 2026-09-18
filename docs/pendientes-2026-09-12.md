@@ -2906,6 +2906,129 @@ futuros, cada uno con su propio alcance.
   aplica `.zulu`/`.zulu-shell-dark`). El `<h1>` y el subtítulo quedan
   casi ilegibles. Calculado por el gate, no medido en navegador —
   confirmar visualmente antes de priorizar el fix.
+- **`INVOICE-CONSOLIDATED-RETRY-AR-GAP-001`** (18/09/2026, Wave 12 del plan
+  de ejecución integral, gate `architecture-governor` -- hallazgo
+  encontrado por `erp-audit-orchestrator` al reconstruir el circuito de
+  §7.2(b), reclasificado por el gate como más grave de lo que la
+  reconstrucción inicial describía). **Consecuencia, no mecanismo:** una
+  empresa cuyo primer intento de "Facturar ahora" quedó `REJECTED` (AFIP
+  rechazó el comprobante) o `PENDING` (el proceso murió antes de la
+  respuesta de AFIP) y se reintenta CON ÉXITO **nunca más puede volver a
+  facturarse por el camino consolidado -- ni ese lote, ni ningún lote
+  futuro con un set de cargos distinto** -- sin intervención manual en la
+  base de datos.
+  **Mecanismo:** `InvoiceService.requestConsolidatedInvoice()`
+  (`invoice.service.ts:778-779`, verificado contra el árbol post-Wave-12 --
+  regla 2 de "Pendientes — revalidar antes de arrastrar" aplicada a esta
+  misma entrada antes de cerrarla) resuelve idempotencia por
+  `idempotencyKey` ANTES del loop que marca cada `accounts_receivable`
+  como `FACTURADO` (`:941`, mismo criterio de re-chequeo). Si
+  `getByIdempotencyKey()` encuentra la factura ya emitida por un intento
+  anterior, `retryExisting()` (definido en `:1478`) reemite el CAE si hace
+  falta y retorna -- **sin pasar nunca por el loop que marca AR
+  `FACTURADO`**.
+  Las filas quedan `PENDIENTE_FACTURAR` para siempre pese a tener un CAE
+  real vinculado. Y como `getInvoicedFinancialTransactionIds()`
+  (`:793`, guard anti double-billing) SÍ ve esas filas como ya vinculadas
+  a una factura (vía `invoice_charges`, sin filtrar por status desde el
+  fix del 11/09/2026), **cualquier intento posterior de consolidar esa
+  empresa con un set de cargos distinto rechaza con
+  `AccountsReceivableAlreadyInvoicedError`** -- el camino consolidado
+  queda inutilizado para esa empresa hasta que alguien corrija la BD a
+  mano.
+  **Por qué es un hallazgo propio, no parte de Wave 12:** no tiene nada
+  que ver con `reverseTransfer()` ni con ninguna reversa -- es 100%
+  alcanzable sin que exista ninguna AR revertida jamás. Nace del mismo
+  bloque de reconstrucción que encontró §7.2(b) (de ahí que se registre
+  junto a los demás hallazgos del gate), pero es un defecto independiente
+  con su propio blast radius (bloqueo permanente de facturación
+  consolidada), no una variante del hueco de doble-CAE que Wave 12 cierra.
+  **No implementado.** Diseño no encarado todavía -- candidatos
+  superficiales sin decidir: mover el loop de `markInvoiced()` a que
+  también corra dentro de `retryExisting()` (mismo riesgo de "no se armó
+  una factura parcial en silencio" que ya rige el resto del método, ver
+  R15), o hacer que `getInvoicedFinancialTransactionIds()` distinga "ya
+  vinculado a UNA factura ISSUED con AR sin marcar" (bug a reparar) de
+  "ya vinculado a otra consolidada en curso" (double-billing real) --
+  ninguna decidida, ninguna diseñada.
+- **`AR-LOCK-ORDER-DOCTRINE-001`** (18/09/2026, Wave 12, gate
+  `architecture-governor`). Al implementar el guard-espejo de §7.2(b) se
+  reprodujo un DEADLOCK real contra Postgres (log real: dos procesos, uno
+  esperando el `ShareLock` que el otro sostiene y viceversa) entre
+  `AccountsReceivableService.reverseTransfer()` y
+  `InvoiceService.requestConsolidatedInvoice()`/`requestInvoice()`, porque
+  el guard nuevo lockeaba `accounts_receivable` DESPUÉS de los locks de
+  `orders`/`reservations` ya existentes, mientras `reverseTransfer()`
+  lockea la AR PRIMERO (O2F2-A) y recién después inserta las 2 filas
+  `ADJUSTMENT` compensatorias -- ese INSERT hereda `reservation_id` del
+  `CHARGE` original y toma un lock `FOR KEY SHARE` IMPLÍCITO sobre esa
+  fila de `reservations` (chequeo de la FK). Corregido reordenando los dos
+  guards nuevos para que lockeen la AR PRIMERO, dentro de su transacción
+  (`invoice.service.ts:656`/`:875` al momento de este commit -- re-chequear
+  antes de citarlo como fijo, regla 2 de "Pendientes — revalidar antes de
+  arrastrar"). Verificado
+  con 5 corridas consecutivas del test de carrera real contra Postgres
+  (`invoice-accounts-receivable-reversed-guard.integration.test.ts`), cero
+  deadlocks.
+  **El fix converge en una regla que ya era unánime en el código, no
+  inventa una nueva:** los 4 sitios de lock de una fila `accounts_receivable`
+  ya existentes (`accounts-receivable.service.ts:661` `markCollected`,
+  `:852` `reverseTransfer` O2F2-A, y los 2 nuevos de `invoice.service.ts`)
+  lockean la AR como PRIMERA operación de su transacción.
+  **Pero hay una excepción real, no auditada hasta este hallazgo, que deja
+  la regla frágil en vez de garantizada:**
+  `AccountsReceivableService.transferStayBalanceToReceivable()`
+  (`accounts-receivable.service.ts:316`) hace el orden INVERSO --
+  lockea `reservations` PRIMERO, escribe `accounts_receivable` DESPUÉS --
+  con un comentario propio que nombra explícitamente a `requestInvoice()`
+  como la operación contra la que serializa. Hoy no deadlockea porque su
+  toque de AR es un INSERT de una fila nueva (nunca espera un `FOR UPDATE`
+  de una fila existente) -- la seguridad es incidental, no estructural.
+  **Consecuencia, no mecanismo:** el día que alguien agregue un
+  `getByIdWithLock`/`UPDATE` de una AR EXISTENTE dentro de
+  `transferStayBalanceToReceivable()` (o de cualquier otra transacción que
+  lockee `reservations` primero), el mismo ciclo de deadlock que este
+  bloque acaba de cerrar vuelve a abrirse, en silencio, sin que ningún
+  test lo prediga -- no hay ninguna cerca automática que lo detecte hoy.
+  **No implementado, no decidido:** si esto amerita una doctrina de orden
+  de locks documentada explícitamente en un lugar central (ej. un ADR o
+  una sección de `CLAUDE.md`), o si alcanza con dejar el hallazgo acá y
+  confiar en que quien toque `transferStayBalanceToReceivable()` relea
+  este ítem primero (regla 1/2 de "Pendientes — revalidar antes de
+  arrastrar" ya exige releer anclas al arrastrar, no alcanza para
+  detectar un lock nuevo agregado sin tocar este archivo). Nota de paso,
+  sin resolver, encontrada al verificar esto: `invoice.repository.ts:112`
+  cita `accounts-receivable.service.ts:169` para el hardcode de
+  `type: 'CHARGE'` -- la línea real hoy es `:484` (mismo modo de falla que
+  `SCHEMA-ANCHOR-DRIFT-001`, no corregido acá, fuera de alcance de este
+  bloque).
+- **`ESLINT-NO-FALLTHROUGH-COMMENT-ACCIDENT-001`** (18/09/2026, Wave 12,
+  gate `architecture-governor`). `src/api/middleware/error.middleware.ts`
+  tiene varios bloques de comentario largo entre dos `case` de un mismo
+  `switch`, con la convención declarada in-line "el comentario va acá
+  arriba, no entre los case (no-fallthrough, ver bloque 402)". Al agregar
+  una línea de `case` nueva con su propio comentario explicativo DESPUÉS
+  de uno de esos bloques (en vez de antes), `npm run lint` empezó a fallar
+  con `Expected a 'break' statement before 'case'`. Investigado leyendo
+  `node_modules/eslint/lib/rules/no-fallthrough.js` directo: la regla
+  exime un `case` vacío seguido de un salto de línea grande solo si el
+  ÚLTIMO comentario inmediatamente antes del siguiente `case` matchea el
+  patrón `/falls?\s?through/iu` ("fall" + espacio opcional + "through").
+  El bloque de comentario existente lintea limpio PORQUE termina con la
+  frase "(no-fallthrough, ...)" -- la palabra "fallthrough" (sin espacio)
+  matchea ese regex por accidente, no porque alguien haya puesto
+  deliberadamente un marcador `// falls through`. La "protección" de esta
+  convención depende de que el ÚLTIMO comentario antes de cada `case`
+  siga terminando, casualmente, con esa palabra -- reescribir cualquiera
+  de esos bloques (o insertar un comentario nuevo DESPUÉS, como pasó acá)
+  rompe el build sin que nadie entienda por qué a simple vista. Mitigado
+  en este commit insertando el comentario nuevo ANTES del existente (así
+  el último comentario sigue siendo el que ya "funcionaba"), no arreglando
+  el mecanismo. **No implementado, no decidido:** si conviene un
+  `// falls through` explícito y deliberado en cada uno de estos puntos
+  (o `allowEmptyCase: true` en la config de la regla, que cambiaría el
+  comportamiento para TODO el repo, no solo estos casos) -- ninguna de las
+  dos opciones decidida ni evaluada todavía.
 
 ---
 

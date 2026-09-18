@@ -55,6 +55,7 @@ import {
   InvoiceAlreadyLinkedByOtherPathError,
   OrderCancelledCannotInvoiceError,
   ReservationCancelledCannotInvoiceError,
+  AccountsReceivableReversedCannotInvoiceError,
   OrderInvoiceHasNoLinesError,
   CreditNoteCapExceededError,
   CreditNotePairCapExceededError,
@@ -214,7 +215,23 @@ export class InvoiceService {
      */
     private readonly accountsReceivableRepo: Pick<
       AccountsReceivableRepository,
-      'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'
+      | 'getByFinancialTransactionId'
+      | 'markInvoiced'
+      | 'getPendingByCompanyCustomerId'
+      | 'getByStayId'
+      /**
+       * Wave 12 (18/09/2026, gate `architecture-governor`, §7.2(b)) --
+       * `getByIdWithLock`/`getByFinancialTransactionIdWithLock` cierran la
+       * ventana que el lock de `reverseTransfer()` sobre `accounts_receivable`
+       * NO cubre: ninguno de los dos caminos de emisión tomaba ese lock, así
+       * que ninguno se enteraba de una reversa ya commiteada (o, en el
+       * camino individual, ni siquiera necesitaba una carrera -- el cargo
+       * de la empresa nunca lleva `stayId`, así que `resolveAccountsReceivableWarning()`
+       * nunca consultaba `accounts_receivable` para él). Ver el guard dentro
+       * de cada `transactionManager.run()` más abajo.
+       */
+      | 'getByIdWithLock'
+      | 'getByFinancialTransactionIdWithLock'
     >,
     /**
      * I9 (24/08/2026, pendientes-2026-08-24.md) — invoices es DOCUMENTO
@@ -605,6 +622,45 @@ export class InvoiceService {
     // falla a mitad de camino.
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {
+      // Wave 12 (18/09/2026, gate `architecture-governor`, §7.2(b) --
+      // orden corregido tras reproducir un DEADLOCK real contra Postgres,
+      // ver el bloque gemelo en `requestConsolidatedInvoice()` para el
+      // detalle completo del log real) -- guard-espejo de guard 8-bis de
+      // `reverseTransfer()` (`accounts-receivable.service.ts`
+      // ~`:872-886`, que rechaza revertir un cargo con comprobante
+      // vivo/pendiente). Ninguna otra línea de este método consulta
+      // `accounts_receivable` para EL cargo que se está facturando --
+      // `resolveAccountsReceivableWarning()` (arriba, antes de esta tx)
+      // mira la ESTADÍA del cargo, no el cargo mismo, y ni siquiera corre
+      // para el CHARGE de una empresa (nunca lleva `stayId`, por diseño de
+      // §9.4 -- ver su docblock). Sin este guard, `input.financialTransactionId`
+      // podía pertenecer a una AR ya `REVERTIDO` y este método igual pedía
+      // un CAE real -- no una carrera: alcanzable en cualquier momento
+      // después de la reversa, no solo en una ventana de concurrencia.
+      //
+      // PRIMERA operación de la transacción a propósito -- no puede ir
+      // después de los locks de `orders`/`reservations` de abajo, mismo
+      // motivo que en `requestConsolidatedInvoice()`: `reverseTransfer()`
+      // ya lockea la AR PRIMERO (O2F2-A) y DESPUÉS inserta las 2 filas
+      // `ADJUSTMENT` compensatorias (heredan `reservation_id` del `CHARGE`
+      // original), lo que toma un lock `FOR KEY SHARE` IMPLÍCITO sobre esa
+      // fila de `reservations` (chequeo de la FK). Si este guard corriera
+      // DESPUÉS del lock de `reservations` de RESERVA-10, dos conexiones
+      // reales podrían deadlockearse: esta tx sosteniendo
+      // `reservations FOR UPDATE` y esperando la AR, mientras
+      // `reverseTransfer()` sostiene la AR y espera esa MISMA fila de
+      // `reservations`. Lockeando la AR PRIMERO acá también, los dos
+      // caminos conviven con el MISMO orden global (AR antes que
+      // reservations/orders) -- el que pierde la carrera bloquea solo en
+      // la AR, nunca hay ciclo.
+      const arForCharge = await this.accountsReceivableRepo.getByFinancialTransactionIdWithLock(
+        client,
+        input.financialTransactionId,
+      );
+      if (arForCharge && arForCharge.status === 'REVERTIDO') {
+        throw new AccountsReceivableReversedCannotInvoiceError(arForCharge.id);
+      }
+
       // ORDER-10 (05/09/2026, architecture-governor) -- cierre de la
       // ventana TOCTOU con `OrderService.cancelOrder()`. Ambas rutas
       // toman el MISMO lock (`orders`, `FOR UPDATE`) antes de decidir:
@@ -612,9 +668,8 @@ export class InvoiceService {
       // sobre la misma orden podían entrelazarse -- la cancelación lee
       // "sin factura todavía" mientras la facturación, un instante
       // después, todavía no vio la orden CANCELLED -- y las dos avanzan.
-      // Primera operación de la transacción a propósito: si la orden ya
-      // está CANCELLED, no tiene sentido llegar a crear la fila de
-      // `invoices` para después descartarla con el rollback.
+      // Si la orden ya está CANCELLED, no tiene sentido llegar a crear la
+      // fila de `invoices` para después descartarla con el rollback.
       if (tx.orderId != null) {
         const order = await this.orderRepo.getByIdForUpdate(client, tx.orderId);
         if (order && order.status === 'CANCELLED') {
@@ -772,11 +827,63 @@ export class InvoiceService {
     const invoiceId = randomUUID();
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {
-      // FACT-CONSOL-TOCTOU-01 -- primera operación de la transacción a propósito, mismo
-      // criterio que el guard de `requestInvoice()`: si alguna ya está
-      // CANCELLED no tiene sentido llegar a crear la fila de `invoices`
-      // para después descartarla con el rollback. Rechaza el LOTE ENTERO
-      // ante la primera que falle -- ver docblock del método.
+      // Wave 12 (18/09/2026, gate `architecture-governor`, §7.2(b) -- orden
+      // corregido tras reproducir un DEADLOCK real contra Postgres, ver
+      // abajo) -- guard-espejo de guard 8-bis de `reverseTransfer()`,
+      // generalizado al LOTE: `pending` se leyó UNA vez, sin lock, al
+      // principio de este método (arriba) -- si `reverseTransfer()`
+      // revirtió alguna de esas filas mientras tanto (entre esa lectura y
+      // el COMMIT de esta tx), este método igual pedía un CAE real
+      // cubriendo un cargo ya revertido, y el `markInvoiced()` best-effort
+      // de más abajo fallaba mudo para esa fila sin que nadie se enterara.
+      // Re-lockea cada AR del lote por SU id, en orden ascendente (mismo
+      // motivo que `orderIds`/`reservationIds` abajo: dos consolidadas
+      // concurrentes que compartieran una AR nunca se deadlockean entre
+      // sí). Rechaza el LOTE ENTERO ante la primera revertida -- misma
+      // política que los guards de abajo y que el guard de double-billing
+      // más arriba en este método ("no se arma una factura parcial en
+      // silencio", R15). Se chequea específicamente `REVERTIDO` (no
+      // "cualquier estado distinto de PENDIENTE_FACTURAR"): FACTURADO/
+      // COBRADO ya están excluidos por el guard de double-billing que
+      // corrió antes de abrir esta transacción -- REVERTIDO es la única
+      // transición nueva alcanzable en esta ventana.
+      //
+      // PRIMERA operación de la transacción a propósito -- no por
+      // simetría con el resto de esta lista, sino porque NO puede ir
+      // después del lock de `reservations` de abajo. `reverseTransfer()`
+      // ya lockea la AR PRIMERO (O2F2-A, `accounts-receivable.service.ts`
+      // ~`:850-852`, "Lock de la AR PRIMERO -- serializa contra un
+      // markCollected() o un reverseTransfer() concurrentes") y DESPUÉS
+      // inserta las 2 filas `ADJUSTMENT` compensatorias, que heredan
+      // `reservation_id` del `CHARGE` original -- ese INSERT toma un lock
+      // `FOR KEY SHARE` IMPLÍCITO sobre esa fila de `reservations` (chequeo
+      // de la FK). Con el guard de AR corriendo DESPUÉS del lock de
+      // `reservations` (versión anterior de este bloque), dos conexiones
+      // reales podían deadlockearse de verdad: esta tx sosteniendo
+      // `reservations FOR UPDATE` y esperando la AR, mientras
+      // `reverseTransfer()` sostenía la AR y esperaba esa MISMA fila de
+      // `reservations` (vía el INSERT del ADJUSTMENT) -- reproducido
+      // contra Postgres real
+      // (`invoice-accounts-receivable-reversed-guard.integration.test.ts`,
+      // log real: "Process ... waits for ShareLock ...; blocked by
+      // process ...", con el `INSERT INTO financial_transactions` de un
+      // lado y el `SELECT ... FOR UPDATE` de `accounts_receivable` del
+      // otro). Lockeando la AR PRIMERO acá también, los dos caminos
+      // conviven con el MISMO orden global (AR antes que reservations),
+      // así que el que pierde la carrera bloquea solo en la AR -- nunca
+      // hay ciclo.
+      for (const accountsReceivableId of [...pending.map((ar) => ar.id)].sort()) {
+        const ar = await this.accountsReceivableRepo.getByIdWithLock(client, accountsReceivableId);
+        if (ar && ar.status === 'REVERTIDO') {
+          throw new AccountsReceivableReversedCannotInvoiceError(ar.id);
+        }
+      }
+
+      // FACT-CONSOL-TOCTOU-01 -- mismo criterio que el guard de
+      // `requestInvoice()`: si alguna ya está CANCELLED no tiene sentido
+      // llegar a crear la fila de `invoices` para después descartarla con
+      // el rollback. Rechaza el LOTE ENTERO ante la primera que falle --
+      // ver docblock del método.
       for (const orderId of orderIds) {
         const order = await this.orderRepo.getByIdForUpdate(client, orderId);
         if (order && order.status === 'CANCELLED') {

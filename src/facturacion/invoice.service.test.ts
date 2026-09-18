@@ -382,10 +382,24 @@ class FakeTransactionManager implements TransactionManager {
 
 /** C1-Fase C -- Pick angosto, mismo que usa InvoiceService (bounded contexts). */
 class FakeAccountsReceivableRepo
-  implements Pick<AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'>
+  implements Pick<
+    AccountsReceivableRepository,
+    'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId' | 'getByIdWithLock' | 'getByFinancialTransactionIdWithLock'
+  >
 {
   public rows = new Map<string, AccountReceivable>();
   public markInvoicedCalls: { id: string; invoiceRef: string | null | undefined }[] = [];
+  /**
+   * Wave 12 (18/09/2026) -- simula la ventana de carrera real: una fila que
+   * en la lectura INICIAL (sin lock, `getByFinancialTransactionId()`/
+   * `getPendingByCompanyCustomerId()`) todavía está PENDIENTE_FACTURAR,
+   * pero para cuando el código bajo test toma el lock
+   * (`getByIdWithLock()`/`getByFinancialTransactionIdWithLock()`) ya fue
+   * revertida por una `reverseTransfer()` concurrente -- exactamente la
+   * interleaving que el guard nuevo tiene que atajar. Un test popula este
+   * Set con los ids que "se reviertan justo al lockear".
+   */
+  public revertOnLock = new Set<string>();
 
   async getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined> {
     return [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
@@ -406,6 +420,23 @@ class FakeAccountsReceivableRepo
     const updated: AccountReceivable = { ...ar, status: 'FACTURADO', invoiceRef: invoiceRef ?? null };
     this.rows.set(id, updated);
     return updated;
+  }
+  /** Wave 12 (18/09/2026) -- ver `revertOnLock` arriba. */
+  async getByIdWithLock(_client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
+    this.applyRevertOnLock(id);
+    return this.rows.get(id);
+  }
+  /** Wave 12 (18/09/2026) -- guard-espejo del camino individual, ver `revertOnLock` arriba. */
+  async getByFinancialTransactionIdWithLock(_client: SqlClient, financialTransactionId: string): Promise<AccountReceivable | undefined> {
+    const ar = [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
+    if (ar) this.applyRevertOnLock(ar.id);
+    return this.rows.get(ar?.id ?? '');
+  }
+  private applyRevertOnLock(id: string): void {
+    if (!this.revertOnLock.has(id)) return;
+    const ar = this.rows.get(id);
+    if (!ar) return;
+    this.rows.set(id, { ...ar, status: 'REVERTIDO' });
   }
 }
 
@@ -2324,6 +2355,75 @@ describe('InvoiceService', () => {
       expect(getByStayIdSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('Wave 12 (18/09/2026, gate `architecture-governor`, docs/diseno-reconciliacion-city-ledger-2026-09-12.md §7.2(b)) -- guard-espejo de guard 8-bis: no facturar un CHARGE ya revertido', () => {
+    function makeArRow(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+      return {
+        id: 'ar-1', businessId: 'biz-1', stayId: 'stay-1', companyCustomerId: 'cust-empresa',
+        amount: 15000, currency: 'ARS', status: 'PENDIENTE_FACTURAR', transferredBy: 'user-1',
+        financialTransactionId: 'ft-1',
+        ...overrides,
+      };
+    }
+
+    it('CHARGE con AR REVERTIDO -- rechaza ANTES de pedir el CAE, no crea la fila invoices', async () => {
+      arRepo.rows.set('ar-1', makeArRow({ status: 'REVERTIDO' }));
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }), // sin stayId -- el CHARGE de empresa nunca lo lleva (§9.4)
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE' });
+
+      expect(createNextVoucher).not.toHaveBeenCalled();
+      expect(invoiceRepo.invoices.size).toBe(0);
+    });
+
+    it('CHARGE con AR PENDIENTE_FACTURAR (no revertida) -- NO bloquea, factura normal', async () => {
+      arRepo.rows.set('ar-1', makeArRow());
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(createNextVoucher).toHaveBeenCalledOnce();
+    });
+
+    it('CHARGE sin ninguna fila accounts_receivable vinculada -- NO bloquea (caso normal, la mayoría de las facturas)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+    });
+
+    it('interleaving real: AR PENDIENTE_FACTURAR en la lectura inicial, revertida justo al lockear -- igual rechaza (no es una carrera evitable con una sola lectura)', async () => {
+      arRepo.rows.set('ar-1', makeArRow());
+      arRepo.revertOnLock.add('ar-1'); // simula reverseTransfer() commiteando entre la lectura inicial y el lock
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE' });
+
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2750,6 +2850,53 @@ describe('InvoiceService — C1-Fase C', () => {
         expect(invoice.status).toBe('ISSUED');
         expect(orderRepo.lockCalls).toEqual([]);
         expect(reservationRepo.lockCalls).toEqual([]);
+      });
+    });
+
+    describe('Wave 12 (18/09/2026, gate `architecture-governor`, §7.2(b)) -- guard-espejo de guard 8-bis, generalizado al LOTE: rechaza todo el lote si CUALQUIER AR pendiente ya fue revertida', () => {
+      it('interleaving real: las N AR están PENDIENTE_FACTURAR en la lectura inicial (getPendingByCompanyCustomerId, sin lock), una se revierte justo al re-lockear -- rechaza TODO el lote, no pide CAE, no toca la otra fila', async () => {
+        // Ojo con el orden: si una AR ya estuviera REVERTIDO ANTES de la
+        // lectura inicial, `getPendingByCompanyCustomerId()` (que sí filtra
+        // por status, igual que el repo SQL real) ni siquiera la traería a
+        // `pending` -- ese caso no necesita este guard, se resuelve solo. El
+        // hueco real que Wave 12 cierra es la ventana ENTRE esa lectura sin
+        // lock y el re-lock dentro de la tx -- `revertOnLock` simula
+        // exactamente eso: la fila está PENDIENTE_FACTURAR cuando
+        // `getPendingByCompanyCustomerId()` la lee, y pasa a REVERTIDO recién
+        // cuando el guard nuevo la re-lockea con `getByIdWithLock()`.
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 50 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50 })],
+        ]);
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+        const { service, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+        arRepo.revertOnLock.add('ar-2'); // simula reverseTransfer() commiteando entre getPendingByCompanyCustomerId() y el re-lock
+
+        await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
+          .rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE' });
+
+        expect(createNextVoucher).not.toHaveBeenCalled();
+        expect(arRepo.rows.get('ar-1')!.status).toBe('PENDIENTE_FACTURAR'); // no tocada -- el lote entero se rechazó antes de crear la fila invoices
+      });
+
+      it('ninguna AR revertida -- factura normal, sin falso positivo', async () => {
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 50 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50 })],
+        ]);
+        const { service } = buildConsolidatedService({ pending, txs });
+
+        const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
       });
     });
   });
