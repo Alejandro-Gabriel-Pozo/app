@@ -68,6 +68,36 @@ export function canonicalInvoiceLockOrder<T>(items: readonly T[], getInvoiceId: 
   return [...items].sort((a, b) => getInvoiceId(a).localeCompare(getInvoiceId(b)));
 }
 
+/**
+ * ACCOUNTS-RECEIVABLE-LOCK-ORDER-001 (Wave 13, Zona 2, 21/09/2026, gate
+ * `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md
+ * §3.1/§3.3) -- mismo problema que `canonicalInvoiceLockOrder()` de arriba,
+ * generalizado a `accounts_receivable`: el guard fresco de
+ * `InvoiceService.requestConsolidatedInvoice()` y el guard de retry de
+ * `InvoiceService.assertChargesStillInvoiceable()` son los dos únicos
+ * sitios que lockean más de una fila de `accounts_receivable` en la misma
+ * transacción -- si ordenaran distinto, dos transacciones concurrentes que
+ * comparten cargos podrían esperarse en ciclo (Postgres 40P01).
+ * `src/tests/architecture/accounts-receivable-lock-order.test.ts` es la
+ * cerca eléctrica que fuerza a que un tercer sitio nuevo pase por acá.
+ *
+ * Ascendente por `localeCompare` -- equivalente a `.sort()` default para el
+ * alfabeto real: `accounts_receivable.id` tiene un único generador en todo
+ * el repo (`AccountsReceivableService.transferStayBalanceToReceivable()`,
+ * `id: randomUUID()`), así que todo valor que este comparador ordena es un
+ * UUID v4 en minúscula, largo fijo -- para ese alfabeto los dos
+ * comparadores reducen a comparación posicional de hex y coinciden
+ * siempre (mismo argumento que `canonicalInvoiceLockOrder()`, corregido acá
+ * para no repetir la imprecisión "ASCII" que tuvo la ronda 1 de este
+ * diseño).
+ */
+export function canonicalAccountsReceivableLockOrder<T>(
+  items: readonly T[],
+  getAccountsReceivableId: (item: T) => string,
+): T[] {
+  return [...items].sort((a, b) => getAccountsReceivableId(a).localeCompare(getAccountsReceivableId(b)));
+}
+
 export interface CappedPaymentApplication {
   invoiceId: string;
   requestedAmount: number;

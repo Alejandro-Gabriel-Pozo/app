@@ -400,6 +400,16 @@ class FakeAccountsReceivableRepo
    * Set con los ids que "se reviertan justo al lockear".
    */
   public revertOnLock = new Set<string>();
+  /** Wave 13, Zona 2 (21/09/2026) -- ids de AR lockeados vía `getByIdWithLock()`,
+   *  EN ORDEN, para verificar que `assertChargesStillInvoiceable()` los
+   *  lockea siguiendo `canonicalAccountsReceivableLockOrder()`, no el orden
+   *  de entrada. Mismo patrón que `FakeMultiOrderRepository`/
+   *  `FakeMultiReservationRepository.lockCalls` (agregado no invasivo --
+   *  las 2 aserciones de Wave 12 que ya usan este fake, en los describe
+   *  "Wave 12" del camino individual y del consolidado -- cita por
+   *  nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001, siguen sin leer
+   *  este campo). */
+  public lockCalls: string[] = [];
 
   async getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined> {
     return [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
@@ -423,6 +433,7 @@ class FakeAccountsReceivableRepo
   }
   /** Wave 12 (18/09/2026) -- ver `revertOnLock` arriba. */
   async getByIdWithLock(_client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
+    this.lockCalls.push(id);
     this.applyRevertOnLock(id);
     return this.rows.get(id);
   }
@@ -2424,6 +2435,117 @@ describe('InvoiceService', () => {
       expect(createNextVoucher).not.toHaveBeenCalled();
     });
   });
+
+  describe('Wave 13, Zona 2 (21/09/2026, gate `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md) -- CHARGE-STATE-GUARD-001: retryExisting() re-chequea el estado antes de reintentar (camino individual)', () => {
+    function makeArRow(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+      return {
+        id: 'ar-1', businessId: 'biz-1', stayId: 'stay-1', companyCustomerId: 'cust-empresa',
+        amount: 100, currency: 'ARS', status: 'PENDIENTE_FACTURAR', transferredBy: 'user-1',
+        financialTransactionId: 'ft-1',
+        ...overrides,
+      };
+    }
+
+    /** Comprobante ya existente con idempotencyKey `invoice:ft-1` -- mismo
+     *  formato exacto que `requestInvoice()` arma (cita por nombre, no
+     *  línea, desde SCHEMA-ANCHOR-DRIFT-001), para que
+     *  `getByIdempotencyKey()` lo encuentre y la llamada entre por
+     *  `retryExisting()` (fast-path), no por el camino fresco. */
+    function seedRetriableInvoice(overrides: Partial<Invoice> = {}): void {
+      invoiceRepo.invoices.set('inv-retry', {
+        id: 'inv-retry', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
+        afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
+        ...overrides,
+      });
+    }
+
+    it('retry individual de un CHARGE cuya AR está REVERTIDO -- lanza, no llega a issue()', async () => {
+      seedRetriableInvoice();
+      arRepo.rows.set('ar-1', makeArRow({ status: 'REVERTIDO' }));
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE' });
+
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('retry individual de un CHARGE cuya orden ya está CANCELLED -- lanza', async () => {
+      seedRetriableInvoice();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', orderId: 'ord-1' }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CANCELLED', totalAmount: 100,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: new Date(),
+          completedAt: null, servedAt: null, items: [],
+        } as unknown as Order,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toThrow(OrderCancelledCannotInvoiceError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('retry individual de un CHARGE cuya reserva ya está CANCELLED -- lanza', async () => {
+      seedRetriableInvoice();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', reservationId: 'res-1' }),
+        reservation: { id: 'res-1', status: 'CANCELLED', resource: { name: 'Mesa 1' } } as unknown as Reservation,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toThrow(ReservationCancelledCannotInvoiceError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('retry individual de un REFUND (C2/escape) -- exento a propósito, procede a issue() aunque la AR asociada esté REVERTIDO', async () => {
+      seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
+      // Si el guard nuevo mirara esto por error, este test rompería --
+      // regresión negativa de la clasificación de la fila 3 de la matriz
+      // (Apéndice I.1 del plan de ejecución integral).
+      arRepo.rows.set('ar-1', makeArRow({ status: 'REVERTIDO' }));
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', type: 'REFUND' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(createNextVoucher).toHaveBeenCalledOnce();
+    });
+
+    it('retry individual de un CHARGE limpio (sin cambios de estado) -- reintenta normal, llega a issue()', async () => {
+      seedRetriableInvoice();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(7));
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(createNextVoucher).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2897,6 +3019,100 @@ describe('InvoiceService — C1-Fase C', () => {
         const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
 
         expect(invoice.status).toBe('ISSUED');
+      });
+    });
+
+    describe('Wave 13, Zona 2 (21/09/2026, gate `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md) -- CHARGE-STATE-GUARD-001: retryExisting() re-chequea el estado antes de reintentar (camino consolidado)', () => {
+      /** Comprobante consolidado ya existente -- `idempotencyKey` arma con el
+       *  MISMO hash que `getPendingByCompanyCustomerId()` recomputa en vivo
+       *  (ambas AR siguen PENDIENTE_FACTURAR en la lectura SIN lock -- solo
+       *  se revierten al re-lockear, vía `revertOnLock`), para que
+       *  `getByIdempotencyKey()` encuentre la fila y la llamada entre por
+       *  `retryExisting()` (fast-path de `requestConsolidatedInvoice()` --
+       *  cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001), no por
+       *  el camino fresco. */
+      function seedRetriableConsolidated(
+        invoiceRepo: FakeInvoiceRepository,
+        invoiceId: string,
+        financialTransactionIds: string[],
+        overrides: Partial<Invoice> = {},
+      ): void {
+        invoiceRepo.invoices.set(invoiceId, {
+          id: invoiceId, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+          idempotencyKey: `invoice:consolidated:${hashIds(financialTransactionIds)}`,
+          environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+          cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+          impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
+          afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          paymentMethod: null, cardInstallments: null,
+          afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
+          ...overrides,
+        });
+        for (const ftId of financialTransactionIds) invoiceRepo.charges.set(ftId, invoiceId);
+      }
+
+      it('retry consolidado (2 cargos) donde 1 de 2 falla el guard -- rechaza el LOTE completo (R15), no factura ninguno', async () => {
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 40 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 40 })],
+        ]);
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+        const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+        arRepo.revertOnLock.add('ar-2'); // se revierte justo al re-lockear, ver docblock de seedRetriableConsolidated
+        seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-1', ['ft-1', 'ft-2']);
+
+        await expect(
+          service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+        ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE' });
+
+        expect(createNextVoucher).not.toHaveBeenCalled();
+        expect(arRepo.rows.get('ar-1')!.status).toBe('PENDIENTE_FACTURAR'); // no tocada -- el lote entero se rechazó
+      });
+
+      it('retry consolidado con todos los cargos limpios -- orden de lock coincide con canonicalAccountsReceivableLockOrder(), no con el orden de chargeTxs de entrada', async () => {
+        const pending = [
+          makeAr({ id: 'ar-z', financialTransactionId: 'ft-1', amount: 60 }),
+          makeAr({ id: 'ar-a', financialTransactionId: 'ft-2', amount: 40 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 40 })],
+        ]);
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(9));
+        const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+        seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-2', ['ft-1', 'ft-2']);
+
+        const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        // Orden ascendente por ar.id ("ar-a" < "ar-z"), NO el orden de
+        // chargeTxs (ft-1 -> ar-z primero, ft-2 -> ar-a segundo).
+        expect(arRepo.lockCalls).toEqual(['ar-a', 'ar-z']);
+      });
+
+      it('loadChargesForConsolidatedInvoice() con getChargeIdsForInvoice() devolviendo [] -- lanza el error de invariante roto, no no-opea', async () => {
+        const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-orphan', amount: 100 })];
+        const { service, invoiceRepo } = buildConsolidatedService({ pending, txs: new Map() });
+        // A propósito, NO se puebla invoiceRepo.charges -- simula el
+        // invariante roto (una consolidada sin ningún cargo en invoice_charges).
+        invoiceRepo.invoices.set('inv-consol-orphan', {
+          id: 'inv-consol-orphan', businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+          idempotencyKey: `invoice:consolidated:${hashIds(['ft-orphan'])}`,
+          environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+          cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+          impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
+          afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          paymentMethod: null, cardInstallments: null,
+          afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
+        });
+
+        await expect(
+          service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+        ).rejects.toThrow(/invariante roto/);
       });
     });
   });

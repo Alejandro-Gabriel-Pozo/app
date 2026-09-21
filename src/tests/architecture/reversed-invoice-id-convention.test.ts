@@ -218,3 +218,70 @@ describe('REVERSED-INVOICE-ID-CONVENTION-001 -- reversed_invoice_id sólo en fil
     }
   });
 });
+
+/** Línea de write cuyo VALOR asignado es el literal `null` -- distingue,
+ *  dentro de `WRITE_SITES`, los productores REALES de NC (valor no-nulo) de
+ *  `accounts-receivable.service.ts` (los 2 legs de `reverseTransfer()`
+ *  escriben `reversedInvoiceId: null` explícito, invariante que las
+ *  excluye de NC a propósito -- ver el comentario de `WRITE_SITES` arriba). */
+const NULL_WRITE_RE = /reversedInvoiceId:\s*null\b/;
+
+/**
+ * RETRY-EXISTING-NC-PRODUCER-SAFETY-001 (Wave 13, Zona 2, 21/09/2026, gate
+ * `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md
+ * §6) -- distinto del `it()` de arriba: esa aserción protege que
+ * `reversedInvoiceId` solo se escriba en filas REFUND/ADJUSTMENT
+ * (integridad de datos); esta protege que `InvoiceService.retryExisting()`
+ * (`assertChargesStillInvoiceable()`) pueda seguir tratando esos 2 tipos
+ * como estructuralmente exentos del guard de CHARGE -- la propiedad que
+ * hace eso seguro es que la fila nace DESPUÉS del cambio de estado que
+ * referencia, no antes (verificado para los 3 productores de hoy:
+ * `ReservationNotCancelledError` de `confirmRefund()`,
+ * `cancellation-refund.service.ts:159`; los guards de estado-ya-`CANCELLED`
+ * de los 2 orquestadores de escape, `cancel-order-with-credit-note.service.ts:247,281-290`,
+ * `cancel-reservation-with-credit-note.service.ts:297,349-371`).
+ *
+ * FALSOS NEGATIVOS PROPIOS -- NO heredados del `CHECK`
+ * `chk_financial_transactions_reversed_invoice_type` (ese solo impone
+ * `type IN ('REFUND','ADJUSTMENT')`, nada sobre CUÁNDO nace la fila
+ * respecto del cambio de estado que referencia -- la propiedad que esta
+ * cerca vigila no tiene contraparte a nivel schema):
+ *  1. Un SEGUNDO productor agregado DENTRO de un archivo ya en la
+ *     allowlist es invisible -- la cerca es a nivel archivo (mismo FN #1
+ *     de la cerca madre).
+ *  2. `NULL_WRITE_RE` es textual ("el valor asignado es el literal `null`")
+ *     -- un write vía variable (`cancellation-refund.service.ts:385`,
+ *     `reversedInvoiceId: chunk.reversedInvoiceId`) es un ejemplo YA VIVO
+ *     de esto, no hipotético: pasa la cerca porque el `chunk` se construye
+ *     con `invoice.id` (no-null) en la línea de arriba, verificado a mano,
+ *     no por el regex.
+ *  3. SQL crudo fuera del repo -- invisible, sin backstop de schema para
+ *     ESTA propiedad (a diferencia de la cerca madre, que sí tiene el
+ *     `CHECK` como mitad de datos).
+ *  4. Depende enteramente de que `buildCreditNote()` (`invoice.service.ts`,
+ *     su primera línea -- cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001)
+ *     siga siendo la ÚNICA vía de creación de una fila `invoices` para
+ *     REFUND/ADJUSTMENT y siga fallando cerrado si `reversedInvoiceId` es
+ *     falsy -- eso es lo que hace que "valor no-nulo" sea necesario para
+ *     llegar a `retryExisting()` (ver §6 del diseño). Si esa guarda se
+ *     relaja alguna vez, esta cerca deja de alcanzar sin que nada lo avise.
+ */
+const NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT = [
+  'facturacion/cancel-order-with-credit-note.service.ts',
+  'facturacion/cancel-reservation-with-credit-note.service.ts',
+  'reservas/cancellation-refund.service.ts',
+].sort();
+
+describe('RETRY-EXISTING-NC-PRODUCER-SAFETY-001 -- solo los productores con reversedInvoiceId no-nulo quedan exentos del guard de CHARGE en retryExisting()', () => {
+  it('los write sites con valor NO-nulo de reversedInvoiceId son exactamente los que assertChargesStillInvoiceable() trata como exentos', () => {
+    const nonNullSites = WRITE_SITES.filter((rel) => {
+      const code = stripComments(readFileSync(join(SRC_DIR, rel), 'utf-8'));
+      return writeLines(code).some((line) => !NULL_WRITE_RE.test(line));
+    });
+
+    expect(
+      nonNullSites.sort(),
+      'Un archivo de WRITE_SITES cambió si escribe reversedInvoiceId no-nulo. Verificá la propiedad estructural (la fila nace DESPUÉS del cambio de estado que referencia, no antes) antes de sumarlo/sacarlo de NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT -- si no la cumple, InvoiceService.retryExisting() (assertChargesStillInvoiceable()) necesita dejar de tratarlo como exento del guard de CHARGE, ver docs/diseno-invoice-retry-charge-guard-2026-09-18.md §6.',
+    ).toEqual(NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT);
+  });
+});

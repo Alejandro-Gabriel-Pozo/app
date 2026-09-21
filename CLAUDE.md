@@ -250,6 +250,43 @@ código, chokepoint ni service con ese escape. Mismo criterio ya usado por
 el propio repo para `POST /credit-note-requests/:id/resolve` (ver su
 docblock en `facturacion/credit-note-requests.routes.ts`).
 
+**`NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT` (21/09/2026, Wave 13 del plan
+de ejecución integral, gate `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md,
+**décimo tercero** artefacto manual del repo -- cuenta corrida, ver la nota
+de numeración en "Contratos"):** `InvoiceService.retryExisting()`
+(`facturacion/invoice.service.ts`) es el único punto de reentrada de los 6
+call-sites de producción que pueden pegarle a `requestInvoice()`/
+`requestConsolidatedInvoice()` -- hasta esta Wave, un reintento no
+re-chequeaba si el estado que el guard fresco protegía (AR revertida,
+orden/reserva cancelada) había cambiado entre el primer intento y el
+reintento. El guard nuevo (`assertChargesStillInvoiceable()`) cierra ese
+hueco para `CHARGE`, pero deja exentos a `REFUND`/`ADJUSTMENT` a propósito
+-- la rama de Nota de Crédito de `requestInvoice()` retorna antes del
+bloque transaccional, así que ningún guard fresco corrió nunca sobre esos
+2 tipos, para ningún productor. `tx.type` es hoy un proxy seguro de esa
+exención porque los 3 productores reales (de 6 sitios que escriben
+`type: 'REFUND'|'ADJUSTMENT'`, solo 3 pueden llegar a `retryExisting()` --
+`buildCreditNote()` (`invoice.service.ts`, primera línea del método -- cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001), exige `reversedInvoiceId`
+no-nulo, condición necesaria confirmada en el diseño) nacen DESPUÉS del
+cambio de estado que referencian, nunca antes -- verificado en código:
+`ReservationNotCancelledError` de `confirmRefund()`
+(`cancellation-refund.service.ts:159`); los guards de estado-ya-`CANCELLED`
+de los 2 orquestadores de escape
+(`cancel-order-with-credit-note.service.ts:247,281-290`,
+`cancel-reservation-with-credit-note.service.ts:297,349-371`).
+`src/tests/architecture/reversed-invoice-id-convention.test.ts`
+(`RETRY-EXISTING-NC-PRODUCER-SAFETY-001`, segundo `describe` del archivo)
+filtra la enumeración existente de `WRITE_SITES` a los que escriben un
+`reversedInvoiceId` NO-nulo y exige que ese subconjunto sea exactamente
+`NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT` -- si aparece un productor
+nuevo, falla nombrándolo y pidiendo re-derivar la propiedad estructural
+antes de sumarlo. **Distinto de `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`**
+(cerca nueva de la misma Wave, `src/tests/architecture/accounts-receivable-lock-order.test.ts`,
+mirroring `lock-order.test.ts`) -- **esa otra cerca NO entra en esta cuenta
+corrida de 12+1**, mismo criterio que `lock-order.test.ts` (su precedente
+directo) tampoco entra: dos allowlists nuevas en el mismo commit, una sola
+(`NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT`, acá arriba) se numera.
+
 ## Contratos — spec OpenAPI vs rutas reales
 
 Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no

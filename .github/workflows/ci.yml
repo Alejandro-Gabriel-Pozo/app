@@ -260,11 +260,12 @@ jobs:
   integration:
     runs-on: ubuntu-latest
 
-    # Techo explícito: 48 suites al 16/09/2026 (Wave 1 / D-21, gate
-    # `architecture-governor`) — decía "47 al 15/09/2026"; el delta +1 es
-    # `src/tests/integration/helpers/seed.test.ts`, agregado en el mismo
-    # bloque que fijó el default fijo de `seedResource()` (colisionaba con
-    # `uq_resources_name`, D-21). Contar con el MISMO glob que corre CI
+    # Techo explícito: 54 suites al 21/09/2026 (Wave 13, Zona 1 + Zona 2,
+    # gate `architecture-governor`) — decía "48 al 16/09/2026"; el delta +6
+    # son las suites nuevas agregadas entre el 16 y el 21/09 (incluye
+    # `city-ledger-double-transfer-adoption.integration.test.ts` y
+    # `invoice-retry-charge-guard.integration.test.ts`, ambas de esta
+    # Wave). Contar con el MISMO glob que corre CI
     # (`vitest.integration.config.ts:25`, `src/tests/integration/**/*.test.ts`
     # — recursivo):
     #   find src/tests/integration -name '*.test.ts' | wc -l
@@ -275,7 +276,7 @@ jobs:
     # acá y no a los 360 minutos del default. 20' sigue siendo margen amplio
     # (la única corrida medida contra postgres:16-alpine local fue 22
     # suites / 104 s, zulu-hub-continuidad-2026-09-07.md, 07/09) pero el
-    # margen real con 48 suites no se remidió en este bloque — revisar si
+    # margen real con 54 suites no se remidió en este bloque — revisar si
     # el job empieza a acercarse al techo.
     timeout-minutes: 20
 

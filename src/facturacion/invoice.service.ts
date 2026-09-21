@@ -23,7 +23,8 @@ import type { Invoice, AfipEnvironment, CreateInvoiceItemInput } from './invoice
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
-import type { AccountsReceivableRepository } from '../clientes-finanzas/accounts-receivable.repository.js';
+import type { AccountsReceivableRepository, AccountReceivable } from '../clientes-finanzas/accounts-receivable.repository.js';
+import { canonicalAccountsReceivableLockOrder } from '../clientes-finanzas/payment-application.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';
@@ -489,20 +490,31 @@ export class InvoiceService {
    * hay nada que revisar (mismo criterio de normalización que §9.2).
    *
    * Acotado a Factura B normal, a propósito: NO aplica a Nota de Crédito
-   * (`tx.type` `REFUND`/`ADJUSTMENT`). Los 3 únicos productores de esos
-   * tipos en el repo son `cancellation-refund.service.ts` (`REFUND`, nunca
-   * setea `stayId` -- este método corta antes igual) y los 2 orquestadores
-   * del escape con NC (`ADJUSTMENT`, heredan `stayId` Y YA calculan/exponen
-   * este mismo warning por su propio camino,
-   * `cancel-with-credit-note.ts:53-61`, §9.2) -- cubrirlo acá también
-   * duplicaría el campo en el mismo payload HTTP
+   * (`tx.type` `REFUND`/`ADJUSTMENT`). **Censo corregido (Wave 13, Zona 2,
+   * 21/09/2026, gate `architecture-governor`) -- este comentario decía "los
+   * 3 únicos productores de esos tipos en el repo" y daba un argumento de
+   * `stayId` que no vale para 2 de los 5 reales: ver el censo completo en
+   * docs/diseno-invoice-retry-charge-guard-2026-09-18.md §6 (**5 productores**
+   * reales de `type: 'REFUND'|'ADJUSTMENT'` -- esa sección enumera 6 FILAS
+   * de código, no 6 productores: 2 de esas filas son las 2 ramas de un
+   * mismo productor, `cancellation-refund.service.ts`, ver la nota "6
+   * sitios acá vs. 5 productores" de esa misma sección), no repetido acá
+   * para no mantener 2 censos que puedan volver a divergir.** Los 2 orquestadores
+   * del escape con NC calculan/exponen este mismo warning por su propio
+   * camino (`cancel-order-with-credit-note.service.ts:465`,
+   * `cancel-reservation-with-credit-note.service.ts:475` -- ancla corregida,
+   * la anterior apuntaba a `cancel-with-credit-note.ts:53-61`, que es la
+   * interfaz `AccountsReceivableWarningEntry`, no el cómputo; §9.2) --
+   * cubrirlo acá también duplicaría el campo en el mismo payload HTTP
    * (`creditNote.accountsReceivableWarning` + el hermano de `result`),
    * rompiendo el contrato "presente si y solo si hay algo que revisar" que
-   * §9.2 ya documentó. El hueco angosto que queda (facturar un
-   * `ADJUSTMENT` huérfano, nunca facturado por ninguno de los 2
-   * orquestadores, directo por `POST /api/invoices`) es territorio de
-   * `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:274`, que
-   * ya planea tocar `requestInvoice()` -- no se cierra acá.
+   * §9.2 ya documentó. Los otros productores (C2, `reverseTransfer()`, el
+   * ajuste de precio de reserva) nunca llegan a este método -- ninguno
+   * pasa por el camino de Factura B individual que lo llama. El hueco
+   * angosto que queda (facturar un `ADJUSTMENT` huérfano, nunca facturado
+   * por ninguno de los 2 orquestadores, directo por `POST /api/invoices`)
+   * es territorio de `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:274`,
+   * que ya planea tocar `requestInvoice()` -- no se cierra acá.
    */
   private async resolveAccountsReceivableWarning(tx: FinancialTransaction): Promise<AccountsReceivableWarningEntry[] | undefined> {
     if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT') return undefined;
@@ -872,10 +884,17 @@ export class InvoiceService {
       // conviven con el MISMO orden global (AR antes que reservations),
       // así que el que pierde la carrera bloquea solo en la AR -- nunca
       // hay ciclo.
-      for (const accountsReceivableId of [...pending.map((ar) => ar.id)].sort()) {
-        const ar = await this.accountsReceivableRepo.getByIdWithLock(client, accountsReceivableId);
-        if (ar && ar.status === 'REVERTIDO') {
-          throw new AccountsReceivableReversedCannotInvoiceError(ar.id);
+      //
+      // ACCOUNTS-RECEIVABLE-LOCK-ORDER-001 (Wave 13, Zona 2, 21/09/2026) --
+      // `canonicalAccountsReceivableLockOrder()` reemplaza el `.sort()`
+      // ad-hoc que este bloque tenía (comportamiento idéntico para UUIDs,
+      // ver docblock de la función) -- ahora es el MISMO comparador que usa
+      // el guard de retry (`assertChargesStillInvoiceable()`), evitando que
+      // las dos copias del orden de locks puedan divergir en el futuro.
+      for (const ar of canonicalAccountsReceivableLockOrder(pending, (ar) => ar.id)) {
+        const locked = await this.accountsReceivableRepo.getByIdWithLock(client, ar.id);
+        if (locked && locked.status === 'REVERTIDO') {
+          throw new AccountsReceivableReversedCannotInvoiceError(locked.id);
         }
       }
 
@@ -1479,6 +1498,25 @@ export class InvoiceService {
     if (existing.status === 'ISSUED') return existing;
     if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted && !existing.uncertainClearedAt) return existing;
 
+    // CHARGE-STATE-GUARD-001 (Wave 13, Zona 2, 21/09/2026, gate
+    // `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md)
+    // -- re-valida, antes de reintentar, que el estado que el guard
+    // ORIGINAL de la primera vez protegía (AR-REVERTIDO, orden/reserva
+    // CANCELLED) sigue siendo válido. `retryExisting()` nunca corre dentro
+    // de la tx de un caller (verificado: los 6 call-sites de producción --
+    // `cancel-order-with-credit-note.service.ts:253,565`,
+    // `cancel-reservation-with-credit-note.service.ts:299,573`,
+    // `invoices.routes.ts:206,231` -- ninguno abre transacción antes de
+    // llegar acá), así que el `transactionManager.run()` de abajo es
+    // siempre la única transacción de la operación.
+    const txs = existing.financialTransactionId
+      ? [await this.requireFinancialTransaction(existing.financialTransactionId)]
+      : await this.loadChargesForConsolidatedInvoice(existing.id);
+    const chargeTxs = txs.filter((tx) => tx.type === 'CHARGE');
+    if (chargeTxs.length > 0) {
+      await this.transactionManager.run((client) => this.assertChargesStillInvoiceable(client, chargeTxs));
+    }
+
     const credentials = await this.afipCredentialsRepo.getDecrypted();
     if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
     const profile = await this.businessProfileRepo.get();
@@ -1493,6 +1531,119 @@ export class InvoiceService {
       existing.environment,
       existing.ptoVta,
     );
+  }
+
+  /**
+   * Corrección (gate de pre-commit, ronda 2, Wave 13, Zona 2): este
+   * docblock decía "extraído porque ahora tiene 2 call-sites (el fresco y
+   * `retryExisting()`)" -- falso, los caminos frescos (`requestInvoice()`,
+   * `requestConsolidatedInvoice()`) mantienen su propia copia inline del
+   * mismo `getById()` + `FinancialTransactionNotFoundError`, a propósito
+   * (alcance congelado por el diseño, docs/diseno-invoice-retry-charge-guard-2026-09-18.md
+   * §3 -- no refactorizar código ya verificado). Los 2 call-sites reales de
+   * este helper son `retryExisting()` y `loadChargesForConsolidatedInvoice()`,
+   * ambos nuevos de esta Wave.
+   */
+  private async requireFinancialTransaction(financialTransactionId: string): Promise<FinancialTransaction> {
+    const tx = await this.financialTransactionRepo.getById(financialTransactionId);
+    if (!tx) throw new FinancialTransactionNotFoundError(financialTransactionId);
+    return tx;
+  }
+
+  /**
+   * Una consolidada no tiene "la fila" -- `createWithClient()` la crea con
+   * `financialTransactionId: null` (ver el bloque de
+   * `requestConsolidatedInvoice()` que arma el `CreateInvoiceInput`), sus N
+   * cargos viven en `invoice_charges`. Fail-loud si
+   * el invariante "toda consolidada tiene ≥1 cargo" se rompe (honest-degradation)
+   * -- una consolidada real siempre se crea a partir de ≥1 AR `pending`.
+   */
+  private async loadChargesForConsolidatedInvoice(invoiceId: string): Promise<FinancialTransaction[]> {
+    const chargeIds = await this.invoiceRepo.getChargeIdsForInvoice(invoiceId);
+    if (chargeIds.length === 0) {
+      throw new Error(
+        `retryExisting(): la factura consolidada "${invoiceId}" no tiene ningún cargo en invoice_charges -- invariante roto (toda consolidada se crea con ≥1 AR pendiente).`,
+      );
+    }
+    return Promise.all(chargeIds.map((id) => this.requireFinancialTransaction(id)));
+  }
+
+  /**
+   * CHARGE-STATE-GUARD-001 -- ver docblock de `retryExisting()`. Re-valida
+   * AR-REVERTIDO + ORDER-10/RESERVA-10 para cargos CHARGE (REFUND/ADJUSTMENT
+   * quedan exentos a propósito -- ver docs/diseno-invoice-retry-charge-guard-2026-09-18.md
+   * §2/§6: la rama NC de `requestInvoice()` retorna antes del bloque
+   * transaccional, así que ningún guard fresco corrió nunca sobre esos 2
+   * tipos, para ningún productor). `RETRY-EXISTING-NC-PRODUCER-SAFETY-001`
+   * (`reversed-invoice-id-convention.test.ts`) es el mecanismo que detecta
+   * un productor futuro que rompa esa exención.
+   */
+  private async assertChargesStillInvoiceable(client: SqlClient, chargeTxs: FinancialTransaction[]): Promise<void> {
+    if (chargeTxs.length === 1) {
+      // Un solo lock -- no hay ABBA que ordenar. Mismo método que el guard
+      // fresco individual, dentro de requestInvoice() (cita por nombre, no
+      // línea, desde SCHEMA-ANCHOR-DRIFT-001 -- este archivo ya se movió
+      // una vez en esta misma Wave).
+      const tx = chargeTxs[0]!;
+      const ar = await this.accountsReceivableRepo.getByFinancialTransactionIdWithLock(client, tx.id);
+      if (ar && ar.status === 'REVERTIDO') throw new AccountsReceivableReversedCannotInvoiceError(ar.id);
+    } else {
+      // >1 -- ABBA real si no coincide con el guard fresco consolidado
+      // (ACCOUNTS-RECEIVABLE-LOCK-ORDER-001, dentro de
+      // requestConsolidatedInvoice() -- cita por nombre, no línea, mismo
+      // criterio que arriba). Resolución SIN lock de
+      // `ar.id` por cargo -- segura acá (a diferencia del guard fresco
+      // INDIVIDUAL, que motivó `getByFinancialTransactionIdWithLock`: ver
+      // accounts-receivable.repository.ts:137-151 para esa razón original,
+      // que NO transfiere sin más a este camino). Un cargo que llega acá
+      // viene de `getChargeIdsForInvoice()` de una factura consolidada YA
+      // armada a partir de AR `pending` -- su existencia es un invariante
+      // ya establecido (R12, nunca hard-delete), no una carrera contra una
+      // creación en curso; lo único que se lee sin lock es `ar.id`, PK
+      // inmutable desde el INSERT, nunca stale. El `status`, que sí puede
+      // cambiar, se relee bajo FOR UPDATE abajo. Fail-loud si un cargo no
+      // tiene AR -- si la existencia es un invariante ya establecido, un
+      // `null` acá es esa invariante rota, no un caso normal a saltear en
+      // silencio.
+      const resolved = await Promise.all(
+        chargeTxs.map(async (tx) => {
+          const ar = await this.accountsReceivableRepo.getByFinancialTransactionId(tx.id);
+          if (!ar) {
+            throw new Error(
+              `assertChargesStillInvoiceable(): el cargo "${tx.id}" (parte de una factura consolidada) no tiene accounts_receivable -- invariante roto (todo cargo de invoice_charges viene de un AR pending).`,
+            );
+          }
+          return ar;
+        }),
+      );
+      for (const ar of canonicalAccountsReceivableLockOrder(resolved, (a: AccountReceivable) => a.id)) {
+        const locked = await this.accountsReceivableRepo.getByIdWithLock(client, ar.id);
+        if (locked && locked.status === 'REVERTIDO') throw new AccountsReceivableReversedCannotInvoiceError(locked.id);
+      }
+    }
+
+    // Residuo declarado (gate de pre-commit, ronda 2, Wave 13, Zona 2): el
+    // `.sort()` default de acá es una SEGUNDA copia ad-hoc del mismo orden
+    // que ya usan los guards frescos (`requestInvoice()`/`requestConsolidatedInvoice()`,
+    // idéntico texto) -- no fenced, mismo patrón que
+    // `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001` existe para prevenir, un nivel
+    // más abajo (orden/reserva, no AR). Hoy es comportacionalmente idéntico
+    // (default `.sort()` de string IDs), así que no es un riesgo de ABBA
+    // real -- se deja SIN fence a propósito en este bloque (alcance
+    // congelado por el diseño), no un olvido. Ver
+    // docs/diseno-invoice-retry-charge-guard-2026-09-18.md §11.
+    const orderIds = [...new Set(chargeTxs.map((tx) => tx.orderId).filter((id): id is string => id != null))].sort();
+    for (const orderId of orderIds) {
+      const order = await this.orderRepo.getByIdForUpdate(client, orderId);
+      if (order && order.status === 'CANCELLED') throw new OrderCancelledCannotInvoiceError(orderId);
+    }
+    const reservationIds = [...new Set(chargeTxs.map((tx) => tx.reservationId).filter((id): id is string => id != null))].sort();
+    for (const reservationId of reservationIds) {
+      const reservation = this.reservationRepo.getByIdWithLock
+        ? await this.reservationRepo.getByIdWithLock(client, reservationId)
+        : await this.reservationRepo.getById(reservationId);
+      if (reservation && reservation.status === ReservationStatus.CANCELLED) throw new ReservationCancelledCannotInvoiceError(reservationId);
+    }
   }
 
   /**
@@ -1717,6 +1868,17 @@ export class InvoiceService {
    * el reintento de toda factura `FAILED_UNCERTAIN` con `afipContacted:true`)
    * SÍ hace fallar toda la transacción -- señalaría un camino no
    * contemplado por este diseño, y hay que enterarse, no enmascararlo.
+   *
+   * **Nota (Wave 13, Zona 2, 21/09/2026, gate `architecture-governor`):**
+   * desde `assertChargesStillInvoiceable()` (CHARGE-STATE-GUARD-001),
+   * `retryExisting()` tiene una TERCERA forma de fallar, anterior a esta --
+   * un reintento sobre un `CHARGE` cuya AR ya está `REVERTIDO` o cuya
+   * orden/reserva ya está `CANCELLED` lanza ANTES de llegar a `issue()`, y
+   * este método nunca se invoca en ese caso (la fila de `invoices` ni se
+   * toca). No cambia el razonamiento de arriba -- ese guard nuevo nunca
+   * corre sobre `REFUND`/`ADJUSTMENT` (docs/diseno-invoice-retry-charge-guard-2026-09-18.md
+   * §2/§6), así que el workflow de NC de este método sigue viendo
+   * exactamente los mismos 2 casos de reintento que describe arriba.
    */
   private async transitionCreditNoteRequestAfterFailure(
     client: SqlClient,
