@@ -832,33 +832,62 @@ cuando se pushea.
 - **`CITY-LEDGER-AR-DOUBLE-TRANSFER-001`** — bug preexistente,
   independiente de `reverseTransfer()`, con ancla (encontrado al analizar
   Finding C, Bloque 3c-ii, 14/09/2026, gate `architecture-governor`, ronda
-  5). La protección "a propósito NO va acá" del `CHARGE` compensatorio de
+  5; anclas corregidas 18/09/2026, Wave 13, tras 3 rondas de
+  `erp-audit-orchestrator` -- las 4 citas originales de este bullet
+  estaban corridas desde antes de que Waves 10-12 tocaran el archivo).
+  La protección "a propósito NO va acá" del `CHARGE` compensatorio de
   la empresa (`accounts-receivable.service.ts`, bloque `companyChargeId`,
-  comentario `:390-399`) solo protege el momento de CREACIÓN (nace sin
-  `stayId`) — no evita que `linkStayToReservationCharges()` lo adopte
-  después por `reservation_id`. Consecuencia real:
+  comentario `:458-477`, frase clave en `:463`) solo protege el momento de
+  CREACIÓN (nace sin `stayId`) — no evita que `linkStayToReservationCharges()`
+  lo adopte después por `reservation_id`. Consecuencia real:
   `transferStayBalanceToReceivable()` corre `linkStayToReservationCharges()`
-  en `:243`, ANTES de leer el saldo en `:245`; el `CHARGE` de la empresa
+  en `:307`, ANTES de leer el saldo en `:309`; el `CHARGE` de la empresa
   de una transferencia ANTERIOR sobre la misma estadía (todavía con
   `reservation_id` seteado y `stay_id NULL`) queda adoptado por una
   SEGUNDA transferencia sobre esa misma estadía — el folio vuelve a dar
   saldo positivo, `NoBalanceToTransferError` no dispara, y la MISMA deuda
   se transfiere a la empresa dos veces. Fuera de alcance de Bloque 3c-ii
-  (no lo introduce `reverseTransfer()`, ya existe hoy) — requiere su
-  propio diseño, candidato más directo que el de arriba: excluir de la
-  adopción cualquier fila que ya tenga `financial_transaction_id`
-  referenciado desde una `accounts_receivable` (mismo espíritu que el
-  candidato de `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`, pero acá no
-  alcanza con `reversed_transaction_id` — el `CHARGE` de una transferencia
-  vieja nunca tiene ese campo seteado, es el ORIGEN, no una reversa).
+  (no lo introduce `reverseTransfer()`, ya existe hoy). **Diseño gateado
+  18/09/2026** (`architecture-governor`, `READY FOR DESIGN` condicionada,
+  ver Apéndice I de `docs/plan-ejecucion-integral-2026-09-16.md`):
+  predicado elegido `α∧β` -- `AND reversed_transaction_id IS NULL AND
+  NOT EXISTS (SELECT 1 FROM accounts_receivable ar WHERE
+  ar.financial_transaction_id = financial_transactions.id)`, cierra este
+  hallazgo Y `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001` sin filtrar por
+  `type` (preserva la semántica ya cerrada de
+  `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`). La celda 7 (acoplamiento con
+  el escape de NC de reservas) quedó resuelta por traza de código: el
+  predicado cierra los 3 mecanismos encontrados (`CreditNoteMixedStayError`
+  disparable, guard ciego al caso de un solo cargo, `assertRevertsExpectedInvoice`
+  como 500 permanente) para el camino del CHARGE de empresa -- pero NO
+  cubre `CITY-LEDGER-CROSS-STAY-ADOPTION-001` (huésped contra sí mismo,
+  registrado aparte, arriba en este archivo). Hueco legacy aceptado:
+  filas de `accounts_receivable`/`financial_transactions` previas a la
+  columna `financial_transaction_id` quedan ciegas al predicado β --
+  hoy inerte (0 filas medidas en LOS 2 tenants reales -- `production` Y
+  `tenant-hotel-los-alamos`, gate de diseño 18/09/2026, ver §5 de
+  `docs/diseno-city-ledger-double-transfer-2026-09-18.md` para las 2
+  queries exactas), propiedad permanente del diseño de la columna, no
+  deuda a cerrar acá. `accounts_receivable.guest_payment_transaction_id`
+  (columna simétrica, `schema.sql:2708`) NO necesita su propia exclusión
+  en el predicado -- descartado por construcción: el PAYMENT del
+  huésped que produce esa columna nace con `stay_id` SET y
+  `reservation_id` NULL (`accounts-receivable.service.ts:447-456`),
+  así que ya falla las dos cláusulas del `WHERE` original y nunca fue
+  un candidato de adopción, con o sin β.
 - **`CITY-LEDGER-GUARD-RETRY-EMITS-001`** — §9.4, encontrado por el gate
   `architecture-governor` al revisar el cierre de
   `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` (13/09/2026, commit
   `bc5cb46`), NO cerrado en ese bloque. `requestInvoice()` tiene un
-  fast-path idempotente (`invoice.service.ts:422`,
+  fast-path idempotente (`invoice.service.ts:549` -- corregido
+  18/09/2026, Wave 13, la cita original `:422` quedó corrida por Waves
+  10-12; el mismo fast-path existe también en `requestConsolidatedInvoice()`,
+  `invoice.service.ts:779`, no nombrado en la redacción original de este
+  ítem -- ver Apéndice I.1 de `docs/plan-ejecucion-integral-2026-09-16.md`),
   `if (existing) return this.retryExisting(existing);`) que corre ANTES
   de que el nuevo warning de §9.4 pueda calcularse. `retryExisting()`
-  (`invoice.service.ts:1200-1218`) no se limita a devolver una invoice ya
+  (`invoice.service.ts:1478-1495` -- corregido 18/09/2026, la cita
+  original `:1200-1218` quedó corrida) no se limita a devolver una invoice ya
   `ISSUED`: llama `issue()` de verdad -- una emisión REAL contra AFIP --
   salvo que el estado previo sea `ISSUED` o `FAILED_UNCERTAIN` con
   `afipContacted`. Escenario concreto: invoice `PENDING` -> AFIP rechaza
@@ -1613,6 +1642,161 @@ anteriores.
   esta verificación, "el timeout existe en producción" es una inferencia,
   no un hecho confirmado. No bloquea commitear el código (la mitigación
   de fallo es fail-loud vía el build, no silenciosa) -- si bloquea pushear.
+- **`WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001` (21/09/2026, Wave 13 Zona 2,
+  gate `architecture-governor`, corregido en ronda 3 de pre-commit -- ver
+  abajo) -- §7 caso 3 del diseño
+  (`docs/diseno-invoice-retry-charge-guard-2026-09-18.md`) -- reproducir
+  el log de deadlock real de Wave 12 cruzando un guard FRESCO consolidado
+  con uno de RETRY sobre un subconjunto solapado de cargos -- no está
+  escrito, a propósito.** Necesita sostener un lock a mano vía una
+  segunda conexión pausada a mitad de transacción. **Causa corregida
+  (ronda 3, 21/09/2026): NO es "sin `TEST_DATABASE_URL` en este
+  entorno"** -- ese archivo SÍ corre contra Postgres real acá (ver
+  `WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` en `docs/resuelto.md`,
+  misma sesión). La causa real es de alcance: el caso 3 no se escribió
+  en el bloque que escribió los otros dos (caso 1 y caso 2), no que no
+  se pudiera correr. El comparador compartido
+  (`canonicalAccountsReceivableLockOrder()`, `payment-application.ts`) ya
+  se verificó por lectura de código (§3.1 del diseño, gate de pre-commit)
+  como preservador del orden AR-antes-que-reservations que Wave 12
+  reprodujo -- eso cubre la garantía estática, no la reproducción dinámica
+  del deadlock cruzado. Acción puntual que lo cierra: escribir el caso 3
+  siguiendo el patrón ya usado por
+  `invoice-accounts-receivable-reversed-guard.integration.test.ts`
+  (Wave 12) para su propia reproducción de carrera, y correrlo contra
+  Postgres real (local o `TEST_DATABASE_URL`, cualquiera de los dos ya
+  probado viable esta sesión).
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
+  (21/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de
+  pre-commit, hallazgo C2) -- la aserción central del test "retry
+  consolidado" de `invoice-retry-charge-guard.integration.test.ts`
+  (`expect(bothSucceeded).toBe(false)`) es más fuerte que lo que el
+  propio diseño garantiza.** §2.1 de
+  `docs/diseno-invoice-retry-charge-guard-2026-09-18.md` declara abierta
+  la ventana entre el COMMIT del guard de retry y la llamada a
+  `issue()` ("Residuo no cerrado -- heredado, no nuevo"), y `REJECTED`
+  no está en `INVOICE_STATUSES_CONSUMING_CHARGE`, así que el guard 8-bis
+  de `reverseTransfer()` no bloquea mientras el retry está hablando con
+  AFIP -- si el retry gana el lock de la AR antes que `reverseTransfer()`,
+  los dos pueden tener éxito, y el test fallaría contra una
+  implementación que se comporta exactamente como el diseño dice. Medido
+  con cobertura v8 sobre `accounts-receivable.service.ts` corriendo solo
+  este test (21/09/2026, Postgres 16.13 local): `markRevertedWithClient`
+  con 1 hit y los dos `throw new ArReversalRequiresCreditNoteError` con 0
+  hits -- en esta máquina gana siempre `reverseTransfer()` (menos
+  roundtrips hasta el `FOR UPDATE`), por eso 12/12 verde ahí. Es
+  estabilidad por timing de ESTA máquina, no por construcción del
+  guard -- en el runner de CI el orden puede invertirse y el test puede
+  quedar flaky o rojo sin que el código de producción tenga ningún bug.
+  Además, §7 caso 2 del diseño pedía sincronizar la carrera con un lock
+  artificial (patrón de
+  `reservation-availability.service.integration.test.ts`); se reemplazó
+  por `Promise.allSettled` sin declarar el cambio. Acción puntual que lo
+  cierra: reescribir el test para sincronizar la carrera con un lock
+  artificial (como pedía el diseño) en vez de depender del timing natural
+  de 2 llamadas en paralelo, o debilitar la aserción a lo que el diseño
+  realmente garantiza (nunca 2 CAE emitidos sobre el MISMO cargo
+  revertido, no "nunca los dos tienen éxito").
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` (21/09/2026,
+  Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de pre-commit,
+  hallazgo C3) -- el mismo test de arriba puede quedar verde sin que
+  `assertChargesStillInvoiceable()` (el guard nuevo de esta Wave) haya
+  disparado siquiera una vez.** La aserción solo mira
+  `retryIssued === false`; cualquier motivo de rechazo del retry (no
+  solo `AccountsReceivableReversedCannotInvoiceError`, que es lo que el
+  guard nuevo lanza) la satisface igual. Su precedente directo, Wave 12
+  (`invoice-accounts-receivable-reversed-guard.integration.test.ts`), sí
+  asierta el tipo exacto del error
+  (`expect(invoiceResult.reason).toBeInstanceOf(AccountsReceivableReversedCannotInvoiceError)`).
+  Que el guard nuevo sí disparó en la corrida de esta sesión se confirmó
+  por cobertura v8 -- **evidencia corregida en el gate (ronda 5):** NO es
+  la cobertura de `accounts-receivable.service.ts` citada en la
+  redacción original de este ítem (ese archivo no contiene ninguno de
+  los 4 throw sites de `AccountsReceivableReversedCannotInvoiceError` --
+  los 4 están en `invoice.service.ts` -- ancla primaria por nombre, no
+  línea, desde SCHEMA-ANCHOR-DRIFT-001 (este archivo ya se movió una vez
+  en esta misma Wave): 2 dentro de los guards frescos de
+  `requestInvoice()`/`requestConsolidatedInvoice()`, y 2 dentro de
+  `assertChargesStillInvoiceable()` (el guard de retry de esta Wave, uno
+  por rama -- cargo único / `>1` cargos vía `invoice_charges`); líneas al
+  21/09/2026: 673/897/1589/1621. Esa cobertura de
+  `accounts-receivable.service.ts` solo prueba que `reverseTransfer()`
+  ganó el lock, no qué error devolvió el retry). La medición real es
+  sobre `assertChargesStillInvoiceable()`, rama de UN cargo (línea
+  `:1589` al 21/09/2026): el `if (ar && ar.status === 'REVERTIDO') throw
+  new AccountsReceivableReversedCannotInvoiceError(ar.id)` tiene el
+  consequent del branch con **2 hits** sobre los 2 tests de este archivo
+  (1 del reintento secuencial del test 1 + 1 de la carrera del test 2) --
+  comando:
+  `npx vitest run --config vitest.integration.config.ts --coverage.enabled --coverage.include='src/facturacion/invoice.service.ts' src/tests/integration/invoice-retry-charge-guard.integration.test.ts`.
+  Que el test no distinga "el guard nuevo funcionó" de "el retry falló
+  por cualquier otro motivo" sigue siendo el problema que este ítem
+  registra.
+  **Acción de cierre corregida (ronda 5) -- la receta original era
+  timing-dependent, igual que C2, y no se implementa tal como estaba
+  escrita.** Agregar
+  `expect(retryResult.status === 'rejected' && retryResult.reason).toBeInstanceOf(AccountsReceivableReversedCannotInvoiceError)`
+  dentro de la rama `if (reverseResult.status === 'fulfilled')` **no es
+  seguro**: cuando `reverseTransfer()` gana la carrera hay DOS rechazos
+  igualmente correctos según cuándo lea `requestConsolidatedInvoice()` el
+  lote pendiente (`getPendingByCompanyCustomerId()`, que filtra
+  `status = 'PENDIENTE_FACTURAR'` -- la AR revertida desaparece del lote
+  apenas se revierte): lectura ANTES del commit de la reversión -> mismo
+  hash -> `retryExisting()` -> guard -> `AccountsReceivableReversedCannotInvoiceError`;
+  lectura DESPUÉS -> `pending.length === 0` -> `NothingToInvoiceError`,
+  lanzado en la primera línea del método, sin llegar nunca al guard.
+  Asertar solo el primer tipo reintroduce la misma dependencia de timing
+  que C2 acaba de sacar. Y no hay atajo secuencial: en el camino
+  consolidado, la rama AR-`REVERTIDO` del guard solo es alcanzable
+  DENTRO de la ventana de carrera (secuencialmente siempre gana
+  `NothingToInvoiceError`) -- mismo hallazgo que la grilla del Apéndice
+  I.2 del plan de ejecución integral ya describe (ventana ANCHA cerrada
+  por construcción, ventana de CARRERA sigue abierta). Cerrar esto de
+  verdad requiere sincronizar la carrera con el lock artificial que
+  pedía §7 caso 2 del diseño -- queda entrelazado con la mitad no
+  cerrada de `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`,
+  no es un cambio de una línea aparte.
+- **`INTEGRATION-TEARDOWN-UNHANDLED-57P01-001` (21/09/2026, Wave 13, gate
+  `architecture-governor`, ronda 4 de pre-commit) -- el tier de
+  integración completo (54 archivos) sale con **exit code 1**
+  intermitentemente, con los 394 tests igual en verde -- "394/394
+  passed" en el resumen NO implica exit 0.** Mecanismo: `dropTestDatabase()`
+  (`src/tests/integration/helpers/db.ts`) llama
+  `pg_terminate_backend(pid)` sobre la BD temporal en `afterAll()`; en una
+  corrida de 2, ese `pg_terminate_backend` llegó mientras `pool.end()` de
+  esa misma suite todavía estaba en vuelo -- 2 errores no capturados,
+  `FATAL 57P01 "terminating connection due to administrator command"`,
+  mismo temp DB (`test_25bb7799a5c94b36a2866a75c47ccf2b`), dos backends
+  distintos (`processID: 26612`/`26614`), cada cliente con
+  `_poolUseCount: 17` y sin `idleListener` -- una carrera de teardown en
+  el HELPER COMPARTIDO, no un bug de ninguna suite puntual. La primera
+  atribución de este hallazgo (ronda 3) apuntó al archivo equivocado
+  (`consolidated-invoice-toctou.integration.test.ts`); el stack real
+  nombra `src/tests/integration/reservation.service.integration.test.ts`
+  como la suite en curso cuando el error no capturado llegó -- NO
+  necesariamente la causa, el helper es compartido por las 54 suites.
+  **`pg-transaction-manager-connection-lifecycle.integration.test.ts:91`
+  NO es este bug** -- ese archivo llama `pg_terminate_backend` A
+  PROPÓSITO (Wave 8 / D-11) y asierta sobre ese mensaje exacto; su log es
+  comportamiento diseñado, no la falla. Evidencia: 2 corridas consecutivas,
+  mismo árbol, mismo comando
+  (`TEST_DATABASE_URL=postgres://testuser@127.0.0.1:5434/postgres npx
+  vitest run --config vitest.integration.config.ts`) -- corrida C: 0
+  errores, exit 0; corrida D: 2 errores, exit 1. **Preexistencia NO
+  establecida** -- `reservation.service.integration.test.ts` importa
+  `SqlFinancialTransactionRepository`, tocado en este mismo bloque
+  (Zona 1), así que "no es de esta sesión" no está confirmado; tampoco
+  está descartado, porque el mecanismo (teardown del helper compartido)
+  es genérico a las 54 suites, no específico de ese archivo. Acción
+  puntual que lo cierra: un A/B contra árbol limpio (`git worktree` o
+  `git stash` sobre el estado previo a esta Wave, correr el tier ahí
+  varias veces y comparar tasa de error) -- explícitamente NO ejecutado
+  por el gate ni por esta sesión (escribir en un working tree fuera del
+  alcance autorizado de este bloque). Consecuencia mientras no se
+  cierre: el job `integration` de CI puede salir rojo de forma
+  intermitente sin que ningún test real haya fallado -- monitorear el
+  job en `main` después del push y, si se repite, priorizar este ítem
+  antes que agregar más suites de integración.
 
 ---
 
@@ -3029,6 +3213,74 @@ futuros, cada uno con su propio alcance.
   (o `allowEmptyCase: true` en la config de la regla, que cambiaría el
   comportamiento para TODO el repo, no solo estos casos) -- ninguna de las
   dos opciones decidida ni evaluada todavía.
+- **`POOL-MIXTO-CONSOLIDADA-INDIVIDUAL-001`** (18/09/2026, Wave 13,
+  gate `architecture-governor`, trazado por `erp-audit-orchestrator` al
+  resolver la celda 7 de `CITY-LEDGER-AR-DOUBLE-TRANSFER-001`).
+  Estructural, **independiente del bug de doble transferencia** -- existe
+  hoy con `stay_id` correctamente `NULL`, no requiere ningún otro
+  hallazgo de Wave 13 para reproducirse. Después de transferir el saldo
+  de una estadía a cuenta corriente de una empresa
+  (`transferStayBalanceToReceivable()`), nada impide facturar
+  INDIVIDUALMENTE un cargo del huésped de esa misma reserva por el
+  camino normal (`FacturarButton`/`POST /api/invoices`): el guard de
+  `requestInvoice()` que mira `accounts_receivable`
+  (`invoice.service.ts:656-662`) usa
+  `getByFinancialTransactionIdWithLock(input.financialTransactionId)`, y
+  la AR apunta al CHARGE de la EMPRESA, no al del huésped -- para un
+  cargo del huésped devuelve `undefined`, no bloquea. Si además la
+  empresa ya facturó ese cargo vía consolidada
+  (`requestConsolidatedInvoice()`), la reserva termina con DOS
+  comprobantes ISSUED vivos sobre la MISMA reserva, con `customer_id`
+  distinto cada uno (huésped vs. empresa) -- alcanzable vía
+  `liveInvoiceIdsForReservation()`/`findBlockingInvoiceLinkage()`, que
+  usan `getByReservationId(reservationId)` sin filtrar por
+  `customer_id`. Consecuencia verificada en las dos puertas de salida:
+  `cancelReservation()` normal -> `ReservationChargeInvoicedError`
+  (bloqueada); `cancelReservationWithCreditNote()` -> pool mixto,
+  `CreditNoteReservationMultiInvoiceError` (bloqueada). **La reserva
+  queda sin ningún camino de cancelación dentro de la app** -- y el
+  segundo comprobante del pool no lo puso un operador con dos clicks
+  (mecanismo ya conocido de `POOL-MIXTO-MANUAL-01`): lo puso la
+  transferencia a City Ledger, un mecanismo estructural distinto. Mismo
+  síntoma final que `POOL-MIXTO-MANUAL-01` (fail-closed, sin salida),
+  pero causa raíz distinta -- **no fusionar los dos ítems**: la
+  resolución manual de `POOL-MIXTO-MANUAL-01` (parámetro de factura
+  destino, resolución parcial permitida) cubre el síntoma para los dos,
+  pero la causa de ESTE (`reservation_id` como único vínculo entre dos
+  partes con `customer_id` distinto, sin ningún guard cruzado
+  huésped-empresa) sigue sin registro ni diseño propio. No medido
+  contra producción -- verificado solo por traza de código. Requiere su
+  propio gate antes de diseñar cualquier cosa.
+- **`CITY-LEDGER-CROSS-STAY-ADOPTION-001`** (18/09/2026, Wave 13, gate
+  `architecture-governor`, trazado por `erp-audit-orchestrator` como
+  hallazgo E.1 al resolver la celda 7 de
+  `CITY-LEDGER-AR-DOUBLE-TRANSFER-001`). Generalización del mecanismo de
+  adopción de `linkStayToReservationCharges()`
+  (`sql.financial-transaction.repository.ts:951-960`) que **no involucra
+  ningún CHARGE de empresa** -- huésped contra sí mismo. `idx_stays_reservation_active`
+  (`schema.sql`) es único PARCIAL (`WHERE status = 'CHECKED_IN'`):
+  permite N estadías `CHECKED_OUT`/`NO_SHOW` sobre la misma reserva.
+  `checkOut()` no toca el `status` de la reserva (sigue `CONFIRMED`), así
+  que un re-check-in sobre la misma reserva es legal, crea una segunda
+  estadía S2, y su propio `linkStayToReservationCharges(S2, reservationId)`
+  (`stay.service.ts:235-238`) adopta TODO `financial_transaction` de la
+  reserva con `stay_id` NULL -- incluido un CHARGE del HUÉSPED nacido
+  entre el check-out de S1 y el re-check-in. Resultado: cargos viejos
+  quedan en S1, el nuevo queda en S2 -- `distinctStayIds = {S1, S2}` en
+  `cancel-reservation-with-credit-note.service.ts:413-423` ->
+  `CreditNoteMixedStayError`, sin que ningún CHARGE de empresa esté
+  involucrado. **No se sabe si el predicado que cierre
+  `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` (candidatos alfa/beta, ver ese
+  ítem) alcanza a cubrir este caso** -- beta es específico de filas
+  referenciadas desde `accounts_receivable`, y un CHARGE de huésped
+  nunca lo está, así que beta NO lo cierra. Queda
+  `HIPÓTESIS_A_CONFIRMAR` la frecuencia real (no verificado si existe
+  hoy un productor real de CHARGE de reserva en esa ventana temporal),
+  pero la posibilidad estructural sí está verificada. Registrado aparte
+  porque el diseño de `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` no lo va a
+  cerrar como efecto colateral -- necesita su propio análisis de si
+  vale la pena un predicado más amplio o si es un caso a
+  aceptar/documentar.
 
 ---
 

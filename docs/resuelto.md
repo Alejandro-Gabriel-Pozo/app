@@ -20,6 +20,56 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 21/09/2026
+
+- **`WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` (Wave 13, Zona 2, gate
+  `architecture-governor`).** Origen:
+  `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones
+  pendientes` (entrada agregada en ronda 3 de pre-commit tras el hallazgo
+  B2, cortada de ahí en este mismo movimiento). El hallazgo era: el
+  archivo nuevo `src/tests/integration/invoice-retry-charge-guard.integration.test.ts`
+  (2 tests: retry individual, retry consolidado) compilaba y "salteaba"
+  limpio en la sesión que lo escribió (sin `TEST_DATABASE_URL` ni acceso
+  TCP a un Neon remoto desde ese contenedor) pero nunca se había ejecutado
+  de punta a punta contra Postgres real -- la misma clase de brecha que
+  causó B1 (un bug real invisible mientras el archivo solo compilaba).
+  **Confirmado por corrida real, no por inferencia:** el gate levantó una
+  instancia PostgreSQL 16.13 local descartable en el propio contenedor
+  (`initdb`/`pg_ctl` ya incluidos en la imagen, sin depender de red
+  saliente) y corrió
+  `TEST_DATABASE_URL=postgres://testuser@127.0.0.1:5434/postgres npx vitest run --config vitest.integration.config.ts src/tests/integration/invoice-retry-charge-guard.integration.test.ts`
+  -- **2/2 verde, repetido 13 veces consecutivas, 0 flakes.** Corrección de
+  alcance sobre el hallazgo original: no era una limitación permanente del
+  entorno ("sin `TEST_DATABASE_URL`"), sino que la sesión anterior nunca
+  había probado el camino de Postgres local -- con eso confirmado, se
+  corrió además el tier de integración completo (54 archivos) contra la
+  misma instancia: **394/394 tests en verde** (tras corregir, en el mismo
+  bloque, un bug de seed no relacionado en
+  `city-ledger-double-transfer-adoption.integration.test.ts`, de Wave 13
+  Zona 1 -- commit `9490ba1`). `tsc --noEmit`, `npm run lint` y
+  `npm run lint:arch` también limpios en la misma corrida.
+  **Salvedad (agregada en ronda 4 de pre-commit, gate
+  `architecture-governor`): "394/394 tests" NO es lo mismo que "exit 0".**
+  Corridas repetidas del tier completo, mismo árbol, mostraron un exit
+  code intermitente (0 en una corrida, 1 en otra) por una carrera de
+  teardown en el helper compartido de integración -- los 394 tests siguen
+  pasando en ambos casos, pero el proceso de `vitest` puede salir rojo
+  igual. Registrado como `INTEGRATION-TEARDOWN-UNHANDLED-57P01-001` en
+  `docs/pendientes-2026-09-12.md`, sin cerrar -- no confirmado si es
+  preexistente a esta Wave.
+  **Residuo separado, NO cerrado acá:** dos hallazgos nuevos del gate sobre
+  la calidad de las aserciones del propio archivo (carrera dependiente del
+  timing de esta máquina, aserción que no distingue el guard nuevo de
+  cualquier otro motivo de rechazo) quedan en
+  `docs/pendientes-2026-09-12.md` como
+  `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
+  (corregida en el código en ronda 4 -- commit `7906a26`) y
+  `WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` (todavía
+  sin corregir) -- que el archivo corra 2/2 no significa que sus
+  aserciones sean tan fuertes como deberían.
+
+---
+
 ## 17/09/2026
 
 - **`D-17` (Wave 10 del plan de ejecución integral, `docs/plan-ejecucion-integral-2026-09-16.md`).**
