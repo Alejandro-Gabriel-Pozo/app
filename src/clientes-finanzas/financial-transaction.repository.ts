@@ -531,9 +531,23 @@ export interface FinancialTransactionRepository {
    * `reservation.confirmed` (outbox), que corre ANTES del check-in — nunca
    * queda con `stay_id`, así que sin este paso getNetBalanceByStayId lo
    * subestimaría. No reasigna `customer_id` (R9) — solo agrupa el cargo ya
-   * existente bajo la estadía que recién se creó. Llamado desde
-   * StayService.checkIn() una sola vez, justo después de crear la Stay.
-   * Idempotente: solo toca filas con `stay_id IS NULL`.
+   * existente bajo la estadía que recién se creó. **Dos callers de
+   * producción** (no uno): `StayService.checkIn()`, justo después de
+   * crear la Stay, y `AccountsReceivableService.transferStayBalanceToReceivable()`
+   * (desde `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`, 13/09/2026). Idempotente:
+   * solo toca filas con `stay_id IS NULL`. Type-agnóstico a propósito
+   * (adopta `PAYMENT`/`CHARGE`/`ADJUSTMENT`/`REFUND` huérfanos por
+   * igual) — no filtrar por `type`.
+   *
+   * `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` (Wave 13, 18/09/2026,
+   * `docs/diseno-city-ledger-double-transfer-2026-09-18.md`): excluye
+   * además filas con `reversed_transaction_id` seteado (pata compensatoria
+   * de `reverseTransfer()` en vuelo) y filas ya referenciadas desde
+   * `accounts_receivable.financial_transaction_id` (el CHARGE compensatorio
+   * de empresa de una transferencia anterior — sin esto, una segunda
+   * transferencia o un re-check-in podía re-adoptarlo y duplicar la deuda
+   * transferida). NO excluye por `reversed_invoice_id` (columna distinta,
+   * de los ADJUSTMENT de Nota de Crédito, que siguen siendo adoptables).
    */
   linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number>;
 }

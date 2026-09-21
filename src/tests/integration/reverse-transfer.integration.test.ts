@@ -297,13 +297,29 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.reverseTransfer() -- veri
       const { ar, chargeId, reservationId, stayId: originalStayId, guest } = await seedTransferredScenario(600);
 
       // Simula la adopción de linkStayToReservationCharges() sobre el
-      // CHARGE contra la empresa. Es exactamente lo que pasaría en la
-      // realidad si existe una estadía NUEVA sobre la misma reserva
-      // después de la transferencia (el huésped se retira y vuelve a
-      // hacer check-in): postStayTransfer() crea ese CHARGE a propósito
-      // con stay_id NULL, y un check-in posterior sobre la misma reserva
-      // lo adopta vía linkStayToReservationCharges() -- `WHERE
-      // reservation_id=$2 AND stay_id IS NULL`, stay.service.ts:233-238.
+      // CHARGE contra la empresa -- vía SQL directo, no llamando a la
+      // función real (`CITY-LEDGER-AR-DOUBLE-TRANSFER-001`, Wave 13,
+      // 18/09/2026: desde que ese fix agregó el predicado alfa/beta,
+      // linkStayToReservationCharges() YA NO adopta este CHARGE por el
+      // camino real -- un check-in posterior sobre la misma reserva
+      // deja de re-adoptarlo, precisamente porque ya tiene una AR
+      // asociada). Este bloque de SQL directo sigue siendo la cobertura
+      // de REGRESIÓN del hueco legacy que ese mismo fix declaró y
+      // aceptó: una fila de `accounts_receivable`/`financial_transactions`
+      // ya adoptada ANTES del fix (o de una columna pre-existente sin
+      // backfill posible) sigue pudiendo llegar a `reverseTransfer()`
+      // con `stayId` ya seteado -- este test prueba que, en ese caso
+      // residual, la pata empresa del ADJUSTMENT construye bien
+      // `reservationId` + `stayId` juntos sin violar el CHECK. Ancla
+      // real del caller de producción hoy: stay.service.ts:235-238.
+      // Predicado completo (citado por nombre, no por línea -- mismo
+      // criterio que SCHEMA-ANCHOR-DRIFT-001/708e6d5, para no repetir el
+      // mismo tipo de deriva que este comentario tenía antes):
+      // `SqlFinancialTransactionRepository.linkStayToReservationCharges()`,
+      // `WHERE reservation_id=$2 AND stay_id IS NULL AND
+      // reversed_transaction_id IS NULL AND NOT EXISTS (...
+      // accounts_receivable.financial_transaction_id = ...)`.
+      //
       // Con esto, reverseTransfer() construye la pata empresa con
       // reservationId Y stayId simultáneos -- exactamente el caso que el
       // gate pidió confirmar contra Postgres real.

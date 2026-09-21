@@ -949,11 +949,48 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   }
 
   async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
+    // `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` (Wave 13, 18/09/2026, gate
+    // `architecture-governor`, docs/diseno-city-ledger-double-transfer-2026-09-18.md)
+    // -- predicado alfa AND beta. Sin esto, esta adopción type-agnóstica
+    // (a propósito, ver CITY-LEDGER-OVERTRANSFER-PAYMENT-001 -- no
+    // filtrar por `type` acá) podía re-adoptar el CHARGE compensatorio
+    // de empresa de una transferencia ANTERIOR (`postStayTransfer()`,
+    // accounts-receivable.service.ts, nace con `stay_id NULL` a
+    // propósito) en una segunda transferencia o un re-check-in,
+    // duplicando la deuda transferida.
+    //   alfa: `reversed_transaction_id IS NULL` -- evita adoptar la pata
+    //   ADJUSTMENT compensatoria de `reverseTransfer()` mientras está en
+    //   vuelo (`CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`).
+    //   beta: `NOT EXISTS (... accounts_receivable.financial_transaction_id
+    //   = financial_transactions.id)` -- excluye el CHARGE de empresa
+    //   una vez que ya tiene una AR asociada (el único productor de esa
+    //   columna es `postStayTransfer()`).
+    // Deliberadamente NO se filtra por `reversed_invoice_id` (columna
+    // distinta, usada por los ADJUSTMENT de Nota de Crédito) -- esos
+    // cargos tienen que seguir siendo adoptables, son cargos legítimos
+    // de la reserva/estadía, no filas de City Ledger.
+    // Hueco legacy aceptado: filas de `accounts_receivable`/
+    // `financial_transactions` anteriores a que existiera la columna
+    // `financial_transaction_id` quedan ciegas a beta (sin backfill
+    // posible, ver schema.sql) -- medido 0 filas en los 2 tenants reales
+    // al momento de este fix, ver el diseño citado arriba.
+    // beta es status-agnóstico a propósito: `markRevertedWithClient()`
+    // (sql.accounts-receivable.repository.ts) NO limpia
+    // `financial_transaction_id` al pasar la AR a REVERTIDO, así que el
+    // CHARGE de empresa sigue excluido de la adopción incluso después de
+    // revertido -- correcto, porque alfa ya excluye la pata ADJUSTMENT
+    // compensatoria, y las dos filas netean a cero en el ledger de la
+    // empresa sin que ninguna de las dos vuelva a moverse de estadía.
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
        SET stay_id = $1
        WHERE reservation_id = $2
-         AND stay_id IS NULL`,
+         AND stay_id IS NULL
+         AND reversed_transaction_id IS NULL
+         AND NOT EXISTS (
+               SELECT 1 FROM accounts_receivable ar
+                WHERE ar.financial_transaction_id = financial_transactions.id
+             )`,
       [stayId, reservationId],
     );
     return result.rowCount ?? 0;
