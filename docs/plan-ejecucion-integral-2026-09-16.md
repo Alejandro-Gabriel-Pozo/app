@@ -809,3 +809,283 @@ toca `.github/workflows/ci.yml`): alinear `ci.yml` a `postgres:18-alpine`.
 **Push:** el estado lo responde `git log origin/main --oneline | grep aa8e369`
 (y el hash de este commit de docs); requiere autorización explícita y
 nueva del dueño en cualquier caso.
+
+## Apéndice I — Wave 13, fase de descubrimiento cerrada (18/09/2026)
+
+Tres rondas de `architecture-governor` (§4.0) más `erp-audit-orchestrator`
+(Zona 1 y Zona 3) y `auditor-circuitos-erp` (Zona 2, grounding) sobre los
+ítems de la fila 13. Sin diseño ni código todavía — cierre de
+descubrimiento únicamente, autorizado explícitamente por el dueño y
+explícitamente sin que eso autorice commit ni push (autorizaciones
+separadas entre sí, ninguna de las dos dada todavía para este bloque).
+
+**Corrección de alcance — la fila 13 tiene 4 ítems, no 3.** El
+`CN-ESCAPE-ORPHAN-ADJUSTMENT-001` que la fila lista está condicionado
+explícitamente en el propio texto de la fila: *"si el HOLD de
+`invoice_drafts`/`FACT-BORRADOR-001` ya se levantó — si no, pasa al
+barrido continuo"*. Verificado hoy: **el HOLD sigue sin levantar**
+(`docs/pendientes-2026-09-12.md:2195-2198`, *"sigue sin autorizar
+`CREATE TABLE`, migraciones ni código: falta el gate
+`architecture-governor` sobre el diseño técnico completo"*;
+`FACT-BORRADOR-001` v2.13 vive en "📋 Backlog de producto (sin fecha)",
+`pendientes-2026-09-12.md:5183`). Por la propia condicional de la fila,
+`CN-ESCAPE-ORPHAN-ADJUSTMENT-001` **pasa al mecanismo de §6** (barrido
+continuo) y queda fuera del alcance de Wave 13 — decisión de ruteo
+explícita, no una omisión silenciosa (el modo de falla que
+"Pendientes — revalidar antes de arrastrar" del `CLAUDE.md` de este repo
+ya documenta: un ítem que sale del radar sin que nadie lo decida).
+
+**No es un ítem sin relación con el resto de la wave.** El descubrimiento
+de Zona 1 (`CITY-LEDGER-AR-DOUBLE-TRANSFER-001`) encontró una octava
+ubicación no pedida: `cancel-reservation-with-credit-note.service.ts`
+(`:413-423` `CreditNoteMixedStayError`, `:484-503`
+`assertRevertsExpectedInvoice`) lee exactamente las filas que
+`linkStayToReservationCharges()` adopta — mismo archivo y mismo concepto
+de atribución de `stay_id` a un `ADJUSTMENT` del escape de NC que
+`CN-ESCAPE-ORPHAN-ADJUSTMENT-001`. Diferir el cuarto ítem mientras el
+diseño de Zona 1 puede cambiar la semántica de adopción en ese mismo
+archivo es una decisión de secuenciación con riesgo real, no un trámite
+— si el diseño de Zona 1 toca esa zona del archivo, re-evaluar si
+`CN-ESCAPE-ORPHAN-ADJUSTMENT-001` puede seguir esperando al barrido
+continuo sin re-abrir esta nota.
+
+**Veredicto de cierre por zona (gate `architecture-governor`, tercera
+ronda):**
+
+| Zona | Ítem | Veredicto |
+|---|---|---|
+| 1 | `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` | `READY FOR DESIGN`, condicionada (7 condiciones — predicado elegido con justificación, celda 7 resuelta por traza de código antes de diseñar, tratamiento del `Error` pelado de `:493-500`, hueco legacy registrado, estrategia de test dado que ningún unit test del repo puede validar un cambio de predicado, docblock y anclas corregidos) |
+| 2 | `CITY-LEDGER-GUARD-RETRY-EMITS-001` | `READY FOR DESIGN`, condicionada (cerrado 18/09/2026, quinta ronda, gate `architecture-governor` — ver Apéndice I.1/I.2. Condiciones: **(C-a)** declarar dónde vive el fix reconociendo que la rama NC de `requestInvoice()` (`:601-607`) retorna ANTES del bloque transaccional — un guard adentro de `transactionManager.run()` no cubre 5 de los 6 call-sites, solo `retryExisting()` o la región pre-transaccional cubre los 6; **(C-b)** re-derivar la alcanzabilidad real de la carrera de B (consolidada) contra el guard 8-bis (`accounts-receivable.service.ts:872-885`), que la angosta más de lo que el descubrimiento había estimado, en vez de heredar "la ventana sigue abierta" sin descontarlo; **(C-c)** declarar el mecanismo de detección de un productor futuro de `REFUND`/`ADJUSTMENT` facturable-con-NC que no comparta la propiedad estructural del criterio (nacer DESPUÉS del cambio de estado que referencia, no antes) — candidato: test de arquitectura tipo allowlist-con-motivo, mismo patrón que los 12 artefactos manuales ya existentes; **(C-d)** estrategia de test dado que ningún unit test del repo valida hoy un cambio de predicado en `retryExisting()` sin Postgres real. El guard de Wave 12 que esta zona extiende sigue sin pushear — el diseño no puede pedir evidencia de producción hasta que el dueño autorice ese push |
+| 3 | `POOL-MIXTO-MANUAL-01` | `READY FOR DESIGN`, condicionada (6 condiciones — dónde vive el parámetro de factura destino dado el schema compartido con órdenes, separar explícitamente "arreglar la salida" de "arreglar la entrada" del pool mixto, punto ciego de `resolveInvoiceLinkage()` registrado como riesgo residual aceptado, comentario stale corregido, anclas corregidas) |
+| 4 | `CN-ESCAPE-ORPHAN-ADJUSTMENT-001` | fuera de alcance de esta wave — ver arriba |
+
+**Hallazgo transversal de la wave, no específico de una zona:** el pool
+mixto de Zona 3 es reproducible por operación ORDINARIA (una reserva con
+seña genera 2 `CHARGE` de un solo evento de outbox; la pantalla de
+Cuentas Corrientes ofrece un botón "Facturar" por cargo con solo
+`Roles.FRONT_DESK`) — no un caso de borde hipotético. La medición de 0
+filas contra Neon (una tenant DB real, `ancient-king-17098519` branch
+`production`) solo dice que no pasó todavía en ese tenant, no que no
+pueda pasar.
+
+**No autorizado por este bloque:** ningún diseño, ningún código, ningún
+commit de código, ningún push. Este apéndice es el único artefacto de
+este bloque — puro texto de docs, cero `.ts` tocados.
+
+## Apéndice I.1 — Zona 2, extensión de la matriz (18/09/2026, tercera ronda)
+
+Descubrimiento puro, sin código — las 4 correcciones que pidió el gate
+después de que la ronda anterior encontrara que los dos orquestadores del
+escape de NC llaman a `requestInvoice()` con el sujeto YA `CANCELLED` a
+propósito (hallazgo que invalidaba "agregar guards a los call-sites 1 y
+4" como fix ingenuo).
+
+**Matriz de dos ejes — 6 call-sites de producción × 3 productores de
+transacciones facturables-con-NC.** No es 1:1: el call-site directo
+(`invoices.routes.ts:206`, `POST /api/invoices`) es polimórfico — acepta
+cualquier `financialTransactionId`, y `requireManagementForCompanyCharge()`
+(`invoices.routes.ts:155`) deja pasar explícitamente `REFUND`/`ADJUSTMENT`.
+Por eso este call-site sirve a DOS productores distintos, no solo al que
+la ronda anterior asumió:
+
+| Productor | Dónde nace (`reversedInvoiceId` seteado) | Tipo | Quién lo factura |
+|---|---|---|---|
+| Escape de NC — órdenes | `cancel-order-with-credit-note.service.ts:528` | `ADJUSTMENT` | Sí mismo (call-sites C/D, `:253`/`:565`) |
+| Escape de NC — reservas | `cancel-reservation-with-credit-note.service.ts:538` | `ADJUSTMENT` | Sí mismo (call-sites E/F, `:299`/`:573`) |
+| **Reembolso C2** | `cancellation-refund.service.ts:385` (`confirmRefund()`) | `REFUND` | **Nadie más — solo call-site A** (`invoices.routes.ts:206`) puede facturarlo |
+
+Precondición verificada de `confirmRefund()` (`cancellation-refund.service.ts:159`):
+`if (reservation.status !== CANCELLED) throw ReservationNotCancelledError`
+— el REFUND, igual que el `ADJUSTMENT` del escape, **nace solo cuando la
+reserva ya está cancelada**. No hay mecanismo de reapertura de una
+reserva `CANCELLED` en este repo (no verificado como invariante de schema
+en esta ronda, sí como ausencia de código — ningún `UPDATE ... SET
+status` saca una reserva de `CANCELLED`).
+
+**Grilla `(call-site × estado)` rehecha, con A dividido en A-CHARGE
+(Factura B directa) y A-NC (REFUND/ADJUSTMENT vía el mismo endpoint):**
+
+| Fila | A-CHARGE, 1er intento | A-CHARGE, reintento | A-NC (REFUND C2), cualquier intento | C/D/E/F (escape), cualquier intento |
+|---|---|---|---|---|
+| AR pasa a `REVERTIDO` | Guard Wave 12 corre — correcto | **Bypass real (el bug)** | No aplica — **inalcanzable por construcción**: la AR solo referencia un `financial_transaction_id` de tipo CHARGE (`postStayTransfer()`), nunca un REFUND/ADJUSTMENT | No aplica — mismo motivo, inalcanzable por construcción |
+| Orden/reserva `CANCELLED` por la vía NORMAL (no por el escape/reembolso) | ORDER-10/RESERVA-10 corren — correcto | **Bypass real, mismo mecanismo** | No aplica — **inalcanzable por construcción**: `confirmRefund()` exige `CANCELLED` como precondición de creación, nunca compite con un cambio posterior | No aplica — mismo motivo |
+| Sujeto YA `CANCELLED`/reembolsado porque ESTE MISMO flujo lo generó (motivo fundacional, no una carrera) | No aplica | No aplica | **Ausente por diseño — correcto**, igual que el escape: `CANCELLED` es la precondición de existencia del REFUND, no algo que cambió durante el reintento | **Ausente por diseño — correcto**, ya analizado en la ronda anterior |
+
+**Clasificación de la celda A-NC (la que la ronda anterior pidió
+resolver):** cae en la fila 3, no en la 1-2. Mismo argumento que ya
+aplicaba al escape: la pregunta que el grounding ERP evalúa es *"¿el
+estado cambió DESPUÉS del primer intento?"* — acá `CANCELLED` es la
+precondición de que el REFUND exista, verificada en el propio código
+(`:159`), no un estado que pueda cambiar entre el primer intento y un
+reintento. **No hereda la decisión de bloquear del dueño porque no es la
+misma pregunta — hereda la ausencia de guard, que es correcta por el
+mismo motivo que ya vale para el escape.** No hace falta una
+`AskUserQuestion` nueva.
+
+**Radio del fix, corregido:** la ronda anterior proponía "discriminar por
+`tx.type`" como criterio de `retryExisting()`. Eso ya no alcanza como
+justificación — `tx.type === 'REFUND'` cubre tanto al escape (que no
+necesita guard) como potencialmente a un REFUND cuyo estado SÍ podría
+haber cambiado por otra vía todavía no identificada. Lo que la grilla de
+arriba muestra es que el discriminador correcto no es el tipo de
+transacción sino **si la AR/orden/reserva referenciada por la fila
+original puede, estructuralmente, haber cambiado de estado DESPUÉS de
+que la fila nació** — para CHARGE, sí (la AR nace antes que la Factura B
+se pida); para REFUND/ADJUSTMENT de estos dos productores, no (nacen
+DESPUÉS de que el estado ya cambió, nunca antes). El diseño tiene que
+declarar esto como el criterio, no `tx.type` como proxy — y dejar
+constancia expresa de que un productor nuevo de REFUND/ADJUSTMENT que no
+comparta esta propiedad (nace ANTES del cambio de estado que referencia)
+quedaría mal cubierto por el mismo criterio, para que quien agregue ese
+productor lo note.
+
+**Reconciliación de `REJECTED` — corregida.** La ronda anterior dijo "una
+sola decisión aplicada en 3 lugares con el mismo predicado" — el propio
+docblock de `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts:24-30`)
+lo contradice explícitamente: *"NO es el mismo predicado que
+`retryExisting()` ... No unificar con el predicado de `retryExisting()`
+sin re-derivar por qué"*. Son dos predicados **deliberadamente
+distintos** que coinciden en excluir `REJECTED` (ninguno de los dos lo
+bloquea) pero divergen en `FAILED_UNCERTAIN` (`retryExisting()` lo trata
+como terminal solo si `afipContacted && !uncertainClearedAt`;
+`INVOICE_STATUSES_CONSUMING_CHARGE` lo trata como bloqueante siempre,
+sin mirar `afipContacted`). Cualquier diseño que use
+`INVOICE_STATUSES_CONSUMING_CHARGE` para razonar sobre lo que
+`retryExisting()` debería hacer tiene que re-derivar esa decisión
+explícitamente, no asumir que son intercambiables.
+
+**Dependencia de secuenciación — `diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`.**
+Documento de diseño **no aprobado, no implementado** (estado declarado en
+el propio archivo), que ya identificó (hallazgos M1/M2, ronda de gate
+v4→v5) que: (M1) la emisión manual de NC sobre un borrador editado
+necesita una rama nueva, propia, que **no reutilice** `requestInvoice()`
+tal cual; (M2) `retryExisting()` reusa el payload AFIP ya persistido, no
+uno recalculado desde el borrador editado, y eso puede reemitir contra
+datos viejos. Que M1 concluya "no reutilizar" reduce el riesgo de
+colisión directa, pero **el diseño de Zona 2 y ese documento apuntan al
+mismo par de funciones** (`requestInvoice()`/`retryExisting()`) desde dos
+ángulos distintos, ninguno aprobado todavía. Cualquiera de los dos que se
+diseñe primero tiene que declarar explícitamente qué asume del otro, para
+que el segundo no invalide en silencio el trabajo ya gateado del primero.
+
+**Confirmación de estado (18/09/2026, momento de escribir esto):** `git status --short`
+mostraba únicamente `M docs/plan-ejecucion-integral-2026-09-16.md`
+— cero archivos `.ts` tocados en toda la Wave 13 hasta ese punto.
+
+**Superada, 21/09/2026 (gate `architecture-governor`, ronda 6 de
+pre-commit de Zona 2) -- la frase de arriba es correcta a su fecha y
+falsa hoy, dejada in-place a propósito (mismo criterio que
+`SCHEMA-ANCHOR-DRIFT-001`: corregir hacia adelante, no reescribir un
+registro ya escrito).** Zona 1 y Zona 2 completaron diseño +
+implementación desde entonces: `.ts` tocados incluyen
+`src/clientes-finanzas/financial-transaction.repository.ts`,
+`src/clientes-finanzas/sql.financial-transaction.repository.ts`,
+`src/clientes-finanzas/payment-application.ts`,
+`src/facturacion/invoice.service.ts`,
+`src/facturacion/invoice.service.test.ts`,
+`src/tests/architecture/accounts-receivable-lock-order.test.ts`,
+`src/tests/architecture/reversed-invoice-id-convention.test.ts`,
+`src/tests/integration/reverse-transfer.integration.test.ts`,
+`src/tests/integration/city-ledger-double-transfer-adoption.integration.test.ts`
+(nuevo), `src/tests/integration/invoice-retry-charge-guard.integration.test.ts`
+(nuevo) -- más `CLAUDE.md` (artefacto #13,
+`NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT`) y
+`.github/workflows/ci.yml` (techo de suites de integración, 48→54).
+Todo gateado por `architecture-governor` en rondas sucesivas (diseño +
+implementación + pre-commit, Zona 1 y Zona 2 cada una con su propio
+ciclo), verificado contra Postgres 16.13 local (tier completo: 54
+archivos, 394/394 tests, con un hallazgo abierto de exit code
+intermitente en el teardown compartido, `INTEGRATION-TEARDOWN-UNHANDLED-57P01-001`
+en `docs/pendientes-2026-09-12.md`, no atribuible a este código por
+lectura de mecanismo aunque tampoco descartado por A/B). **Todavía sin
+commitear ni pushear al momento de escribir esta corrección** -- el
+registro completo con hashes reales de commit va en el commit de cierre
+de docs de Wave 13, una vez que el dueño autorice el commit (autorización
+todavía no pedida ni dada).
+
+## Apéndice I.2 — Zona 2, call-site B agregado (18/09/2026, cuarta ronda)
+
+**Estado real de Wave 12, para que quede escrito antes de que el diseño
+lo necesite:** `HEAD` (`0f7be6e`, incluye Wave 12) sigue **4 commits por
+delante de `origin/main`**, sin pushear ni deployar. El guard AR-`REVERTIDO`
+que Zona 2 extiende **no existe en producción hoy** — el bug que describe
+este apéndice es del árbol local, no del runtime desplegado. No cambia el
+diagnóstico; cambia qué evidencia de producción se le puede pedir al
+diseño (ninguna, hasta que el dueño autorice el push).
+
+**El eje de call-sites tenía 5 nombrados, no 6 como decía el texto —
+faltaba B.** `POST /api/invoices/consolidated` (`invoices.routes.ts:224,231`,
+`authorize(Roles.MANAGEMENT)`) → `InvoiceService.requestConsolidatedInvoice()`
+(`invoice.service.ts:759`) → su propio fast-path de idempotencia
+(`:777-779`, clave `invoice:consolidated:<hash de financialTransactionIds>`)
+→ **el mismo `retryExisting()`** que A. Confirmado: hay exactamente 2
+entradas a `retryExisting()` en todo el archivo, `:549` y `:779`, ninguna
+tercera. Consumidor real de UI: `appfrontend/src/app/dashboard/reportes/page.tsx:133`
+→ `invoicesApi.requestConsolidated()` (`appfrontend/src/lib/facturacion/api.ts:24`)
+— un segundo click en "Facturar ahora" sobre la misma empresa es el
+reintento real, no un escenario teórico.
+
+**Columna B de la grilla `(call-site × estado)`:**
+
+| Fila | B (consolidada), cualquier intento |
+|---|---|
+| AR pasa a `REVERTIDO` | **Ventana ANCHA cerrada por construcción, ventana de CARRERA sigue abierta.** `financialTransactionIds` (`:764`, `pending.map(ar => ar.financialTransactionId!)`) sale de `getPendingByCompanyCustomerId()`, que filtra por `PENDIENTE_FACTURAR` — un reintento SECUENCIAL después de que una AR se revierte recalcula un hash DISTINTO (la AR revertida ya no está en `pending`), no encuentra `existing`, cae al camino fresco, y el guard gemelo de Wave 12 (`:876-883`) corre normal. Pero dos llamadas CONCURRENTES que leen `pending` ANTES de que la reversión commitee computan el MISMO hash; si la primera ya creó la fila `invoices` (con cualquier estado no-`ISSUED`) antes de que la reversión termine, la segunda entra por `:779` → `retryExisting()` → `issue()` real, sin pasar por `:876-883`. Es la misma carrera que el comentario de Wave 12 en `requestInvoice()` dice estar cerrando ("el bloque gemelo"), pero el bloqueo real solo protege el camino fresco, no el de reintento — la ventana de carrera queda abierta en B igual que en A-CHARGE. |
+| Orden/reserva `CANCELLED` por vía normal | **Bypass real, sin necesitar carrera.** El set `financialTransactionIds` depende únicamente de qué AR están `PENDIENTE_FACTURAR` — no de si la orden/reserva del cargo original está cancelada. Un reintento SECUENCIAL (segundo click, mismo lote) recalcula el MISMO hash, encuentra la fila existente, entra por `:779` sin pasar por el guard `FACT-CONSOL-TOCTOU-01` (`:888-903`). Mismo bug que A-CHARGE fila 2, sin atenuante — no hace falta concurrencia para reproducirlo. |
+| Sujeto ya `CANCELLED`/reembolsado por el mismo flujo | No aplica — B no es un camino de escape de NC ni de reembolso, es facturación directa de cargos `PENDIENTE_FACTURAR` |
+
+**Consecuencia sobre la forma del fix — B no tiene "la fila".** La
+factura consolidada nace con `financialTransactionId: null`
+(`invoice.service.ts:908`); sus N cargos viven en `invoice_charges`, no en
+una columna de `invoices`. Cualquier implementación del criterio
+estructural (`invoice.service.ts:1537`, `closeAccountsReceivableGapBestEffort()`,
+`if (!issued.financialTransactionId) return;`, mismo patrón ya usado en
+este archivo para "esto no aplica a la consolidada") tiene que evaluarse
+**por cargo, vía `InvoiceRepository.getChargeIdsForInvoice()`
+(`invoice.repository.ts:385`)**, no por la fila `invoices` completa. El
+diseño hereda la política de rechazo de lote ya decidida por el dueño
+(R15 — no se arma una factura parcial en silencio: si UN cargo del lote
+falla el criterio, se rechaza el lote entero, no se factura un
+subconjunto en silencio) — la cita, no la re-decide.
+
+**Precisión productor C2 — capacidad vs. camino real.** El REFUND de C2
+es facturable SOLO por el call-site A como *capacidad* (es el único
+endpoint que acepta cualquier `financialTransactionId`). Como *camino
+real*, hoy no existe: `FacturarButton` (el único componente que llama
+`invoicesApi.request`) está montado en `reservas/[id]:594` y
+`cuentas-corrientes:331`, y su propio docblock declara que no aplica a
+`REFUND`/`ADJUSTMENT` — solo a `CHARGE`. La clasificación de la celda
+A-NC (fila 3, sin guard, correcto) no cambia; el riesgo residual sí es
+menor de lo que "alcanzable" sugiere sin esta distinción.
+
+**Cuarto productor evaluado y descartado — para que no reabra la matriz
+después.** `reverseTransfer()` crea 2 filas `ADJUSTMENT`
+(`accounts-receivable.service.ts:897-928`) con `reversedInvoiceId: null`
+(llevan `reversedTransactionId`, no `reversedInvoiceId`) — `buildCreditNote()`
+exige `reversedInvoiceId` (`invoice.service.ts:1066`,
+`InvoiceNotReversibleError` si falta). No son facturables-con-NC, no son
+un cuarto productor de esta matriz.
+
+**Cómo se detecta un productor futuro que no comparta la propiedad
+estructural del criterio (nacer ANTES del cambio de estado que
+referencia, no después) — respuesta a la pregunta del gate, no
+implementada:** el diseño de Zona 2 tiene que declarar el mecanismo, no
+solo advertirlo en prosa — mismo criterio que los 12 artefactos manuales
+que ya vigilan este repo (allowlist chico, motivo por entrada, verificado
+en las dos direcciones). Candidato natural: un test de arquitectura que
+enumere todo call-site que setea `reversedInvoiceId`/`reversedTransactionId`
+al crear una `FinancialTransaction` (mismo patrón de grep que usó esta
+ronda para encontrar los 3 productores reales) y falle si aparece uno
+nuevo sin una entrada en un allowlist que declare explícitamente de qué
+lado de la propiedad estructural cae. No se implementa en este bloque —
+es una condición que el diseño de Zona 2 tiene que resolver, igual que
+las otras 6 condiciones ya declaradas para esta zona.
+
+**Confirmación de estado (post-extensión):** `git status --short` →
+`M docs/plan-ejecucion-integral-2026-09-16.md` y
+`M docs/pendientes-2026-09-12.md` (2 anclas corregidas, `:422`→`:549`,
+`:1200-1218`→`:1478-1495`, ver Apéndice I.1). Cero `.ts`. `git log
+origin/main..HEAD --oneline` sigue mostrando los mismos 4 commits de
+Waves 10-12, sin cambios — la decisión de push sigue aparte, del dueño.
+No encontré ninguna ubicación nueva durante este bloque específico (la
+carrera de la fila 1 de B es una clasificación más fina de un hallazgo ya
+conocido, no una ubicación nueva).
