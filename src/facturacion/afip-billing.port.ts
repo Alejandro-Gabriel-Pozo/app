@@ -51,6 +51,8 @@ export interface VoucherInfoResult {
 export interface IvaReceptorTypeOption {
   id: number;
   description: string;
+  /** Clase de comprobante para la que ARCA habilita esta condición (`ClaseCmp` de `FEParamGetCondicionIvaReceptor`) -- Wave 14/P-16, §12.3. */
+  cmpClase: string;
 }
 
 export interface AfipBillingPort {

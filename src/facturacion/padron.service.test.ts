@@ -183,8 +183,8 @@ describe('PadronService.getIvaReceptorTypes', () => {
     const result = await buildService(client).getIvaReceptorTypes();
 
     expect(result).toEqual([
-      { id: 1, description: 'IVA Responsable Inscripto' },
-      { id: 5, description: 'Consumidor Final' },
+      { id: 1, description: 'IVA Responsable Inscripto', cmpClase: 'A' },
+      { id: 5, description: 'Consumidor Final', cmpClase: 'B' },
     ]);
   });
 

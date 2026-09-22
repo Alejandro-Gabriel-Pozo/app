@@ -130,7 +130,7 @@ export class ArcaSdkBillingAdapter implements AfipBillingPort {
 
   async getIvaReceptorTypes(claseCmp?: string): Promise<IvaReceptorTypeOption[]> {
     const result = await withAfipTimeout(this.client.electronicBillingService.getIvaReceptorTypes(claseCmp), 'getIvaReceptorTypes');
-    return (result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id, description: t.desc }));
+    return (result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id, description: t.desc, cmpClase: t.cmp_Clase }));
   }
 }
 

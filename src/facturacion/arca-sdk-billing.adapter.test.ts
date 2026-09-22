@@ -136,7 +136,7 @@ describe('ArcaSdkBillingAdapter.getIvaReceptorTypes', () => {
     });
     const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getIvaReceptorTypes }));
 
-    expect(await adapter.getIvaReceptorTypes()).toEqual([{ id: 5, description: 'Consumidor Final' }]);
+    expect(await adapter.getIvaReceptorTypes()).toEqual([{ id: 5, description: 'Consumidor Final', cmpClase: 'B' }]);
   });
 
   it('sin resultGet -- []', async () => {

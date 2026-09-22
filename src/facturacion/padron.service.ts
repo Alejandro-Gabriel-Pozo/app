@@ -107,6 +107,8 @@ export interface TaxpayerLookupResult {
 export interface IvaReceptorTypeOption {
   id: number;
   description: string;
+  /** Clase de comprobante para la que ARCA habilita esta condición (`ClaseCmp` de `FEParamGetCondicionIvaReceptor`) -- Wave 14/P-16, §12.3. */
+  cmpClase: string;
 }
 
 /** Ver docblock del archivo — lo que realmente llega, no lo que el SDK declara. */
@@ -155,7 +157,7 @@ export class PadronService {
     const result = await callPadron('getIvaReceptorTypes', () =>
       withAfipTimeout(client.electronicBillingService.getIvaReceptorTypes(claseCmp), 'getIvaReceptorTypes'),
     );
-    return (result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id, description: t.desc }));
+    return (result.resultGet?.condicionIvaReceptor ?? []).map((t) => ({ id: t.id, description: t.desc, cmpClase: t.cmp_Clase }));
   }
 
   private mapTaxpayerDetails(cuit: string, details: TaxpayerDetailsDto): TaxpayerLookupResult {
