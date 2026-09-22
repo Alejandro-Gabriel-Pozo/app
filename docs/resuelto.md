@@ -92,6 +92,116 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   una decisión de negocio propia vía `AskUserQuestion` antes de cualquier
   diseño de fix.
 
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
+  + `WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` (Wave 13
+  Zona 2, gate `architecture-governor`, dos rondas de pre-commit --
+  entrelazados, ver abajo).** Origen: `docs/pendientes-2026-09-12.md`
+  (ambos agregados 21/09/2026 en ronda 3 de pre-commit, cortados de ahí
+  en este mismo movimiento). El hallazgo era: la única prueba de "retry
+  consolidado" de `invoice-retry-charge-guard.integration.test.ts` corría
+  la carrera `reverseTransfer()` vs. retry con `Promise.allSettled` sin
+  sincronizar nada -- en esta máquina `reverseTransfer()` siempre ganaba
+  el lock, así que (1) el orden opuesto nunca se ejerció y (2) la
+  aserción sobre el orden que sí corría solo miraba
+  `retryIssued === false`, sin distinguir el guard nuevo de esta Wave de
+  cualquier otro motivo de rechazo.
+  **Reemplazado por dos sub-tests** (`orden α`/`orden β`) que fuerzan,
+  con el mismo patrón de lock artificial + `pg_blocking_pids()` ya
+  aprobado por el gate para §7 caso 3, CADA uno de los dos órdenes de
+  adquisición posibles del lock de AR entre `reverseTransfer()` y el
+  guard de retry -- en vez de depender del timing natural de 2 llamadas
+  en paralelo. Una SEGUNDA carrera sin controlar, entre `markIssued()`
+  del retry y la lectura de `resolveInvoiceLinkage()` del guard 8-bis de
+  `reverseTransfer()` (ninguna bajo lock), se cierra con
+  `makeAfipRaceGate()`: pausa al fake de AFIP justo antes de resolver,
+  garantizando que `reverseTransfer()` ya corrió su lectura antes de que
+  el retry marque `ISSUED`, sin depender de qué tan rápido respondería
+  un AFIP real.
+  **Orden α** (`reverseTransfer()` gana primero): revierte la AR,
+  commitea; el guard de retry, al tomar el lock después, encuentra
+  `REVERTIDO` y rechaza con `AccountsReceivableReversedCannotInvoiceError`
+  -- asertado por `instanceof` exacto (cierra GUARD-WEAK-ASSERTION-001),
+  más `callCounts.getLastVoucher/createNextVoucher === 0` (prueba que
+  nunca se intentó hablar con AFIP). **Orden β** (el guard de retry gana
+  primero): lo suelta al commitear su propia transacción, sin encontrar
+  nada anómalo; `reverseTransfer()` puede reversar mientras el retry
+  todavía habla con AFIP -- las DOS operaciones terminan con éxito,
+  exactamente el residuo que §2.1 del diseño acepta explícitamente
+  ("Residuo no cerrado -- heredado, no nuevo"), ahora demostrado
+  determinísticamente en vez de solo declarado en prosa.
+  **Implementado y confirmado por corrida real:** 9 tests en el archivo
+  (7 preexistentes + 2 nuevos), corrido con
+  `TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5433/postgres npx vitest run --config vitest.integration.config.ts src/tests/integration/invoice-retry-charge-guard.integration.test.ts`
+  contra un cluster Postgres 16 local -- **9/9 verde, repetido en 35
+  corridas consecutivas** (10 + 15 + 20 en 3 tandas), con una sola
+  anomalía de stdout ("1 error" sin afectar exit code ni el conteo de
+  tests, no reproducida en las 25 corridas de seguimiento) consistente
+  con el `INTEGRATION-TEARDOWN-UNHANDLED-57P01-001` ya registrado
+  (carrera de teardown preexistente, ajena a este bloque).
+  Evidencia de mutación (obligatoria por el gate, corrida contra
+  Postgres real, no deducida, las 3 revertidas con `git diff --stat`
+  confirmando 0 residuo en `src/facturacion/invoice.service.ts` cada vez
+  y la suite verde 9/9 de nuevo tras cada una): **M-A** (guard de retry
+  eliminado por completo de `retryExisting()`) hizo fallar orden α
+  (nunca llega a rechazar, ni por `instanceof` ni por ningún otro tipo --
+  el mecanismo de sincronización del propio sub-test se rompe porque el
+  retry ya no necesita el lock de AR) más, como colateral esperado de una
+  mutación tan amplia, el test de retry individual preexistente y los 3
+  arms `retry` de §7 caso 3; **M-B** (el throw site de un solo cargo en
+  `assertChargesStillInvoiceable()` cambiado a `Error` genérico) hizo
+  fallar orden α exactamente en el `instanceof` check (prueba directa de
+  que GUARD-WEAK-ASSERTION-001 está cerrado), con orden β y los 6 arms de
+  caso 3 en verde; **M-C** (orden de disparo invertido dentro del CUERPO
+  de orden β, temporal solo en el archivo de test) hizo fallar orden β --
+  prueba que el resultado depende del orden forzado, no de timing
+  favorable. **Primera corrida de M-C (ronda 2 del gate) expuso un defecto
+  real del test, corregido en ronda 3 (condición C1) antes de commitear:**
+  el `await raceGate.entered` original, sin salida alternativa, colgaba
+  30s (timeout del test) cuando el retry rechazaba ANTES de llegar a
+  `createNextVoucher()` -- exactamente lo que M-C fuerza -- y el `finally`
+  nunca corría, dejando una conexión y una BD de test (`test_<uuid>`)
+  huérfanas (confirmado con `psql`, dropeada a mano). Reemplazado por un
+  `Promise.race` entre `raceGate.entered` y el asentamiento de
+  `retryPromise` (fulfilled o rejected), que re-lanza el error real del
+  retry si `entered` nunca llega -- **M-C re-corrida después del fix:
+  falla en ~77ms (antes: colgaba 30s), `finally` corre, 0 BDs
+  `test_%` huérfanas** (confirmado con `psql` después de la corrida),
+  suite verde 9/9 de nuevo tras revertir. `callCounts === 0` (usado en
+  orden α) no tiene su propia mutación dedicada -- ninguna de M-A/M-B/M-C
+  lo ejercita de forma independiente, declarado como límite de esta
+  evidencia, no una brecha escondida.
+  **Corrección de una cita de este mismo archivo (ver la entrada de
+  `WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` más abajo -- sección
+  `## 21/09/2026` --, párrafo "Residuo separado") -- corregida en la
+  ronda 3 del gate, la versión de la ronda 2 decía "falso" y eso también
+  estaba mal, y además nombraba mal la entrada (decía
+  `INTEGRATION-TEARDOWN-UNHANDLED-57P01-001`, que es un ítem DISTINTO,
+  todavía abierto en `pendientes-2026-09-12.md`, sin entrada acá):** la
+  cita vieja decía que
+  RACE-ASSERTION-TIMING-DEPENDENT-001 estaba "corregida en el código en
+  ronda 4 -- commit `7906a26`". Verificado con `git show 7906a26`: ese
+  commit CREÓ este archivo de test, y ya traía el fix de ronda 4 (sin la
+  aserción `bothSucceeded === false`, con el comentario "No hay aserción
+  bothSucceeded..." y el `<= 1`) -- la cita vieja era INCOMPLETA, no
+  falsa: la mitad "aserción demasiado fuerte" sí estaba corregida antes de
+  ese commit; la mitad "el orden opuesto nunca se ejercita" (lo que este
+  bloque del 22/09/2026 cierra) seguía abierta.
+  **Hallazgo nuevo, separado, NO resuelto por este bloque -- corregido en
+  la ronda 3 del gate, la redacción de la ronda 2 tenía la secuencia
+  invertida:** ver
+  `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001` en
+  `docs/pendientes-2026-09-12.md` -- el orden β demostrado acá es
+  exactamente el residuo que §2.1 del diseño ya aceptaba, pero ahora
+  reproducido determinísticamente muestra la secuencia real: la
+  reversión de la AR (`reverseTransfer()`) COMMITEA primero, y RECIÉN
+  DESPUÉS el retry marca la factura `ISSUED` -- no "el CAE sobrevive a
+  una reversión posterior", sino "se emite un CAE real sobre un cargo
+  cuya AR ya está `REVERTIDO` en el momento de la emisión". La
+  consecuencia de negocio concreta sin resolver: ningún reporte ni guard
+  automático saca a la luz ese caso -- requiere su propia
+  `AskUserQuestion` -- explícitamente fuera de alcance de este bloque de
+  tests.
+
 ## 21/09/2026
 
 - **`WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` (Wave 13, Zona 2, gate
@@ -129,16 +239,27 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   igual. Registrado como `INTEGRATION-TEARDOWN-UNHANDLED-57P01-001` en
   `docs/pendientes-2026-09-12.md`, sin cerrar -- no confirmado si es
   preexistente a esta Wave.
-  **Residuo separado, NO cerrado acá:** dos hallazgos nuevos del gate sobre
-  la calidad de las aserciones del propio archivo (carrera dependiente del
-  timing de esta máquina, aserción que no distingue el guard nuevo de
-  cualquier otro motivo de rechazo) quedan en
-  `docs/pendientes-2026-09-12.md` como
+  **Residuo separado, NO cerrado acá en su momento -- cerrado el
+  22/09/2026, ver la entrada bajo esa fecha más arriba en este mismo
+  archivo.** Dos hallazgos nuevos del gate sobre la calidad de las
+  aserciones del propio archivo (carrera dependiente del timing de esta
+  máquina, aserción que no distingue el guard nuevo de cualquier otro
+  motivo de rechazo) quedaron en `docs/pendientes-2026-09-12.md` como
   `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
-  (corregida en el código en ronda 4 -- commit `7906a26`) y
-  `WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` (todavía
-  sin corregir) -- que el archivo corra 2/2 no significa que sus
-  aserciones sean tan fuertes como deberían.
+  y `WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` --
+  **corrección de esta cita (22/09/2026, gate `architecture-governor`,
+  ronda 3 de pre-commit -- la corrección de ronda 2 decía "falso" y
+  también estaba mal, ver abajo):** la afirmación "corregida en el código
+  en ronda 4 -- commit `7906a26`" que este párrafo tenía antes era
+  INCOMPLETA, no falsa -- verificado con `git show 7906a26`: ese commit
+  CREÓ el archivo de test y ya traía el fix de ronda 4 (sin la aserción
+  `bothSucceeded === false`, con el comentario "No hay aserción
+  bothSucceeded..." y el `<= 1`). La mitad "aserción demasiado fuerte"
+  SÍ estaba corregida antes de ese commit; la mitad "el orden opuesto
+  (retry gana el lock primero) nunca se ejercita" -- lo que el bloque del
+  22/09/2026 cierra -- siguió abierta hasta entonces. Que el archivo
+  corriera 2/2 nunca implicó que sus aserciones fueran tan fuertes como
+  deberían.
 
 ---
 

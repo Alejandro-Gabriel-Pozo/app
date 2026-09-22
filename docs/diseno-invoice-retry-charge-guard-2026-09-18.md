@@ -774,15 +774,63 @@ completo de emisión):
    es el que efectivamente prueba que el seed llevó por `retryExisting()`;
    el caso 1 (con la AR revertida) reusa la misma seed ya validada por 1-bis
    y agrega la reversión para ejercitar el guard nuevo en sí.
-2. **Concurrencia real en consolidada.** Dos conexiones: una corriendo
-   `reverseTransfer()`, otra `requestConsolidatedInvoice()` sobre una
-   factura ya sembrada `REJECTED` (mismo seed que el caso 1, multiplicado a
-   N cargos vía `invoice_charges`) — sincronizadas con un lock artificial
-   (mismo patrón que la concurrencia ya probada en
-   `reservation-availability.service.integration.test.ts`). Confirma que la
-   ventana de carrera de §2.1 queda cerrada, exactamente una de las dos
-   operaciones tiene éxito, la otra rechaza con el error correcto, nunca se
-   emite un CAE real contra el cargo revertido.
+2. **Concurrencia real en consolidada (reescrito 22/09/2026, gate
+   `architecture-governor`, ronda 3 de pre-commit — el texto original de
+   este punto decía "exactamente una de las dos operaciones tiene éxito",
+   que contradice §2.1 de este mismo diseño; la reescritura de ronda 2
+   todavía tenía un invariante infalsificable, corregido acá).**
+   Implementado en `invoice-retry-charge-guard.integration.test.ts` como
+   DOS sub-tests ("orden α"/"orden β"), no uno — cada uno fuerza, con un
+   lock artificial sostenido por una tercera conexión (mismo patrón que
+   `reservation-availability.service.integration.test.ts`, y el mismo
+   `waitUntilBlockedBy()`/`pg_blocking_pids()` ya usado en el caso 3 de
+   más abajo), UNO de los dos órdenes de adquisición posibles del lock de
+   AR entre `reverseTransfer()` y el guard de retry. **Ambos sub-tests
+   siembran vía `seedTransferredScenario()`, UN solo cargo** (rama
+   `chargeTxs.length === 1` de `assertChargesStillInvoiceable()`) — el
+   pedido original de este punto ("multiplicado a N cargos vía
+   `invoice_charges`") NO se implementó; esa combinación (rama `>1` bajo
+   una carrera real) sigue sin cobertura, ver el punto (5) de
+   `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001` en
+   `docs/pendientes-2026-09-12.md` para el residuo puntual.
+   - **Orden α** (`reverseTransfer()` gana el lock primero): revierte la
+     AR y commitea; el guard de retry, al tomar el lock después, encuentra
+     `REVERTIDO` y rechaza con `AccountsReceivableReversedCannotInvoiceError`
+     ANTES de hablar con AFIP — la única de las dos ramas donde "exactamente
+     una tiene éxito" es correcto. **Lo que el test assertea:** el tipo
+     exacto de error (`instanceof AccountsReceivableReversedCannotInvoiceError`,
+     no solo "algo rechazó") y `callCounts.getLastVoucher === 0` /
+     `callCounts.createNextVoucher === 0` (nunca se intentó hablar con
+     AFIP para este cargo).
+   - **Orden β** (el guard de retry gana el lock primero): lo suelta
+     (corre en su propia transacción, que commitea ANTES de que
+     `retryExisting()` llame a `issue()`) sin encontrar nada anómalo.
+     `reverseTransfer()` puede entonces tomar el lock, correr su lectura
+     8-bis (ve la factura todavía `REJECTED`, no bloquea) y COMMITEAR la
+     reversión — la AR queda `REVERTIDO` ANTES de que el retry, todavía
+     hablando con AFIP, marque la factura `ISSUED`. **Las DOS operaciones
+     terminan con éxito acá** — exactamente el residuo que §2.1 acepta
+     explícitamente ("Residuo no cerrado — heredado, no nuevo"), no un
+     bug, ahora con la secuencia real confirmada (reversión commitea
+     primero, no al revés — corregido en
+     `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`,
+     que registra la consecuencia de negocio de este orden). Cerrar la
+     ventana de carrera de §2.1 completamente (forzar SIEMPRE el orden α)
+     sería una decisión de producto distinta, no evaluada acá. **Lo que
+     el test assertea:** el retry reusa el `id` de la factura sembrada
+     (no crea una segunda fila) y termina `ISSUED`; exactamente 1 factura
+     `ISSUED` para la compañía al final.
+
+   **Sobre "nunca un segundo CAE" — corregido, ronda 3:** la versión de
+   ronda 2 de este punto afirmaba esto como invariante verificado en los
+   dos órdenes. No hay ninguna aserción en ninguno de los dos sub-tests
+   que lo pruebe directamente — es una propiedad que se sigue del diseño
+   (un solo cargo, una sola factura sembrada, `retryExisting()` reusa la
+   fila existente en vez de crear una nueva), pero no está ejercitada por
+   una mutación que la haga fallar si se rompiera — mismo criterio que
+   ronda 5 del pre-commit de caso 1/2 ya declaró para el `COUNT(*) <= 1`
+   original: una cerca de regresión hoy infalsificable con el código
+   actual, no un invariante demostrado.
 3. **Orden de lock real coincide entre el guard fresco y el de retry
    (reescrito 22/09/2026, `WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001`, gate
    `architecture-governor` — diseño consultado como decisión de diseño, no

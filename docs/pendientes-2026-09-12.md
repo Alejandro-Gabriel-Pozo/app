@@ -1642,96 +1642,6 @@ anteriores.
   esta verificación, "el timeout existe en producción" es una inferencia,
   no un hecho confirmado. No bloquea commitear el código (la mitigación
   de fallo es fail-loud vía el build, no silenciosa) -- si bloquea pushear.
-- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
-  (21/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de
-  pre-commit, hallazgo C2) -- la aserción central del test "retry
-  consolidado" de `invoice-retry-charge-guard.integration.test.ts`
-  (`expect(bothSucceeded).toBe(false)`) es más fuerte que lo que el
-  propio diseño garantiza.** §2.1 de
-  `docs/diseno-invoice-retry-charge-guard-2026-09-18.md` declara abierta
-  la ventana entre el COMMIT del guard de retry y la llamada a
-  `issue()` ("Residuo no cerrado -- heredado, no nuevo"), y `REJECTED`
-  no está en `INVOICE_STATUSES_CONSUMING_CHARGE`, así que el guard 8-bis
-  de `reverseTransfer()` no bloquea mientras el retry está hablando con
-  AFIP -- si el retry gana el lock de la AR antes que `reverseTransfer()`,
-  los dos pueden tener éxito, y el test fallaría contra una
-  implementación que se comporta exactamente como el diseño dice. Medido
-  con cobertura v8 sobre `accounts-receivable.service.ts` corriendo solo
-  este test (21/09/2026, Postgres 16.13 local): `markRevertedWithClient`
-  con 1 hit y los dos `throw new ArReversalRequiresCreditNoteError` con 0
-  hits -- en esta máquina gana siempre `reverseTransfer()` (menos
-  roundtrips hasta el `FOR UPDATE`), por eso 12/12 verde ahí. Es
-  estabilidad por timing de ESTA máquina, no por construcción del
-  guard -- en el runner de CI el orden puede invertirse y el test puede
-  quedar flaky o rojo sin que el código de producción tenga ningún bug.
-  Además, §7 caso 2 del diseño pedía sincronizar la carrera con un lock
-  artificial (patrón de
-  `reservation-availability.service.integration.test.ts`); se reemplazó
-  por `Promise.allSettled` sin declarar el cambio. Acción puntual que lo
-  cierra: reescribir el test para sincronizar la carrera con un lock
-  artificial (como pedía el diseño) en vez de depender del timing natural
-  de 2 llamadas en paralelo, o debilitar la aserción a lo que el diseño
-  realmente garantiza (nunca 2 CAE emitidos sobre el MISMO cargo
-  revertido, no "nunca los dos tienen éxito").
-- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001` (21/09/2026,
-  Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de pre-commit,
-  hallazgo C3) -- el mismo test de arriba puede quedar verde sin que
-  `assertChargesStillInvoiceable()` (el guard nuevo de esta Wave) haya
-  disparado siquiera una vez.** La aserción solo mira
-  `retryIssued === false`; cualquier motivo de rechazo del retry (no
-  solo `AccountsReceivableReversedCannotInvoiceError`, que es lo que el
-  guard nuevo lanza) la satisface igual. Su precedente directo, Wave 12
-  (`invoice-accounts-receivable-reversed-guard.integration.test.ts`), sí
-  asierta el tipo exacto del error
-  (`expect(invoiceResult.reason).toBeInstanceOf(AccountsReceivableReversedCannotInvoiceError)`).
-  Que el guard nuevo sí disparó en la corrida de esta sesión se confirmó
-  por cobertura v8 -- **evidencia corregida en el gate (ronda 5):** NO es
-  la cobertura de `accounts-receivable.service.ts` citada en la
-  redacción original de este ítem (ese archivo no contiene ninguno de
-  los 4 throw sites de `AccountsReceivableReversedCannotInvoiceError` --
-  los 4 están en `invoice.service.ts` -- ancla primaria por nombre, no
-  línea, desde SCHEMA-ANCHOR-DRIFT-001 (este archivo ya se movió una vez
-  en esta misma Wave): 2 dentro de los guards frescos de
-  `requestInvoice()`/`requestConsolidatedInvoice()`, y 2 dentro de
-  `assertChargesStillInvoiceable()` (el guard de retry de esta Wave, uno
-  por rama -- cargo único / `>1` cargos vía `invoice_charges`); líneas al
-  21/09/2026: 673/897/1589/1621. Esa cobertura de
-  `accounts-receivable.service.ts` solo prueba que `reverseTransfer()`
-  ganó el lock, no qué error devolvió el retry). La medición real es
-  sobre `assertChargesStillInvoiceable()`, rama de UN cargo (línea
-  `:1589` al 21/09/2026): el `if (ar && ar.status === 'REVERTIDO') throw
-  new AccountsReceivableReversedCannotInvoiceError(ar.id)` tiene el
-  consequent del branch con **2 hits** sobre los 2 tests de este archivo
-  (1 del reintento secuencial del test 1 + 1 de la carrera del test 2) --
-  comando:
-  `npx vitest run --config vitest.integration.config.ts --coverage.enabled --coverage.include='src/facturacion/invoice.service.ts' src/tests/integration/invoice-retry-charge-guard.integration.test.ts`.
-  Que el test no distinga "el guard nuevo funcionó" de "el retry falló
-  por cualquier otro motivo" sigue siendo el problema que este ítem
-  registra.
-  **Acción de cierre corregida (ronda 5) -- la receta original era
-  timing-dependent, igual que C2, y no se implementa tal como estaba
-  escrita.** Agregar
-  `expect(retryResult.status === 'rejected' && retryResult.reason).toBeInstanceOf(AccountsReceivableReversedCannotInvoiceError)`
-  dentro de la rama `if (reverseResult.status === 'fulfilled')` **no es
-  seguro**: cuando `reverseTransfer()` gana la carrera hay DOS rechazos
-  igualmente correctos según cuándo lea `requestConsolidatedInvoice()` el
-  lote pendiente (`getPendingByCompanyCustomerId()`, que filtra
-  `status = 'PENDIENTE_FACTURAR'` -- la AR revertida desaparece del lote
-  apenas se revierte): lectura ANTES del commit de la reversión -> mismo
-  hash -> `retryExisting()` -> guard -> `AccountsReceivableReversedCannotInvoiceError`;
-  lectura DESPUÉS -> `pending.length === 0` -> `NothingToInvoiceError`,
-  lanzado en la primera línea del método, sin llegar nunca al guard.
-  Asertar solo el primer tipo reintroduce la misma dependencia de timing
-  que C2 acaba de sacar. Y no hay atajo secuencial: en el camino
-  consolidado, la rama AR-`REVERTIDO` del guard solo es alcanzable
-  DENTRO de la ventana de carrera (secuencialmente siempre gana
-  `NothingToInvoiceError`) -- mismo hallazgo que la grilla del Apéndice
-  I.2 del plan de ejecución integral ya describe (ventana ANCHA cerrada
-  por construcción, ventana de CARRERA sigue abierta). Cerrar esto de
-  verdad requiere sincronizar la carrera con el lock artificial que
-  pedía §7 caso 2 del diseño -- queda entrelazado con la mitad no
-  cerrada de `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`,
-  no es un cambio de una línea aparte.
 - **`INTEGRATION-TEARDOWN-UNHANDLED-57P01-001` (21/09/2026, Wave 13, gate
   `architecture-governor`, ronda 4 de pre-commit) -- el tier de
   integración completo (54 archivos) sale con **exit code 1**
@@ -3300,6 +3210,108 @@ futuros, cada uno con su propio alcance.
   (mismo criterio que el guard de double-billing fresco), o el negocio
   prefiere aceptar la ventana y resolverla con la Nota de Crédito
   existente? Requiere `AskUserQuestion` antes de diseñar el fix.
+
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
+  (22/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de
+  pre-commit -- residuo YA aceptado por §2.1 del diseño, ahora
+  DEMOSTRADO y reproducido determinísticamente, no solo declarado en
+  prosa; texto corregido en rondas 3 y 4, ver los 5 puntos abajo -- la
+  redacción de ronda 2 tenía la secuencia invertida, el alcance acotado
+  solo a lo consolidado, y una opción de cierre con un costo no
+  verificado; el punto (5) es nuevo de la ronda 4, ancla un residuo que
+  antes solo vivía en el docblock del test y en el diseño.)
+  **(1) Secuencia real, no "el CAE sobrevive a una reversión
+  posterior":** si el guard de retry (`assertChargesStillInvoiceable()`)
+  gana el lock de AR ANTES que un `reverseTransfer()` concurrente, lo
+  suelta al commitear su propia transacción (ve la AR todavía `pending`,
+  no hay nada que frenar) -- `reverseTransfer()` puede entonces tomar el
+  lock, revisar y COMMITEAR la reversión mientras el retry TODAVÍA está
+  hablando con AFIP. Recién DESPUÉS el retry marca la factura `ISSUED`.
+  La secuencia real es: reversión COMMITEA primero, CAE se emite
+  DESPUÉS -- no al revés. El resultado final es el mismo (una factura
+  `ISSUED` real sobre un cargo cuya AR terminó `REVERTIDO`), pero el
+  orden importa para entender por qué ningún guard existente lo
+  atrapa: en el momento en que el retry consulta la AR, todavía estaba
+  `pending` -- no hay ninguna relectura después.
+  **(2) Reproducido determinísticamente** (no solo posible en teoría) en
+  `invoice-retry-charge-guard.integration.test.ts`, sub-test "retry
+  consolidado, orden β" -- fuerza este orden exacto con un lock artificial
+  y confirma el resultado: ambas operaciones terminan con éxito.
+  **(3) Alcance real -- no acotado al camino consolidado, verificado en
+  código (no reproducido para el individual):** `retryExisting()`
+  (`invoice.service.ts`) es el punto de entrada COMPARTIDO por el retry
+  individual y el consolidado -- la ventana de arriba está en ese código
+  común, no en `requestConsolidatedInvoice()` específicamente. El camino
+  FRESCO (primera vez, no retry) está cerrado por construcción y SÍ
+  verificado en código: `sql.invoice.repository.ts` persiste la factura
+  nueva con `status: 'PENDING'` (`createWithClient()`, VALUES literal
+  `'PENDING'`), y `PENDING` SÍ está en
+  `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts:41`) y SÍ
+  bloquea el guard 8-bis de `reverseTransfer()`
+  (`accounts-receivable.service.ts:880-882`,
+  `linkage.status === 'PENDING'` → `ArReversalRequiresCreditNoteError`).
+  El retry, en cambio, deja la fila en `REJECTED` (no la vuelve a poner
+  `PENDING`) mientras habla con AFIP -- y `REJECTED` NO está en la lista
+  que bloquea el guard 8-bis. Por eso la ventana existe solo en el
+  camino de RETRY (individual y consolidado), nunca en el fresco.
+  **(4) Referencia cruzada -- mismo concepto ya registrado desde el lado
+  de `reverseTransfer()`:** el docblock de `reverseTransfer()`
+  (`accounts-receivable.service.ts:805-809`, sección "Residuos
+  declarados, no resueltos en este commit") ya nombra este TOCTOU
+  ("ninguno de los dos toma lock... puede emitir CAE real contra un
+  cargo ya revertido") y remite a §7.2(b) del ADR
+  `docs/diseno-reconciliacion-city-ledger-2026-09-12.md` -- ese ADR
+  también documenta el caso gemelo de `InvoiceService.finalizeIssued()`
+  (camino per-reservation, más silencioso: ni siquiera loguea el gap).
+  Este ítem no es un hallazgo nuevo del sistema -- es la PRIMERA vez que
+  la variante de `retryExisting()` se reproduce contra Postgres real en
+  vez de solo declararse en prosa.
+  **(5) Residuo de cobertura, sin ancla propia hasta ahora (gate, ronda 4
+  -- vivía solo en el docblock del archivo de test y en §7 punto 2 del
+  diseño, ninguno de los dos es `pendientes`):** los 2 sub-tests que
+  reproducen esto ("orden α"/"orden β") siembran UN solo cargo
+  (`seedTransferredScenario()`, rama `chargeTxs.length === 1` de
+  `assertChargesStillInvoiceable()`) -- la rama `>1` (N cargos vía
+  `invoice_charges`, la que usa `canonicalAccountsReceivableLockOrder()`,
+  ya ejercitada por §7 caso 3 pero SIN ninguna carrera real contra
+  `reverseTransfer()`) queda sin cobertura bajo esta ventana específica.
+  Acción que lo cerraría: repetir el patrón α/β de este ítem pero
+  sembrando con `seedCompanyWithCharges()` (el helper de N cargos de §7
+  caso 3) en vez de `seedTransferredScenario()`. Requiere decisión de
+  alcance (¿vale la pena el test extra si la ventana de fondo -- este
+  mismo ítem -- todavía no tiene un fix decidido?), no solo trabajo
+  técnico -- no bloquea nada de lo de arriba, es un tercer eje
+  (individual/consolidado UN cargo ya cubiertos; consolidado N cargos,
+  no).
+  **Por qué no se cierra acá:** §2.1 de
+  `docs/diseno-invoice-retry-charge-guard-2026-09-18.md` ya evaluó esta
+  ventana y la aceptó a propósito. Candidatos de cierre, listados sin
+  prejuzgar costo (ninguno evaluado a fondo todavía):
+  (a) que `reverseTransfer()` bloquee mientras cualquier retry esté en
+  vuelo para esa AR;
+  (b) que el retry vuelva a persistir `PENDING` dentro de su propia
+  transacción de guard, replicando lo que el camino fresco ya hace (misma
+  protección que cierra el hueco en (3), sin cambiar la semántica del
+  guard fresco -- sería agregar un paso al camino de retry, no tocar el
+  fresco);
+  (c) resolver la corrección después del hecho con la Nota de Crédito
+  existente (mismo mecanismo que ya cubre "CAE emitido sobre cargo que
+  después se cancela" en otros flujos);
+  (d) un reporte de reconciliación nuevo que cruce AR `REVERTIDO` contra
+  facturas `ISSUED`/`PENDING` del mismo cargo.
+  Es una decisión de producto, no un bug de esta Wave -- **acá se
+  registra la CONSECUENCIA concreta** (para que no quede solo en un test
+  verde sin ancla en `pendientes`): un cargo puede terminar con un
+  comprobante fiscal real emitido y ninguna alerta automática de que la
+  cuenta que lo originó ya fue revertida -- quien reconcilie cuentas por
+  cobrar reversadas tiene que cruzar manualmente contra facturas
+  `ISSUED`/`PENDING` para detectar este caso. Requiere `AskUserQuestion`
+  (¿cuál de los 4 candidatos, u otro?) antes de diseñar cualquier fix --
+  mismo criterio que `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
+  arriba, entrelazado en el mismo guard pero una dirección distinta del
+  problema (esa es doble CAE sobre el MISMO cargo desde dos caminos de
+  facturación; esta es un solo CAE válido emitido sobre un cargo cuya AR
+  ya estaba revertida en el momento de la emisión).
 
 ---
 

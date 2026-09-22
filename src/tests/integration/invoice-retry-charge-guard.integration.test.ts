@@ -18,19 +18,29 @@
  *      por Wave 12).
  *   2. La carrera GENUINA del camino consolidado de retry -- dos
  *      operaciones reales compitiendo por el lock de la MISMA fila
- *      `accounts_receivable`, sin sostener ningún lock a mano.
+ *      `accounts_receivable`. **Corregido 22/09/2026 (gate
+ *      `architecture-governor`, ronda 2 de pre-commit):** ya NO es "sin
+ *      sostener ningún lock a mano" -- los 2 sub-tests de "retry
+ *      consolidado" (`orden α`/`orden β`, más abajo) sostienen un lock
+ *      artificial vía una tercera conexión (mismo patrón que §7 caso 3)
+ *      para FORZAR cada uno de los dos órdenes de adquisición posibles,
+ *      en vez de depender del timing natural de 2 llamadas en paralelo
+ *      (que en esta máquina siempre resolvía al mismo orden, dejando el
+ *      otro sin ejercitar nunca -- ver
+ *      `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
+ *      en `docs/resuelto.md`).
  *
- * **Lo que este archivo NO cubre, a propósito -- corregido en el gate de
- * pre-commit (ronda 3, hallazgo C1) tras medir cobertura real con v8: los 2
- * tests de acá arriba siembran exactamente UN cargo cada uno, así que
- * `chargeTxs.length === 1` siempre es verdadero y la rama `>1` de
- * `assertChargesStillInvoiceable()` -- la que usa
- * `getByFinancialTransactionId()` sin lock + `getByIdWithLock()` +
- * `canonicalAccountsReceivableLockOrder()` en el orden `else` del método --
- * nunca se ejecuta (0 hits medidos). §7 caso 2 del diseño pedía
- * multiplicar a N cargos vía `invoice_charges` para ejercitar esa rama; NO
- * se implementó -- residuo de alcance, no un olvido silencioso, declarado
- * acá para que quede anclado en el archivo que lo debería cubrir.
+ * **Lo que este archivo cubre ahora de la rama `>1` de
+ * `assertChargesStillInvoiceable()` -- corregido 22/09/2026, la nota
+ * original de acá (ronda 3, hallazgo C1) quedó parcialmente stale:** §7
+ * caso 3 (más abajo, `describe('§7 caso 3 (reescrito)...')`) siembra N=3
+ * cargos vía `invoice_charges` y SÍ ejercita la rama `>1` (`chargeTxs.length
+ * > 1`) para el sitio `retry`, incluida `canonicalAccountsReceivableLockOrder()`
+ * en esa rama. Lo que sigue SIN cubrirse: esa rama `>1` bajo una carrera
+ * REAL contra `reverseTransfer()` (los 2 sub-tests de "retry consolidado"
+ * de acá arriba usan `seedTransferredScenario()`, un solo cargo -- rama
+ * `chargeTxs.length === 1`) -- combinación no implementada, residuo de
+ * alcance declarado, no un olvido silencioso.
  *
  * **Seed por FLUJO REAL, no por SQL crudo** -- a diferencia de lo que
  * describía la ronda 2 del diseño (§7, "seed directo por SQL"), este
@@ -146,18 +156,57 @@ class FakeProductVariantRepository implements Pick<IProductVariantRepository, 'g
 }
 
 /**
+ * Compuerta opcional para el AFIP fake -- gate `architecture-governor`,
+ * consulta de diseño 22/09/2026, condición de cierre para
+ * `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`.
+ * Sin esto, forzar el orden α/β de la carrera consolidada deja abierta
+ * una SEGUNDA carrera sin controlar (entre `markIssued()` del retry y la
+ * lectura de `resolveInvoiceLinkage()` del guard 8-bis de
+ * `reverseTransfer()`, ninguna de las dos bajo lock) -- `entered` se
+ * resuelve apenas el fake llega a `createNextVoucher()` (o sea, DESPUÉS
+ * de que el guard de `assertChargesStillInvoiceable()` ya liberó el lock
+ * de AR, porque corre en su propia transacción, commiteada antes de
+ * llegar acá), y `whenReleased` lo mantiene pausado ahí hasta que el test
+ * lo libere a propósito -- así el test puede garantizar que
+ * `reverseTransfer()` corrió su lectura ANTES de que el retry marque
+ * `ISSUED`, sin depender de qué tan rápido responda el fake.
+ */
+function makeAfipRaceGate(): { entered: Promise<void>; markEntered: () => void; whenReleased: Promise<void>; release: () => void } {
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+  let release!: () => void;
+  const whenReleased = new Promise<void>((resolve) => { release = resolve; });
+  return { entered, markEntered, whenReleased, release };
+}
+
+/**
  * A diferencia del fake de Wave 12 (siempre aprueba), este necesita
  * rechazar la PRIMERA llamada -- así el seed llega a `REJECTED` por el
  * flujo real (`requestInvoice()`/`requestConsolidatedInvoice()` reales),
  * no por SQL a mano. `rejectNextCalls` cuenta cuántas llamadas más
- * rechazar antes de empezar a aprobar.
+ * rechazar antes de empezar a aprobar. `opts.raceGate` y
+ * `opts.callCounts` son opcionales -- sin ellos el fake se comporta
+ * exactamente igual que antes de este bloque (default: sin gate, sin
+ * conteo), así que los 2 tests existentes que ya llamaban a esta función
+ * quedan sin cambios de comportamiento.
  */
 let cbteCounter = 1;
-function fakeArcaClient(rejectNextCalls: { count: number }): Arca {
+function fakeArcaClient(
+  rejectNextCalls: { count: number },
+  opts?: { raceGate?: { markEntered: () => void; whenReleased: Promise<void> }; callCounts?: { getLastVoucher: number; createNextVoucher: number } },
+): Arca {
   return {
     electronicBillingService: {
-      getLastVoucher: async () => ({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 }),
+      getLastVoucher: async () => {
+        if (opts?.callCounts) opts.callCounts.getLastVoucher += 1;
+        return { cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 };
+      },
       createNextVoucher: async () => {
+        if (opts?.callCounts) opts.callCounts.createNextVoucher += 1;
+        if (opts?.raceGate) {
+          opts.raceGate.markEntered();
+          await opts.raceGate.whenReleased;
+        }
         if (rejectNextCalls.count > 0) {
           rejectNextCalls.count -= 1;
           return {
@@ -230,6 +279,39 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
     await db.query('DELETE FROM reservations');
   });
 
+  /**
+   * Sondeo determinístico -- reemplaza la ventana de gracia de otros
+   * archivos por `pg_blocking_pids()` real. Hoisteado a este scope
+   * (22/09/2026, gate `architecture-governor`, ronda de diseño) desde
+   * adentro de `describe('§7 caso 3 (reescrito)...')` -- las 2 pruebas
+   * nuevas de la carrera consolidado-retry (más abajo) lo necesitan
+   * también, y duplicarlo hubiera sido la misma función dos veces en el
+   * mismo archivo. Devuelve los pids encontrados (antes devolvía `void`)
+   * para que el caller pueda encadenar un segundo `waitUntilBlockedBy`
+   * usando el pid recién bloqueado como nuevo `holderPid` -- las 6 arms
+   * de caso 3 siguen llamándolo igual que antes (ignoran el valor de
+   * retorno), comportamiento sin cambios para ellas.
+   */
+  async function waitUntilBlockedBy(holderPid: number, timeoutMs = 10_000): Promise<number[]> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const { rows } = await db.query<{ pid: number }>(
+        `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+        [holderPid],
+      );
+      if (rows.length >= 1) return rows.map((r) => r.pid);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(
+      `waitUntilBlockedBy(): ningún backend quedó bloqueado por el pid ${holderPid} dentro de ${timeoutMs} ms -- ` +
+      'el servicio no se quedó esperando el lock sostenido, o resolvió antes de intentar tomarlo.',
+    );
+  }
+
+  function isLockNotAvailable(err: unknown): boolean {
+    return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === '55P03';
+  }
+
   /** Mismo helper que invoice-accounts-receivable-reversed-guard.integration.test.ts. */
   async function seedTransferredScenario(balance = 1000) {
     const resource = await seedResource(db, categoryId);
@@ -258,7 +340,12 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
     return { ar, stayId, reservationId: reservation.id, guest, company, chargeId: ar.financialTransactionId! };
   }
 
-  function makeInvoiceService(rejectNextCalls: { count: number }, pgTxManager: PgTransactionManager, reservationRepo: SqlReservationRepository): InvoiceService {
+  function makeInvoiceService(
+    rejectNextCalls: { count: number },
+    pgTxManager: PgTransactionManager,
+    reservationRepo: SqlReservationRepository,
+    afipOpts?: { raceGate?: { markEntered: () => void; whenReleased: Promise<void> }; callCounts?: { getLastVoucher: number; createNextVoucher: number } },
+  ): InvoiceService {
     return new InvoiceService(
       invoiceRepo,
       financialRepo,
@@ -273,7 +360,7 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
       new SqlAuditLogRepository(db),
       new SqlServiceItemRepository(db),
       new SqlCreditNoteRequestRepository(db),
-      () => buildArcaBillingAdapter(fakeArcaClient(rejectNextCalls)),
+      () => buildArcaBillingAdapter(fakeArcaClient(rejectNextCalls, afipOpts)),
     );
   }
 
@@ -345,81 +432,243 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
   // Camino consolidado -- carrera GENUINA contra Postgres real, ahora
   // sobre el camino de RETRY: el comprobante consolidado YA existe
   // (REJECTED, sembrado por flujo real) antes de que la carrera empiece.
+  //
+  // REESCRITO 22/09/2026 (gate `architecture-governor`, consulta de
+  // diseño) -- cierra `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
+  // y `WAVE13-ZONA2-CONSOLIDATED-RETRY-GUARD-WEAK-ASSERTION-001`
+  // (entrelazados, ver docs/pendientes-2026-09-12.md / docs/resuelto.md
+  // para el texto original). El único test anterior corría la carrera con
+  // `Promise.allSettled` sin sincronizar nada -- en esta máquina
+  // `reverseTransfer()` siempre ganaba el lock, así que el orden opuesto
+  // (el guard de retry gana el lock primero, lo suelta, y
+  // `reverseTransfer()` puede reversar mientras el retry todavía habla
+  // con AFIP -- ambos terminan con éxito, exactamente lo que §2.1 del
+  // diseño acepta como residuo) nunca se ejerció. Reemplazado por dos
+  // sub-tests que fuerzan cada orden con el mismo patrón de lock artificial
+  // + `pg_blocking_pids()` ya usado (y gateado) para §7 caso 3 más abajo
+  // -- `waitUntilBlockedBy()`/`isLockNotAvailable()` viven ahora en el
+  // scope de este describe, no adentro del describe de caso 3, para que
+  // ambos grupos de tests los compartan.
+  //
+  // Forzar solo el orden de adquisición del lock de AR no alcanza --
+  // dejaría abierta una SEGUNDA carrera sin controlar, entre
+  // `markIssued()` del retry (después de que AFIP responde) y la lectura
+  // de `resolveInvoiceLinkage()` del guard 8-bis de `reverseTransfer()`
+  // (ninguna de las dos bajo lock). `makeAfipRaceGate()` cierra esa
+  // segunda ventana: pausa al fake de AFIP justo antes de resolver, así
+  // el test puede garantizar que `reverseTransfer()` ya corrió su lectura
+  // ANTES de que el retry marque `ISSUED`, sin depender de qué tan rápido
+  // respondería un AFIP real.
+  //
+  // **Lo que este mecanismo NO fuerza, declarado a propósito (gate,
+  // ronda 2):** solo controla la carrera DENTRO de este test puntual --
+  // no es una garantía general sobre el orden real `markIssued()` vs.
+  // 8-bis en producción, donde SÍ pueden competir sin ningún gate
+  // artificial de por medio (acá se usa `makeAfipRaceGate()` para OBSERVAR
+  // un resultado determinístico, no para demostrar que el código de
+  // producción los serializa). El orden real de esa carrera en producción
+  // sigue sin estar forzado ni observado por ningún test -- coincide con
+  // el residuo que §2.1 del diseño ya acepta (ninguno de los dos ordenes
+  // posibles es incorrecto, así que no hace falta forzar el orden real
+  // para cerrar este ítem, solo demostrar que CADA orden por separado se
+  // comporta como el diseño promete).
   // -------------------------------------------------------------------
-  it('retry consolidado: reverseTransfer() vs. un SEGUNDO requestConsolidatedInvoice() sobre un comprobante YA REJECTED -- exactamente uno gana, nunca CAE contra el cargo revertido', async () => {
+  it('retry consolidado, orden β -- el guard de retry gana el lock de AR primero, lo suelta, y reverseTransfer() revierte la AR mientras el retry todavía habla con AFIP: los dos terminan con éxito (residuo aceptado por §2.1 del diseño, no un bug -- antes NUNCA se forzaba este orden)', async () => {
     const pgTxManager = new PgTransactionManager(pool);
     const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
     const rejectFirstCall = { count: 1 };
-    const invoiceService = makeInvoiceService(rejectFirstCall, pgTxManager, reservationRepo);
+    const seedInvoiceService = makeInvoiceService(rejectFirstCall, pgTxManager, reservationRepo);
 
     const { ar, company } = await seedTransferredScenario(900);
 
-    // Seed por flujo real: primer llamado rechazado por AFIP -> queda
-    // REJECTED, con exactamente este `financialTransactionId` en
-    // invoice_charges. Igual que arriba, `issue()` nunca devuelve el
-    // objeto factura en la rama de rechazo -- se confirma la excepción, no
-    // un valor de retorno. A diferencia del camino individual, esta prueba
-    // no reintenta limpio antes de la carrera, así que no hace falta leer
-    // el `id` sembrado.
     await expect(
-      invoiceService.requestConsolidatedInvoice({ businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice' }),
+      seedInvoiceService.requestConsolidatedInvoice({ businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice' }),
     ).rejects.toBeInstanceOf(AfipRequestRejectedError);
+    const { rows: seedRows } = await db.query<{ id: string; status: string }>(
+      `SELECT id, status FROM invoices WHERE customer_id = $1`, [company.id],
+    );
+    expect(seedRows).toHaveLength(1);
+    expect(seedRows[0]!.status).toBe('REJECTED');
+    const seededInvoiceId = seedRows[0]!.id;
 
-    // Ahora sí, la carrera real: reverseTransfer() vs. un SEGUNDO llamado
-    // (mismo companyCustomerId, mismo lote pendiente -> mismo hash ->
-    // retryExisting()) -- ninguno sostiene lock a mano, Postgres decide.
-    const [reverseResult, retryResult] = await Promise.allSettled([
-      arService.reverseTransfer({ accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'Wave 13 Nivel 2 -- retry consolidado' }),
-      invoiceService.requestConsolidatedInvoice({ businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice' }),
-    ]);
+    const raceGate = makeAfipRaceGate();
+    const callCounts = { getLastVoucher: 0, createNextVoucher: 0 };
+    const retryInvoiceService = makeInvoiceService({ count: 0 }, pgTxManager, reservationRepo, { raceGate, callCounts });
 
-    // NO es "nunca los dos tienen éxito a la vez" -- corregido en el gate
-    // de pre-commit (ronda 4, hallazgo C2): el guard de retry
-    // (`assertChargesStillInvoiceable()`) corre en su PROPIA transacción
-    // (`invoice.service.ts::retryExisting()`, cita por nombre -- confirma
-    // y libera el lock de la AR ANTES de hablar con AFIP en `issue()`), y
-    // `REJECTED` no está en `INVOICE_STATUSES_CONSUMING_CHARGE`
-    // (`invoice.entities.ts`) -- así que si el retry gana el lock primero,
-    // el guard ve la AR todavía `pending`, la suelta, y `reverseTransfer()`
-    // puede reversarla mientras AFIP responde: los dos terminan
-    // `fulfilled`, exactamente como permite §2.1 del diseño ("Residuo no
-    // cerrado -- heredado, no nuevo"). Ver
-    // `docs/pendientes-2026-09-12.md`,
-    // `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`.
-    // No hay aserción "bothSucceeded === false" acá. El `COUNT(*) ISSUED
-    // <= 1` de más abajo NO es "el invariante real que sí vale en
-    // cualquier orden" -- corregido en el gate (ronda 5): en ESTE
-    // escenario es una cerca de regresión, hoy infalsificable, contra un
-    // camino futuro que llegue a crear una SEGUNDA fila `invoices` para
-    // el mismo lote. Con el código actual nunca puede haber más de una:
-    // `retryExisting()` reusa la fila sembrada (fast-path `if (existing)
-    // return this.retryExisting(existing)` de
-    // `requestConsolidatedInvoice()`), y el único otro camino (lote
-    // pendiente vacío tras la reversión) lanza `NothingToInvoiceError` en
-    // la primera línea del método, antes de crear nada -- ninguna
-    // implementación, correcta o rota, puede hacer fallar ese `COUNT`
-    // acá. La única aserción falsable SOBRE LA CARRERA (posterior al
-    // seed -- el `rejects.toBeInstanceOf(AfipRequestRejectedError)` de
-    // más arriba sigue siendo una aserción real y falsable, es sobre el
-    // seed, no sobre la carrera) es la de la rama
-    // `if (reverseResult.status === 'fulfilled')` de abajo, y esa rama
-    // solo corre cuando `reverseTransfer()` gana la carrera -- si el
-    // interleaving se invierte, la parte de CARRERA del test puede pasar
-    // en verde sin ejercer ninguna aserción efectiva sobre ella. Cita por
-    // contenido, no línea, desde SCHEMA-ANCHOR-DRIFT-001.
-    const retryIssued = retryResult.status === 'fulfilled' && retryResult.value.status === 'ISSUED';
+    const holder = await pool.connect();
+    let retryPromise: Promise<{ id: string; status: string }> | undefined;
+    let reversePromise: Promise<unknown> | undefined;
+    try {
+      await holder.query('BEGIN');
+      const { rows: pidRows } = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      const holderPid = pidRows[0]!.pid;
+      await holder.query('SELECT id FROM accounts_receivable WHERE id = $1 FOR UPDATE', [ar.id]);
 
-    if (reverseResult.status === 'fulfilled') {
-      // reverseTransfer() ganó el lock primero: el retry, al re-lockear
-      // dentro de assertChargesStillInvoiceable(), tiene que encontrar la
-      // AR ya REVERTIDO y rechazar ANTES de contactar AFIP.
-      expect(retryIssued).toBe(false);
+      // Dispara el retry PRIMERO -- entra a la cola de espera del lock de
+      // AR antes que reverseTransfer(), así que Postgres se lo concede
+      // primero al soltar el holder (FIFO para requests en conflicto
+      // sobre la misma fila -- mismo supuesto ya verificado por el gate
+      // para §7 caso 3).
+      retryPromise = retryInvoiceService.requestConsolidatedInvoice({
+        businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice',
+      }) as Promise<{ id: string; status: string }>;
+      retryPromise.catch(() => {});
+      const blockedByHolder = await waitUntilBlockedBy(holderPid);
+      expect(blockedByHolder).toHaveLength(1);
+      const [retryPid] = blockedByHolder as [number];
+
+      // Dispara reverseTransfer() SEGUNDO -- un waiter en cola queda
+      // bloqueado por el PID del waiter que tiene la fila adelante en la
+      // cola, no directamente por el holder (verificado por el gate) --
+      // por eso se espera acá contra `retryPid`, no contra `holderPid`.
+      reversePromise = arService.reverseTransfer({
+        accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'Wave 13 Nivel 2 -- retry consolidado, orden β',
+      });
+      reversePromise.catch(() => {});
+      const blockedByRetry = await waitUntilBlockedBy(retryPid);
+      expect(blockedByRetry).toHaveLength(1);
+
+      await holder.query('ROLLBACK');
+
+      // El retry entra a `createNextVoucher()` recién DESPUÉS de que su
+      // propia transacción de guard (`assertChargesStillInvoiceable()`)
+      // ya soltó el lock de AR (`transactionManager.run()` se espera
+      // completo, commit incluido, antes de llamar `issue()` --
+      // `invoice.service.ts::retryExisting()`, cita por nombre). En este
+      // punto `reverseTransfer()` ya pudo tomar el lock y correr su
+      // lectura 8-bis -- pero la compuerta mantiene al retry pausado ANTES
+      // de escribir `markIssued()`, así que esa lectura ve la factura
+      // todavía `REJECTED`, sin depender de qué tan rápido respondería un
+      // AFIP real.
+      //
+      // Fail-fast en vez de `await raceGate.entered` a secas (gate,
+      // ronda 3 de pre-commit, condición C1): si el retry alguna vez
+      // rechaza ANTES de llegar a `createNextVoucher()` -- por ejemplo,
+      // una regresión que reintroduce el orden equivocado -- `entered`
+      // nunca se resuelve y el test colgaba hasta el timeout de 30s, sin
+      // pasar nunca por `finally` (conexión y BD de test quedaban
+      // huérfanas, confirmado corriendo M-C antes de este fix). Se
+      // resuelve la carrera entre "llegó a AFIP" y "el retry ya terminó
+      // (de cualquier forma)" explícitamente.
+      const first = await Promise.race([
+        raceGate.entered.then(() => 'entered' as const),
+        retryPromise.then(
+          () => 'retry-settled' as const,
+          () => 'retry-settled' as const,
+        ),
+      ]);
+      if (first !== 'entered') {
+        await retryPromise; // re-lanza el error real del retry, si lo hubo
+        throw new Error(
+          'orden β: el retry terminó sin llegar a createNextVoucher() -- el orden forzado no se sostuvo.',
+        );
+      }
+      const reverseResult = await reversePromise;
+      expect(reverseResult).toBeTruthy(); // reverseTransfer() no lanzó
+
+      const { rows: midRows } = await db.query<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [seededInvoiceId]);
+      expect(midRows[0]!.status).toBe('REJECTED'); // el retry todavía no marcó ISSUED en este punto
+
+      raceGate.release();
+      const retryResult = await retryPromise;
+      expect(retryResult.status).toBe('ISSUED');
+      expect(retryResult.id).toBe(seededInvoiceId); // reusó la fila sembrada, no creó una segunda
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      raceGate.release();
+      if (retryPromise) await retryPromise.catch(() => {});
+      if (reversePromise) await reversePromise.catch(() => {});
+      holder.release();
     }
 
-    const { rows } = await db.query<{ count: string }>(
+    const { rows: arRows } = await db.query<{ status: string }>(`SELECT status FROM accounts_receivable WHERE id = $1`, [ar.id]);
+    expect(arRows[0]!.status).toBe('REVERTIDO');
+
+    const { rows: issuedRows } = await db.query<{ count: string }>(
       `SELECT COUNT(*) AS count FROM invoices WHERE customer_id = $1 AND status = 'ISSUED'`, [company.id],
     );
-    expect(Number(rows[0]!.count)).toBeLessThanOrEqual(1); // nunca 2 comprobantes ISSUED para el mismo lote
+    // Exactamente 1, no <=1 -- en ESTE orden forzado el resultado es
+    // determinístico (el retry siempre termina ISSUED), a diferencia del
+    // test viejo donde <=1 era la única cota que el código de hoy podía
+    // garantizar sin importar qué orden ganara.
+    expect(Number(issuedRows[0]!.count)).toBe(1);
+  }, 30_000);
+
+  it('retry consolidado, orden α -- reverseTransfer() gana el lock de AR primero: el retry rechaza con AccountsReceivableReversedCannotInvoiceError ANTES de hablar con AFIP, nunca emite un CAE contra el cargo revertido', async () => {
+    const pgTxManager = new PgTransactionManager(pool);
+    const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+    const rejectFirstCall = { count: 1 };
+    const seedInvoiceService = makeInvoiceService(rejectFirstCall, pgTxManager, reservationRepo);
+
+    const { ar, company } = await seedTransferredScenario(900);
+
+    await expect(
+      seedInvoiceService.requestConsolidatedInvoice({ businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice' }),
+    ).rejects.toBeInstanceOf(AfipRequestRejectedError);
+    const { rows: seedRows } = await db.query<{ status: string }>(`SELECT status FROM invoices WHERE customer_id = $1`, [company.id]);
+    expect(seedRows).toHaveLength(1);
+    expect(seedRows[0]!.status).toBe('REJECTED');
+
+    const callCounts = { getLastVoucher: 0, createNextVoucher: 0 };
+    const retryInvoiceService = makeInvoiceService({ count: 0 }, pgTxManager, reservationRepo, { callCounts });
+
+    const holder = await pool.connect();
+    let retryPromise: Promise<unknown> | undefined;
+    let reversePromise: Promise<unknown> | undefined;
+    try {
+      await holder.query('BEGIN');
+      const { rows: pidRows } = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      const holderPid = pidRows[0]!.pid;
+      await holder.query('SELECT id FROM accounts_receivable WHERE id = $1 FOR UPDATE', [ar.id]);
+
+      // Dispara reverseTransfer() PRIMERO esta vez -- orden invertido
+      // respecto del sub-test de arriba, para forzar la otra rama.
+      reversePromise = arService.reverseTransfer({
+        accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'Wave 13 Nivel 2 -- retry consolidado, orden α',
+      });
+      reversePromise.catch(() => {});
+      const blockedByHolder = await waitUntilBlockedBy(holderPid);
+      expect(blockedByHolder).toHaveLength(1);
+      const [reversePid] = blockedByHolder as [number];
+
+      retryPromise = retryInvoiceService.requestConsolidatedInvoice({
+        businessId: BUSINESS_ID, companyCustomerId: company.id, changedBy: 'ident-invoice',
+      });
+      retryPromise.catch(() => {});
+      const blockedByReverse = await waitUntilBlockedBy(reversePid);
+      expect(blockedByReverse).toHaveLength(1);
+
+      await holder.query('ROLLBACK');
+
+      // reverseTransfer() gana el lock, revierte la AR y commitea. El
+      // guard del retry (`assertChargesStillInvoiceable()`), al tomar el
+      // lock después, tiene que encontrar la AR ya `REVERTIDO` y rechazar
+      // ANTES de siquiera construir el cliente AFIP -- por eso se assertea
+      // `instanceof` (cierra `...GUARD-WEAK-ASSERTION-001`, no solo
+      // "algo rechazó") y `callCounts` en cero (cierra la mitad que la
+      // aserción de tipo sola no prueba: que nunca se intentó hablar con
+      // AFIP para este cargo).
+      const reverseResult = await reversePromise;
+      expect(reverseResult).toBeTruthy();
+
+      await expect(retryPromise).rejects.toBeInstanceOf(AccountsReceivableReversedCannotInvoiceError);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => {});
+      if (retryPromise) await retryPromise.catch(() => {});
+      if (reversePromise) await reversePromise.catch(() => {});
+      holder.release();
+    }
+
+    expect(callCounts.getLastVoucher).toBe(0);
+    expect(callCounts.createNextVoucher).toBe(0);
+
+    const { rows: arRows } = await db.query<{ status: string }>(`SELECT status FROM accounts_receivable WHERE id = $1`, [ar.id]);
+    expect(arRows[0]!.status).toBe('REVERTIDO');
+
+    const { rows: issuedRows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM invoices WHERE customer_id = $1 AND status = 'ISSUED'`, [company.id],
+    );
+    expect(Number(issuedRows[0]!.count)).toBe(0); // nunca llegó a ISSUED en este orden -- la factura sembrada sigue REJECTED
   }, 30_000);
 
   // -------------------------------------------------------------------
@@ -519,27 +768,6 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
         'seedDiscriminatingCompany(): 10 intentos y el orden canónico siguió coincidiendo con el de inserción o ' +
         'con el de financialTransactionId -- las mutaciones M1/M2 no discriminarían nada con este seed.',
       );
-    }
-
-    /** Sondeo determinístico -- reemplaza la ventana de gracia de otros archivos por `pg_blocking_pids()` real. */
-    async function waitUntilBlockedBy(holderPid: number, timeoutMs = 10_000): Promise<void> {
-      const start = Date.now();
-      while (Date.now() - start < timeoutMs) {
-        const { rows } = await db.query<{ pid: number }>(
-          `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
-          [holderPid],
-        );
-        if (rows.length >= 1) return;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      throw new Error(
-        `waitUntilBlockedBy(): ningún backend quedó bloqueado por el pid ${holderPid} dentro de ${timeoutMs} ms -- ` +
-        'el servicio no se quedó esperando el lock sostenido, o resolvió antes de intentar tomarlo.',
-      );
-    }
-
-    function isLockNotAvailable(err: unknown): boolean {
-      return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === '55P03';
     }
 
     /**
