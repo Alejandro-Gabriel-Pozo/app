@@ -4935,17 +4935,28 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   "`>1` → error tipado fail-closed, SIN llamar a AFIP y SIN crear
   ADJUSTMENT... bloque 3.5, gate propio, **con un parámetro explícito de
   factura destino**". **Verificado en el código real
-  (`cancel-reservation-with-credit-note.service.ts:310-315`): la mitad
-  fail-closed SÍ está -- `issuedInvoiceIds.size > 1` tira
+  (`cancel-reservation-with-credit-note.service.ts:339-345`,
+  **corregido 22/09/2026, gate `architecture-governor` ronda 2 del
+  diseño de Wave 13 Zona 3 — esta cita decía `:310-315`, stale por
+  desplazamiento del archivo en sesiones posteriores a esta entrada**):
+  la mitad fail-closed SÍ está -- `issuedInvoiceIds.size > 1` tira
   `CreditNoteReservationMultiInvoiceError` (correcto, seguro, ya
   deployado como parte de 3.3-b1). La mitad "manual" NO está --
   `cancelReservationWithCreditNote(reservationId, auth)` no acepta
-  ningún parámetro de factura destino** (`:252-255`, firma completa).
+  ningún parámetro de factura destino** (`:273-276`, firma completa —
+  **misma corrección, decía `:252-255`**).
   Efecto real: hoy, si una reserva llega a tener 2 facturas `ISSUED`
   vivas simultáneas, el escape con NC queda permanentemente inalcanzable
-  para esa reserva -- no hay forma de que un operador la resuelva, ni por
-  API ni por panel (tampoco hay panel, ver el punto de frontend de
-  abajo). Fail-closed es lo correcto mientras tanto (no corrompe nada),
+  para esa reserva -- no hay forma de que un operador la resuelva por API.
+  **Corregido (misma ronda del gate): "tampoco hay panel" es falso desde
+  el 15/09/2026 (`CANCEL-WITH-NC-UI-001`, F3-01/F3-02) — sí hay UI viva
+  para el escape (`appfrontend/src/app/dashboard/reservas/[id]/page.tsx:303`),
+  el operador ya aprieta el botón y recibe el 409 de
+  `CreditNoteReservationMultiInvoiceError` por toast; lo que sigue sin
+  existir es la forma de elegir `invoiceId` en ese mismo formulario — ver
+  el detalle completo en
+  `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.7.**
+  Fail-closed es lo correcto mientras tanto (no corrompe nada),
   pero el bloque 3.5 tal como lo definió el dueño no está cerrado. Sin
   medir en esta revisión cuántas reservas reales están en ese estado hoy
   -- verificar contra Neon antes de priorizar.
