@@ -339,7 +339,9 @@ export interface FinancialTransactionRepository {
 
   /**
    * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
-   * una reserva. Usado cuando se cancela una reserva.
+   * una reserva, EXCLUYENDO cualquier `ADJUSTMENT` con `reversed_invoice_id`
+   * no nulo (Opción A/BLQ-29, ver más abajo). Usado cuando se cancela una
+   * reserva.
    *
    * NO toca PAYMENT/REFUND (fix 23/08/2026, bug real en producción) — un
    * pago ya cobrado es un hecho histórico de dinero que cambió de manos,
@@ -367,6 +369,15 @@ export interface FinancialTransactionRepository {
    *   "orden de otro negocio" de `voidByOrderId()` (no hay análogo
    *   posible sin esa columna).
    * - Devuelve `EfectoDesenlace`, no un `number` mudo.
+   *
+   * **Opción A / BLQ-29 (22/09/2026, architecture-governor, ronda 22 --
+   * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.7).**
+   * Excluye por `reversed_invoice_id IS NOT NULL`, no por tipo -- protege
+   * el `ADJUSTMENT` del escape fiscal con Nota de Crédito de ser anulado
+   * por este backstop mientras su NC todavía no tiene comprobante vivo
+   * propio (ver detalle completo en `sql.financial-transaction.repository.ts`).
+   * NO excluye por `reversed_transaction_id` -- la pata empresa de City
+   * Ledger (`reverseTransfer()`) sigue anulándose sin cambios.
    */
   voidByReservationId(reservationId: string, businessId: string): Promise<EfectoDesenlace>;
 

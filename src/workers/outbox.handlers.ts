@@ -472,7 +472,14 @@ export function handleReservationCancelled(
  * como el CHARGE original — `handleReservationCompleted`/`Cancelled` lo
  * arrastran a SETTLED/VOIDED junto con él (`settleByReservationId`/
  * `voidByReservationId` son un UPDATE por `reservation_id`, no por id de
- * transacción puntual, así que agarran cualquier PENDING de esa reserva).
+ * transacción puntual, así que agarran cualquier PENDING de esa reserva
+ * — **con una excepción, agregada 22/09/2026, Opción A/BLQ-29:**
+ * `voidByReservationId` (no `settleByReservationId`, que no cambia) deja
+ * afuera cualquier `ADJUSTMENT` con `reversed_invoice_id` no nulo — el
+ * de este ajuste de precio nunca lo tiene, así que no le afecta; el que sí
+ * queda excluido es el `ADJUSTMENT` del escape fiscal con Nota de Crédito
+ * (`cancel-reservation-with-credit-note.service.ts`), ver el docblock de
+ * `voidByReservationId` para el detalle completo).
  *
  * ## `stayId` (STAY-ADJUSTMENT-PRICE-001, 11/09/2026, gate `architecture-governor`)
  * Se resuelve ACÁ, en el momento del INSERT -- no desde el payload del

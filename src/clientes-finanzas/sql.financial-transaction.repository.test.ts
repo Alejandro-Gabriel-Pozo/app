@@ -831,6 +831,40 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       const d = await repo.voidByReservationId('res-1', 'biz-1');
       expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] });
     });
+
+    // Caso 31 (Opción A/BLQ-29, 22/09/2026, architecture-governor ronda 22
+    // -- diseño-cancelacion-con-nota-credito-comun §6.7). Endurecido a
+    // propósito: un `toContain` suelto no distingue el predicado correcto
+    // (AND de nivel superior) de la variante incorrecta que la ronda 19
+    // descartó (anidado dentro del NOT EXISTS, o pegado al final de su
+    // cadena de OR sin paréntesis) -- las dos hacen que este `toContain`
+    // pase igual. Se verifica POSICIÓN: el predicado aparece después de
+    // `ft.status IN (...)` y ANTES de `AND NOT EXISTS (`, nunca dentro de
+    // ese bloque.
+    it('Opción A/BLQ-29: excluye por reversed_invoice_id como AND de nivel superior, no dentro del NOT EXISTS', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [diagReserva({ aplicadas: 1, candidatos: 1 })],
+      });
+
+      await repo.voidByReservationId('res-1', 'biz-1');
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain('AND ft.reversed_invoice_id IS NULL');
+
+      const idxStatus = sql.indexOf("ft.status IN ('PENDING','SETTLED')");
+      const idxPredicado = sql.indexOf('AND ft.reversed_invoice_id IS NULL');
+      const idxNotExists = sql.indexOf('AND NOT EXISTS (');
+      expect(idxStatus).toBeGreaterThan(-1);
+      expect(idxPredicado).toBeGreaterThan(idxStatus);
+      expect(idxNotExists).toBeGreaterThan(idxPredicado);
+
+      // No debe aparecer dentro del paréntesis del NOT EXISTS -- el cierre
+      // de ese bloque (RETURNING ft.id) tiene que venir DESPUÉS del
+      // predicado, nunca antes.
+      const idxReturning = sql.indexOf('RETURNING ft.id');
+      expect(idxPredicado).toBeLessThan(idxReturning);
+      expect(idxPredicado).toBeLessThan(idxNotExists);
+    });
   });
 
   describe('voidByOrderId — O2 / ORDER-06', () => {

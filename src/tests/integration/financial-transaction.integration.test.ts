@@ -245,4 +245,175 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
     const rowsB = await repo.getByReservationId(reservationB.id);
     expect(rowsB.find((r) => r.id === chargeSinFactura!.id)?.status).toBe('VOIDED');
   });
+
+  // Casos 28, 29, 30 (Opción A/BLQ-29, 22/09/2026, architecture-governor
+  // ronda 22, corregidos en la revisión pre-commit -- D-1/D-2/D-4, ver
+  // "### Ronda 22 del gate..." y la revisión pre-commit en
+  // docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md §6.7).
+  // `reversedInvoiceId` del ADJUSTMENT del escape apunta a la Factura B
+  // ORIGINAL que revierte (`cancel-reservation-with-credit-note.service.ts:538`),
+  // NUNCA a la NC -- la NC es una fila de `invoices` aparte, con su propio
+  // `financial_transaction_id = ADJUSTMENT.id` (verificado en el primer
+  // test de este archivo hermano, `ncRows[0]!.financial_transaction_id`).
+  // Eso significa que el `NOT EXISTS` de comprobante vivo, correlacionado
+  // por `financial_transaction_id = ft.id`, YA protege un ADJUSTMENT del
+  // escape cuando SU PROPIA NC está ISSUED (caso 29) -- Opción A protege
+  // ADEMÁS esa fila (protección doble, no la única), y protege SOLA la
+  // ventana donde la NC todavía no existe o no está vivo (caso 28).
+  describe('Opción A / BLQ-29 — voidByReservationId() no anula el ADJUSTMENT del escape con Nota de Crédito', () => {
+    /** Factura B (cbte_tipo 6) -- la que el CHARGE original factura. */
+    async function crearFacturaB(
+      financialTransactionId: string,
+      customerId: string,
+      cbteNro: number,
+    ): Promise<string> {
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, issued_at)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+                 5, 'PES', 100, 0, 100, '456', '2030-01-01', 'ISSUED', NOW())`,
+        [invoiceId, BUSINESS_ID, financialTransactionId, customerId, `idem-${invoiceId}`, cbteNro],
+      );
+      return invoiceId;
+    }
+
+    /** Nota de Crédito (cbte_tipo 8) -- la que el ADJUSTMENT del escape emite (o intenta). */
+    async function crearNotaCredito(
+      financialTransactionId: string,
+      customerId: string,
+      status: 'ISSUED' | 'REJECTED',
+      cbteNro: number | null,
+    ): Promise<string> {
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, issued_at)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 8, $6, 1, 96, '0',
+                 5, 'PES', 100, 0, 100, $7, $8, $9, $10)`,
+        [
+          invoiceId, BUSINESS_ID, financialTransactionId, customerId, `idem-${invoiceId}`,
+          cbteNro,
+          status === 'ISSUED' ? '789' : null,
+          status === 'ISSUED' ? '2030-01-01' : null,
+          status,
+          status === 'ISSUED' ? new Date() : null,
+        ],
+      );
+      return invoiceId;
+    }
+
+    it('caso 28: NO anula el ADJUSTMENT del escape (su NC todavía no existe / fue REJECTED) — y SÍ anula un ADJUSTMENT de price_adjusted en la misma corrida; el CHARGE original NO se anula (factura propia ISSUED)', async () => {
+      const { customer, reservation, repo } = await setupFixture();
+
+      // La Factura B del CHARGE original SIGUE ISSUED para siempre -- la
+      // NC no la modifica (es un documento fiscal aparte). Por eso el
+      // CHARGE queda protegido por el NOT EXISTS de siempre, sin relación
+      // con Opción A.
+      const chargeOriginal = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'CHARGE', amount: 100,
+        currency: 'ARS', status: 'SETTLED',
+      });
+      const facturaB = await crearFacturaB(chargeOriginal!.id, customer.id, 101);
+
+      // ADJUSTMENT del escape fiscal -- PENDING, reversedInvoiceId apunta
+      // a la Factura B (no a una NC propia -- todavía no la tiene). Su
+      // propio NOT EXISTS (correlacionado por financial_transaction_id =
+      // ADJUSTMENT.id) no encuentra nada -- sin Opción A, esta fila SÍ se
+      // anularía (ver el comentario de mutación del caso 29 más abajo).
+      // R19-4 (opcional, refuerza el escenario real): la NC rechazó en
+      // firme -- REJECTED, sin cbte_nro/CAE asignado (un rechazo nunca
+      // llega a tener número de comprobante).
+      const adjustmentDelEscape = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'ADJUSTMENT', amount: -100,
+        currency: 'ARS', status: 'PENDING', reversedInvoiceId: facturaB,
+      });
+      await crearNotaCredito(adjustmentDelEscape!.id, customer.id, 'REJECTED', null);
+
+      // Control: un ADJUSTMENT de price_adjusted, SIN reversed_invoice_id
+      // -- tiene que seguir anulándose igual que siempre.
+      const adjustmentPriceAdjusted = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'ADJUSTMENT', amount: 50,
+        currency: 'ARS', status: 'PENDING', reversedInvoiceId: null,
+      });
+
+      const desenlace = await repo.voidByReservationId(reservation.id, BUSINESS_ID);
+
+      const rows = await repo.getByReservationId(reservation.id);
+      expect(rows.find((r) => r.id === adjustmentDelEscape!.id)?.status).toBe('PENDING'); // NO anulado
+      expect(rows.find((r) => r.id === adjustmentPriceAdjusted!.id)?.status).toBe('VOIDED'); // SÍ anulado, sin cambios
+      expect(rows.find((r) => r.id === chargeOriginal!.id)?.status).toBe('SETTLED'); // NO anulado -- factura propia ISSUED
+
+      expect(desenlace).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
+    });
+
+    it('caso 29: NO anula el ADJUSTMENT del escape con su propia NC ISSUED — sigue SETTLED (protección doble: NOT EXISTS + Opción A)', async () => {
+      const { customer, reservation, repo } = await setupFixture();
+
+      const chargeOriginal = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'CHARGE', amount: 100,
+        currency: 'ARS', status: 'SETTLED',
+      });
+      const facturaB = await crearFacturaB(chargeOriginal!.id, customer.id, 102);
+
+      const adjustmentDelEscape = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'ADJUSTMENT', amount: -100,
+        currency: 'ARS', status: 'SETTLED', reversedInvoiceId: facturaB,
+      });
+      // La NC del ADJUSTMENT -- financial_transaction_id apunta AL
+      // ADJUSTMENT (no a la Factura B), ISSUED: ya cumplió su ciclo.
+      await crearNotaCredito(adjustmentDelEscape!.id, customer.id, 'ISSUED', 201);
+
+      await repo.voidByReservationId(reservation.id, BUSINESS_ID);
+
+      const rows = await repo.getByReservationId(reservation.id);
+      expect(rows.find((r) => r.id === adjustmentDelEscape!.id)?.status).toBe('SETTLED');
+
+      // Nota sobre discriminación (NO corrido contra Postgres real en este
+      // entorno -- condición de push, ronda 22): este fixture por sí solo
+      // ya está protegido por el NOT EXISTS existente (su propia NC está
+      // ISSUED), así que quitar por completo el predicado de Opción A NO
+      // lo hace fallar -- es el caso 28 el que discrimina esa mutación. Lo
+      // que este caso SÍ discrimina es la variante anidada CON paréntesis
+      // dentro del NOT EXISTS que la ronda 19 (R19-1) descartó por diseño
+      // -- verificar esa mutación puntual antes del push, no asumirla acá.
+    });
+
+    it('caso 30: SIGUE anulando la pata empresa de City Ledger (reversedTransactionId, sin reversedInvoiceId) — regresión contra reverseTransfer()', async () => {
+      const { customer, reservation, repo } = await setupFixture();
+
+      // Simula el CHARGE original que la AR revierte (no hace falta el
+      // flujo completo de reverseTransfer() acá -- solo la FORMA de la
+      // fila que ese método produce, Finding 1: reservationId presente).
+      const chargeOriginal = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'CHARGE', amount: 100,
+        currency: 'ARS', status: 'SETTLED',
+      });
+
+      const adjustmentPataEmpresa = await repo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+        reservationId: reservation.id, type: 'ADJUSTMENT', amount: -100,
+        currency: 'ARS', status: 'SETTLED',
+        reversedInvoiceId: null, reversedTransactionId: chargeOriginal!.id,
+      });
+
+      const desenlace = await repo.voidByReservationId(reservation.id, BUSINESS_ID);
+
+      const rows = await repo.getByReservationId(reservation.id);
+      expect(rows.find((r) => r.id === adjustmentPataEmpresa!.id)?.status).toBe('VOIDED');
+      expect(desenlace.tipo).toBe('APLICADO');
+    });
+  });
 });

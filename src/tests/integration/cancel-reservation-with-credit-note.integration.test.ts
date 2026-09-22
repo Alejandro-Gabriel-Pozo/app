@@ -362,6 +362,20 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
     await financialRepo.voidByReservationId(resA, BIZ);
     const { rows: chargeRowsAAfterVoid } = await db.query<{ status: string }>(`SELECT status FROM financial_transactions WHERE id = $1`, [chargeA!.id]);
     expect(chargeRowsAAfterVoid[0]!.status).toBe('SETTLED');
+
+    // C7 ampliado (Opción A/BLQ-29, 22/09/2026, ronda 22, corregido en la
+    // revisión pre-commit -- D-3) -- el propio ADJUSTMENT del escape
+    // (SETTLED) tampoco se anula. `reversedInvoiceId` apunta a la factura
+    // ORIGINAL que revierte (`cancel-reservation-with-credit-note.service.ts:538`),
+    // no a la NC -- la NC es la fila de `invoices` cuyo
+    // `financial_transaction_id` apunta AL ADJUSTMENT (verificado más
+    // arriba en este mismo archivo, "ncRows[0]!.financial_transaction_id").
+    // Antes de Opción A ya lo protegía el NOT EXISTS (correlacionado por
+    // `financial_transaction_id = ADJUSTMENT.id`, que encuentra esa NC
+    // ISSUED); con Opción A queda protegido dos veces -- este assert fija
+    // el resultado final, no cuál de las dos capas lo protege.
+    const { rows: adjRowsAfterVoid } = await db.query<{ status: string }>(`SELECT status FROM financial_transactions WHERE id = $1`, [result.adjustmentId]);
+    expect(adjRowsAfterVoid[0]!.status).toBe('SETTLED');
   }, 30_000);
 
   // ---------------------------------------------------------------------------
@@ -519,6 +533,81 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
       await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
 
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reconciliado: true }), expect.anything(),
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+
+    // Caso 32 (Opción A/BLQ-29, 22/09/2026, architecture-governor ronda 22
+    // -- reasignado acá en R21-1 porque `financial-transaction.integration.test.ts`
+    // no tiene mock de `logger`; corregido en la revisión pre-commit --
+    // D-1, la mutación NO se corrió contra Postgres real en este entorno,
+    // queda pendiente como condición de push, no "confirmada"). Distinto
+    // del test anterior ("ADJUSTMENT forzado a PENDING"): ahí se degrada
+    // el ÚNICO ADJUSTMENT del escape a mano; acá se agrega un SEGUNDO
+    // `ADJUSTMENT` (simula la 2ª entrada de un pool mixto, todavía sin
+    // resolver -- el verbo `resolvePoolInvoiceCreditNote()` que lo
+    // crearía en producción no está implementado todavía, bloque
+    // separado) con `reversed_invoice_id` a la MISMA factura que el
+    // primero. `voidByReservationId()` corre DESPUÉS, vía
+    // `handleReservationCancelled()`, con la reserva ya CANCELLED --
+    // exactamente la ventana de BLQ-29.
+    //
+    // MUTACIÓN pendiente de correr (no confirmada en este entorno, ver
+    // arriba): sin el predicado `AND ft.reversed_invoice_id IS NULL`, el
+    // segundo ADJUSTMENT quedaría `VOIDED` y `registrarDesenlace()`
+    // emitiría `logger.info({ evento: 'efecto_parcial', ... })` en vez de
+    // `logger.error` -- las dos aserciones de abajo (estado `PENDING` +
+    // `efecto_parcial` nunca llamado) son las que esa mutación haría
+    // fallar.
+    it('caso 32: un 2º ADJUSTMENT PENDING con reversed_invoice_id a la misma factura NO se anula, y el desenlace escala a grave (NOT_RECONCILED por la fila sin settlear)', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+      const result = await buildSut(invoiceService).cancelReservationWithCreditNote(reservationId, auth(reservationId));
+
+      // 2ª entrada del pool mixto, todavía sin su propia NC -- reversedInvoiceId
+      // apunta a la MISMA factura original que el ADJUSTMENT del escape
+      // (result.originalInvoiceId), sin idempotencyKey (no hace falta para
+      // este fixture, y evita cualquier colisión con la key real del
+      // verbo nuevo, que no existe todavía).
+      const segundoAdjustment = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'ADJUSTMENT', amount: -50, currency: 'ARS', status: 'PENDING',
+        reversedInvoiceId: result.originalInvoiceId,
+      });
+
+      // Confirma la premisa del fixture ANTES de tocar voidByReservationId:
+      // ya es NOT_RECONCILED por la fila sin SETTLED (ledger scoped a la
+      // factura, ver `classifyReservationLiveInvoice` (2) LEDGER) -- no es
+      // un efecto de Opción A, es anterior.
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('NOT_RECONCILED');
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
+
+      // Lo que Opción A cambia: este 2º ADJUSTMENT NO se anula (antes de
+      // Opción A, sí -- ver el comentario de mutación de más arriba).
+      const { rows: adj2Rows } = await db.query<{ status: string }>(
+        `SELECT status FROM financial_transactions WHERE id = $1`, [segundoAdjustment!.id],
+      );
+      expect(adj2Rows[0]!.status).toBe('PENDING');
+
+      // R20-3: la ruta silenciosa (`APLICADO` con `efecto_parcial` en
+      // `logger.info`) desaparece con Opción A -- antes de Opción A, este
+      // fixture hubiera anulado el 2º ADJUSTMENT y logueado `info`
+      // `efecto_parcial`, no `error`. Esta aserción es la que esa
+      // mutación (ver arriba) haría fallar.
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'efecto_parcial' }), expect.anything(),
+      );
       expect(logger.info).not.toHaveBeenCalledWith(
         expect.objectContaining({ reconciliado: true }), expect.anything(),
       );

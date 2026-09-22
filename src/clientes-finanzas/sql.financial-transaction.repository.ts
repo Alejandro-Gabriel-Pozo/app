@@ -385,6 +385,29 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
    * (`reservation-hold-expiry.worker.ts`, por ejemplo). Además, ahora
    * exige `EXISTS` una reserva `CANCELLED` -- antes no chequeaba el
    * estado de la reserva EN ABSOLUTO.
+   *
+   * **Opción A / BLQ-29 (22/09/2026, architecture-governor, ronda 22 --
+   * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.7).**
+   * Excluye del `UPDATE` cualquier `ADJUSTMENT` con `reversed_invoice_id`
+   * no nulo -- por VÍNCULO, no por tipo (un `ADJUSTMENT` de
+   * `reservation.price_adjusted`, sin `reversed_invoice_id`, sigue
+   * anulándose igual que siempre). Motivo: este backstop podía anular el
+   * `ADJUSTMENT` del escape fiscal con Nota de Crédito exactamente en la
+   * ventana en que más importa -- reserva ya `CANCELLED`, `ADJUSTMENT`
+   * `PENDING`/`SETTLED` cuya NC todavía no tiene comprobante vivo propio
+   * (así que el `NOT EXISTS` de más abajo no lo protegía) -- dejando una
+   * NC ya emitida en AFIP sin su `ADJUSTMENT` compensatorio de forma
+   * irreversible para siempre, porque la `idempotencyKey` que lo
+   * produjo es determinística. La exclusión es por `reversed_invoice_id`,
+   * no por `reversed_transaction_id` -- la pata empresa de City Ledger
+   * (`AccountsReceivableService.reverseTransfer()`) escribe
+   * `reversed_transaction_id` con `reversed_invoice_id: null`, y tiene
+   * que seguir anulándose sin cambios. El CHECK
+   * `chk_financial_transactions_reversed_invoice_type` (`schema.sql`)
+   * garantiza `reversed_invoice_id IS NOT NULL ⟹ type IN ('REFUND',
+   * 'ADJUSTMENT')` -- como este `UPDATE` ya filtra `type IN
+   * ('CHARGE','ADJUSTMENT')`, el predicado nuevo nunca excluye un
+   * `CHARGE` por accidente.
    */
   async voidByReservationId(reservationId: string, businessId: string): Promise<EfectoDesenlace> {
     const { rows } = await this.sqlClient.query<Record<string, unknown>>(
@@ -416,6 +439,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
             AND ft.business_id    = $2
             AND ft.type   IN ('CHARGE','ADJUSTMENT')
             AND ft.status IN ('PENDING','SETTLED')
+            AND ft.reversed_invoice_id IS NULL
             AND EXISTS (SELECT 1 FROM reservations r
                          WHERE r.id = ft.reservation_id
                            AND r.status = 'CANCELLED')
