@@ -43,20 +43,28 @@
  * que `requestInvoice()`/`requestConsolidatedInvoice()` arman -- no hay
  * forma de que quede mal formado.
  *
- * **Residuo declarado, NO incluido en este archivo:** §7 caso 3 del diseño
- * (reproducir el log de deadlock real de Wave 12 cruzando un guard FRESCO
- * consolidado con uno de RETRY sobre un subconjunto solapado de cargos)
- * necesita sostener un lock a mano vía una segunda conexión pausada a mitad
- * de transacción -- no escrito en este bloque, alcance propio. El
- * comparador compartido (`canonicalAccountsReceivableLockOrder()`) ya se
- * verificó por lectura de código (§3.1 del diseño, gate de pre-commit) como
- * preservador del orden AR-antes-que-reservations que Wave 12 reprodujo --
- * este residuo queda registrado en `## 🔍 Verificaciones pendientes`
- * (`docs/pendientes-2026-09-12.md`, entrada
- * `WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001`) como falta de implementación,
- * NO como limitación de entorno -- corregido en el gate de pre-commit
- * (ronda 3): este archivo SÍ corre contra Postgres real en este entorno
- * (ver más abajo), así que "no se puede correr acá" ya no es la causa.
+ * **Residuo CERRADO 22/09/2026 (`WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001`,
+ * gate `architecture-governor`, consulta de diseño):** §7 caso 3 del diseño
+ * SÍ está implementado en este archivo (describe "§7 caso 3 (reescrito)"
+ * más abajo). El texto original del diseño ("reproducir el log de deadlock
+ * real... antes de F1 esto deadlockeaba") describía una proyección de
+ * riesgo pre-implementación, no un estado de código real -- confirmado que
+ * `assertChargesStillInvoiceable()` nació ya canonizada en `7906a26`, sin
+ * versión previa no-canonizada en el historial. Una carrera fresco-vs-retry
+ * GENUINA sobre el mismo conjunto de AR resultó, además, estructuralmente
+ * casi imposible de construir -- no porque la idempotencia sea "por
+ * compañía" (corregido en la ronda 2 del gate), sino porque un mismo
+ * conjunto de cargos hashea a la misma clave (cae por retry igual) y un
+ * conjunto solapado pero distinto lo frena el guard anti double-billing
+ * antes de emitir nada (ver el diseño para el detalle completo). El diseño
+ * reescrito (aprobado por el gate, detallado en §7 caso 3 de
+ * `docs/diseno-invoice-retry-charge-guard-2026-09-18.md`) observa el
+ * FINGERPRINT determinístico del orden de locks -- vía `pg_blocking_pids()`
+ * + sondas `FOR UPDATE NOWAIT` -- en vez de perseguir una carrera. Evidencia
+ * de mutación (M1: retry guard ordenado por `financialTransactionId`; M2:
+ * guard fresco sin ordenar; M3a/M3b: reservations antes que AR en cada
+ * sitio, ronda 2 del gate) corrida contra Postgres real y revertida, ver
+ * el diseño para el detalle completo.
  *
  * **Este archivo SÍ corrió de punta a punta contra Postgres real** (gate de
  * pre-commit, ronda 3, 21/09/2026) -- 2/2 verde, 13 corridas consecutivas,
@@ -96,6 +104,8 @@ import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.reposi
 import { SqlCreditNoteRequestRepository } from '../../facturacion/sql.credit-note-request.repository.js';
 
 import { AccountsReceivableService } from '../../clientes-finanzas/accounts-receivable.service.js';
+import type { AccountReceivable } from '../../clientes-finanzas/accounts-receivable.repository.js';
+import { canonicalAccountsReceivableLockOrder } from '../../clientes-finanzas/payment-application.js';
 import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { AccountsReceivableReversedCannotInvoiceError, AfipRequestRejectedError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
@@ -411,4 +421,236 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
     );
     expect(Number(rows[0]!.count)).toBeLessThanOrEqual(1); // nunca 2 comprobantes ISSUED para el mismo lote
   }, 30_000);
+
+  // -------------------------------------------------------------------
+  // §7 caso 3 del diseño, REESCRITO (22/09/2026, architecture-governor,
+  // consulta de diseño previa a la implementación -- ver
+  // docs/diseno-invoice-retry-charge-guard-2026-09-18.md §7, enmienda del
+  // caso 3). El texto original ("reproducir el deadlock… antes de F1
+  // deadlockeaba, después no") no describe ningún estado de código real
+  // -- `assertChargesStillInvoiceable()` nace en `7906a26` ya usando
+  // `canonicalAccountsReceivableLockOrder()`, nunca existió una versión
+  // sin canonizar. Con los dos únicos sitios que lockean >1 AR
+  // (`requestConsolidatedInvoice()` fresco y `assertChargesStillInvoiceable()`
+  // de retry) usando el MISMO comparador, un ciclo de locks es imposible
+  // por construcción (orden total), no algo que dependa del timing -- así
+  // que "correrlo muchas veces sin deadlock" sería una cerca infalsificable
+  // (sale verde también cuando no hubo contención real).
+  //
+  // Lo que SÍ es observable y falsable contra Postgres real: el ORDEN
+  // EXACTO en que cada sitio toma los locks de accounts_receivable
+  // coincide con `canonicalAccountsReceivableLockOrder()`, y la fase de
+  // AR termina ANTES de que arranque la fase de `reservations` (la
+  // dimensión que motivó el deadlock real de Wave 12, entre tablas, no
+  // entre filas de AR). Para cada k, se sostiene a mano (segunda conexión
+  // real, sin commitear) el AR que ocupa la posición k del orden
+  // canónico, se dispara la llamada real, y se confirma por
+  // `pg_blocking_pids()` -- no por una ventana de gracia -- que el
+  // servicio quedó esperando ESE lock puntual con exactamente los AR de
+  // posición < k ya tomados (sondeo `FOR UPDATE NOWAIT`, 55P03 si están
+  // tomados) y los de posición > k todavía libres.
+  // -------------------------------------------------------------------
+  describe('§7 caso 3 (reescrito) -- orden de locks de accounts_receivable observado contra Postgres real', () => {
+    const N = 3;
+
+    /** N estadías de la MISMA empresa, cada una transferida -- un AR por estadía. */
+    async function seedCompanyWithCharges(n: number): Promise<{
+      companyCustomerId: string;
+      ars: AccountReceivable[];
+      reservationIds: string[];
+    }> {
+      const company = await seedCustomer(db);
+      await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+      const ars: AccountReceivable[] = [];
+      const reservationIds: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const resource = await seedResource(db, categoryId);
+        const guest = await seedCustomer(db);
+        const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 500 + i * 10 });
+        reservationIds.push(reservation.id);
+        const stayId = randomUUID();
+        await db.query(
+          `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+           VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+          [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+        );
+        await financialRepo.create({
+          id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+          reservationId: reservation.id, stayId, type: 'CHARGE', amount: 500 + i * 10,
+          currency: 'ARS', status: 'SETTLED',
+        });
+        const ar = await arService.transferStayBalanceToReceivable({
+          stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+        });
+        ars.push(ar);
+      }
+      return { companyCustomerId: company.id, ars, reservationIds };
+    }
+
+    /**
+     * Precondición de discriminación (gate, ronda de diseño): el orden
+     * canónico tiene que diferir tanto del orden de inserción (proxy de
+     * `created_at`, que es el orden que devuelve
+     * `getPendingByCompanyCustomerId()`) como del orden por
+     * `financialTransactionId` (la propuesta literal de la ronda 1 del
+     * diseño, "antes de F1") -- si coincidieran, las mutaciones M1/M2 de
+     * abajo no discriminarían nada. Reseed hasta 10 veces si no se cumple
+     * (probabilidad real con UUIDs v4 independientes: astronómicamente
+     * baja, pero declarado en vez de asumido).
+     */
+    async function seedDiscriminatingCompany(): Promise<{
+      companyCustomerId: string;
+      ars: AccountReceivable[];
+      expected: AccountReceivable[];
+      reservationIds: string[];
+    }> {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const { companyCustomerId, ars, reservationIds } = await seedCompanyWithCharges(N);
+        const expected = canonicalAccountsReceivableLockOrder(ars, (ar) => ar.id);
+        const byFinancialTransactionId = [...ars].sort((a, b) =>
+          (a.financialTransactionId ?? '').localeCompare(b.financialTransactionId ?? ''));
+        const sameAsInsertionOrder = expected.every((ar, i) => ar.id === ars[i]!.id);
+        const sameAsFinancialTransactionOrder = expected.every((ar, i) => ar.id === byFinancialTransactionId[i]!.id);
+        if (!sameAsInsertionOrder && !sameAsFinancialTransactionOrder) {
+          return { companyCustomerId, ars, expected, reservationIds };
+        }
+      }
+      throw new Error(
+        'seedDiscriminatingCompany(): 10 intentos y el orden canónico siguió coincidiendo con el de inserción o ' +
+        'con el de financialTransactionId -- las mutaciones M1/M2 no discriminarían nada con este seed.',
+      );
+    }
+
+    /** Sondeo determinístico -- reemplaza la ventana de gracia de otros archivos por `pg_blocking_pids()` real. */
+    async function waitUntilBlockedBy(holderPid: number, timeoutMs = 10_000): Promise<void> {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const { rows } = await db.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`,
+          [holderPid],
+        );
+        if (rows.length >= 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(
+        `waitUntilBlockedBy(): ningún backend quedó bloqueado por el pid ${holderPid} dentro de ${timeoutMs} ms -- ` +
+        'el servicio no se quedó esperando el lock sostenido, o resolvió antes de intentar tomarlo.',
+      );
+    }
+
+    function isLockNotAvailable(err: unknown): boolean {
+      return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: string }).code === '55P03';
+    }
+
+    /**
+     * Un brazo: sostiene a mano el AR de la posición `k` del orden
+     * canónico, dispara la llamada real (`site`), y verifica la
+     * fotografía exacta de qué está tomado y qué no en el momento en que
+     * el servicio queda bloqueado.
+     */
+    async function runArm(site: 'fresco' | 'retry', k: number): Promise<void> {
+      const { companyCustomerId, expected, reservationIds } = await seedDiscriminatingCompany();
+
+      let seededId: string | undefined;
+      const pgTxManager = new PgTransactionManager(pool);
+      const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+
+      if (site === 'retry') {
+        const seedInvoiceService = makeInvoiceService({ count: 1 }, pgTxManager, reservationRepo);
+        await expect(
+          seedInvoiceService.requestConsolidatedInvoice({ businessId: BUSINESS_ID, companyCustomerId, changedBy: 'ident-invoice' }),
+        ).rejects.toBeInstanceOf(AfipRequestRejectedError);
+        const { rows: seedRows } = await db.query<{ id: string; status: string }>(
+          `SELECT id, status FROM invoices WHERE customer_id = $1`, [companyCustomerId],
+        );
+        expect(seedRows).toHaveLength(1);
+        expect(seedRows[0]!.status).toBe('REJECTED');
+        seededId = seedRows[0]!.id;
+      }
+
+      const invoiceService = makeInvoiceService({ count: 0 }, pgTxManager, reservationRepo);
+
+      const holder = await pool.connect();
+      const probe = await pool.connect();
+      let servicePromise: Promise<unknown> | undefined;
+      try {
+        await holder.query('BEGIN');
+        const { rows: pidRows } = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        const holderPid = pidRows[0]!.pid;
+        await holder.query('SELECT id FROM accounts_receivable WHERE id = $1 FOR UPDATE', [expected[k]!.id]);
+
+        servicePromise = invoiceService.requestConsolidatedInvoice({
+          businessId: BUSINESS_ID, companyCustomerId, changedBy: 'ident-invoice',
+        });
+        // Nunca dejar una rejection sin observar mientras esperamos --
+        // se re-lanza recién al final, vía `await servicePromise`.
+        servicePromise.catch(() => {});
+
+        await waitUntilBlockedBy(holderPid);
+
+        // Fotografía: los de posición < k, tomados por el SERVICIO (su
+        // propia transacción los sostiene sin soltarlos hasta el final);
+        // los de posición > k, todavía libres -- el servicio nunca llegó
+        // a intentarlos.
+        for (let j = 0; j < N; j++) {
+          if (j === k) continue;
+          await probe.query('BEGIN');
+          try {
+            await probe.query('SELECT id FROM accounts_receivable WHERE id = $1 FOR UPDATE NOWAIT', [expected[j]!.id]);
+            expect(
+              j > k,
+              `AR de posición ${j} (< k=${k}) se pudo lockear con NOWAIT -- el servicio no lo había tomado ` +
+              'todavía al momento de bloquearse en la posición k, así que NO está respetando el orden canónico.',
+            ).toBe(true);
+          } catch (err) {
+            expect(
+              isLockNotAvailable(err) && j < k,
+              j < k
+                ? `AR de posición ${j} (< k=${k}) no se pudo lockear, pero el error no fue 55P03 (lock_not_available): ${String(err)}`
+                : `AR de posición ${j} (> k=${k}) no se pudo lockear con NOWAIT -- el servicio la tomó ANTES de ` +
+                  `llegar a la posición k, orden incorrecto. Error: ${String(err)}`,
+            ).toBe(true);
+          } finally {
+            await probe.query('ROLLBACK').catch(() => {});
+          }
+        }
+
+        // La fase de `reservations` todavía no arrancó -- confirma que la
+        // fase de AR (donde el servicio está bloqueado) precede a la de
+        // `reservations`, la dimensión que motivó el deadlock real de
+        // Wave 12 (entre tablas, no entre filas de AR).
+        await probe.query('BEGIN');
+        try {
+          await probe.query('SELECT id FROM reservations WHERE id = ANY($1) FOR UPDATE NOWAIT', [reservationIds]);
+        } finally {
+          await probe.query('ROLLBACK').catch(() => {});
+        }
+
+        await holder.query('ROLLBACK');
+        const result = await servicePromise;
+        expect((result as { status: string }).status).toBe('ISSUED');
+        if (site === 'retry') {
+          expect((result as { id: string }).id).toBe(seededId);
+        } else {
+          const { rows: chargeRows } = await db.query<{ count: string }>(
+            `SELECT COUNT(*) AS count FROM invoice_charges WHERE invoice_id = $1`, [(result as { id: string }).id],
+          );
+          expect(Number(chargeRows[0]!.count)).toBe(N);
+        }
+      } finally {
+        await holder.query('ROLLBACK').catch(() => {});
+        if (servicePromise) await servicePromise.catch(() => {});
+        holder.release();
+        probe.release();
+      }
+    }
+
+    for (const site of ['fresco', 'retry'] as const) {
+      for (let k = 0; k < N; k++) {
+        it(`sitio ${site}, posición k=${k}: el servicio bloquea exactamente en el AR de esa posición, con < k tomados y > k libres`, async () => {
+          await runArm(site, k);
+        }, 30_000);
+      }
+    }
+  });
 });

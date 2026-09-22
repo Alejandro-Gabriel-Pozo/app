@@ -783,16 +783,166 @@ completo de emisión):
    ventana de carrera de §2.1 queda cerrada, exactamente una de las dos
    operaciones tiene éxito, la otra rechaza con el error correcto, nunca se
    emite un CAE real contra el cargo revertido.
-3. **Orden de lock real coincide entre el guard fresco y el de retry.**
-   Reproduce el mismo log de deadlock real que motivó Wave 12
-   (`invoice-accounts-receivable-reversed-guard.integration.test.ts`) pero
-   cruzando un guard FRESCO consolidado con un RETRY consolidado sobre un
-   subconjunto solapado de cargos — antes de F1 esto deadlockeaba
-   (reproducible); después, no.
+3. **Orden de lock real coincide entre el guard fresco y el de retry
+   (reescrito 22/09/2026, `WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001`, gate
+   `architecture-governor` — diseño consultado como decisión de diseño, no
+   solo pre-commit).**
 
-Sin `TEST_DATABASE_URL` en este entorno, el Nivel 2 queda con verificación de
-Postgres real pendiente (misma convención `## 🔍 Verificaciones pendientes`
-que Zona 1) — el Nivel 1 sí corre y se verifica en este entorno.
+   **Corrección factual sobre el texto original de este punto:** "antes de
+   F1 esto deadlockeaba (reproducible)" nunca describió un estado real de
+   código commiteado — `assertChargesStillInvoiceable()` nació en el mismo
+   commit que introdujo `canonicalAccountsReceivableLockOrder()`
+   (`7906a26`, esta misma Wave/Zona) ya usando el comparador canónico;
+   `git log -S"assertChargesStillInvoiceable"` confirma que no existió
+   nunca una versión sin canonizar en el historial. No hay commit anterior
+   contra el cual reproducir el deadlock original — el texto era una
+   proyección de riesgo escrita ANTES de implementar el fix, no una
+   observación de un estado real.
+
+   Investigación adicional (22/09/2026) mostró además que un caso 3 literal
+   — una carrera genuina fresco-vs-retry sobre el MISMO conjunto de AR
+   solapadas — es estructuralmente casi imposible de construir. **Corregido
+   en el gate (22/09/2026): NO es porque la idempotencia sea por
+   COMPAÑÍA** — la clave de la rama consolidada es
+   `` `invoice:consolidated:${hashIds(financialTransactionIds)}` ``
+   (`requestConsolidatedInvoice()`, cita por nombre), un hash del CONJUNTO
+   de cargos, no de la compañía; la de la rama individual es
+   `` `invoice:${input.financialTransactionId}` `` (`requestInvoice()`,
+   cita por nombre), por cargo. La conclusión de todos modos se sostiene,
+   por dos razones distintas: (1) si el conjunto de cargos de la segunda
+   llamada es EXACTAMENTE el mismo, el hash coincide y cae por
+   `retryExisting()` igual; (2) si el conjunto es distinto pero SOLAPA con
+   uno ya facturado, el guard anti double-billing
+   (`getInvoicedFinancialTransactionIds()`, rama `invoice_charges`,
+   status-blind a propósito — ver su propio docblock) lo frena ahí, antes
+   de llegar a emitir nada — respaldado por
+   `idx_invoice_charges_ft` (`src/db/schema.sql:3684`, `UNIQUE`). En
+   ninguno de los dos casos se llega a una carrera fresco-vs-retry real
+   sobre AR solapadas. Presentado al dueño (`AskUserQuestion`), quien
+   eligió mandar la ambigüedad a `architecture-governor` en vez de simular
+   un guard no-canónico o saltear el ítem.
+
+   **Diseño aprobado por el gate — observación determinística del orden de
+   locks, no un intento de deadlock:** en vez de perseguir una carrera real
+   entre los dos sitios (que además de infeasible sería no-determinística),
+   el test ejercita cada sitio (`fresco`, `retry`) por separado, k veces
+   (k = posición 0..N-1 dentro del orden canónico de N=3 AR de una misma
+   compañía), y verifica el FINGERPRINT exacto del orden de locks vía
+   `pg_blocking_pids()` + sondas `SELECT ... FOR UPDATE NOWAIT`:
+
+   1. Se siembra una compañía "discriminante" — reintentando la
+      generación hasta que el orden canónico (`canonicalAccountsReceivableLockOrder`)
+      difiera TANTO del orden de inserción como del orden por
+      `financialTransactionId`, para que el test pueda distinguir "orden
+      canónico real" de las dos mutaciones candidatas de un vistazo.
+   2. Una conexión "holder" toma `BEGIN; SELECT ... FOR UPDATE` sobre la AR
+      en la posición `k` del orden canónico (para el sitio `retry`, sobre
+      una factura consolidada ya sembrada `REJECTED`).
+   3. Se dispara el servicio real (`requestConsolidatedInvoice()`, sin
+      esperar la promesa) y se poll-ea `pg_blocking_pids()` hasta confirmar
+      que el proceso del servicio quedó bloqueado exactamente por el
+      `pid` del holder.
+   4. Con el servicio bloqueado ahí, una segunda conexión "probe" intenta
+      `FOR UPDATE NOWAIT` sobre cada AR `j != k`: se espera `55P03`
+      (`lock_not_available`) para todo `j < k` (ya tomadas por el
+      servicio, en orden) y éxito para todo `j > k` (todavía libres) — el
+      fingerprint completo "prefijo tomado / sufijo libre" en la posición
+      exacta que el orden canónico predice. La misma conexión "probe"
+      también intenta `FOR UPDATE NOWAIT` sobre las filas de
+      `reservations` involucradas y espera ÉXITO — el servicio no debe
+      haberlas tomado todavía en este punto (AR-antes-que-reservations,
+      la dimensión que motivó el deadlock real de Wave 12); esta sonda es
+      la que M3a/M3b ejercitan.
+   5. Se libera el holder (`ROLLBACK`), se espera la promesa real (éxito),
+      se limpian las dos conexiones.
+
+   Implementado en `invoice-retry-charge-guard.integration.test.ts`
+   (`describe('§7 caso 3 (reescrito)...')`, 6 arms: sitio × k ∈ {0,1,2}).
+   **Garantía estadística del diseño (N=3, derivada en el gate 22/09/2026,
+   corregida en la ronda 2 -- la formulación general de la ronda 1
+   contradecía sus propios casos puntuales):** con un orden mutado F
+   distinto del canónico E, el arm k solo puede "pasar" (no discriminar)
+   si F ubica a `E[k]` exactamente en la posición k **y** el CONJUNTO de
+   elementos anteriores en F es exactamente `{E[0], ..., E[k-1]}` (el
+   orden interno de ese prefijo no es observable por la sonda -- el
+   fingerprint solo distingue "tomado" de "libre", no el orden entre
+   tomados). Con N=3 eso da: el arm **k=1 discrimina SIEMPRE** (pasar
+   exigiría F[0]=E[0] y F[1]=E[1], lo que fuerza F=E, ya descartado por
+   `seedDiscriminatingCompany()`); los arms **k=0 y k=2 discriminan en 4 de
+   las 5 permutaciones erróneas posibles** de 3 elementos (k=0 no
+   discrimina solo si F=[E0,E2,E1]; k=2 solo si F=[E1,E0,E2]) — así que un
+   solo arm de los 3 puede fallar en discriminar en una corrida dada, nunca
+   dos. Esta garantía es específica de N=3 y hay que re-derivarla si N
+   cambia.
+
+   **Evidencia de mutación, corrida contra Postgres real (cluster local,
+   22/09/2026), no deducida:**
+   - **M1** (guard de retry, `assertChargesStillInvoiceable()`, rama `>1`
+     — `canonicalAccountsReceivableLockOrder()` reemplazada por
+     `.sort()` sobre `financialTransactionId`): 2 de 3 arms `retry`
+     fallaron con el assertion error esperado (`AR de posición N no se
+     pudo lockear...`/`...se pudo lockear pero no debía`) — `retry k=1`
+     entre ellos, como la garantía de arriba exige siempre; `retry k=0` no
+     discriminó esta corrida puntual, consistente con la garantía (F
+     coincidió con E en la posición 0 en el orden mutado que salió
+     sembrado). Los 3 arms `fresco` y los 2 tests preexistentes se
+     mantuvieron verdes. Revertido, `git diff --stat` confirmó 0 residuo,
+     8/8 verde de nuevo.
+   - **M2** (guard fresco, `requestConsolidatedInvoice()`, loop de AR —
+     se quita `canonicalAccountsReceivableLockOrder()` y se itera
+     `pending` sin ordenar): los 3 arms `fresco` fallaron, consistente con — pero no
+     garantizado más fuerte que — la misma cota estadística que M1 (el
+     resultado 3/3 de esta corrida puntual es uno de los desenlaces
+     posibles, no el único que la garantía permite). Los 3 arms `retry` y
+     los 2 tests preexistentes se mantuvieron verdes. Revertido,
+     `git diff --stat` confirmó 0 residuo, 8/8 verde de nuevo.
+   - **M3a** (guard fresco, `requestConsolidatedInvoice()` — el loop de
+     `reservationIds` movido ANTES que el loop de AR, recreando la versión
+     de Wave 12 que deadlockeaba): los 3 arms `fresco` fallaron los 3, con
+     el error real de Postgres `could not obtain lock on row in relation
+     "reservations"` en la sonda `FOR UPDATE NOWAIT` — corregido en la
+     ronda 2 del gate: los locks de fila no se liberan a mitad de
+     transacción, así que la causa no es que el servicio "soltara" el
+     lock tarde. Es que, con el orden mutado, el servicio YA había tomado
+     el lock de `reservations` ANTES de entrar a la fase de AR (en el
+     orden correcto lo toma recién DESPUÉS) — la sonda choca contra un
+     lock que el servicio sostiene mientras está bloqueado en la AR de la
+     posición k, en vez de encontrarlo libre como predice el orden
+     canónico. Los 3 arms `retry` y los 2 tests preexistentes se
+     mantuvieron verdes. Revertido, `git diff --stat` confirmó 0 residuo,
+     8/8 verde de nuevo.
+   - **M3b** (guard de retry, `assertChargesStillInvoiceable()` — mismo
+     movimiento del lock de `reservations` antes que el de AR, rama `>1`):
+     los 3 arms `retry` fallaron los 3, mismo error real de Postgres sobre
+     `reservations`. Los 3 arms `fresco` y los 2 tests preexistentes se
+     mantuvieron verdes. Revertido, `git diff --stat` confirmó 0 residuo,
+     8/8 verde de nuevo.
+   - M3a/M3b (ejecutadas 22/09/2026, ronda 2 del gate — la ronda 1 las
+     había marcado opcionales; revisado tras notar que son exactamente la
+     dimensión que el residuo original nombraba, "el orden
+     AR-antes-que-reservations que Wave 12 reprodujo... no la
+     reproducción dinámica") completan la cobertura declarada en el paso 4
+     del diseño: la sonda de `reservations FOR UPDATE NOWAIT` (que M1/M2
+     nunca ejercitan, porque no tocan ese lock) SÍ falla cuando el orden
+     AR-vs-reservations se invierte, en los dos sitios.
+
+   **Hallazgo nuevo, separado, NO resuelto por este bloque (HOLD explícito
+   del gate):** durante esta investigación se encontró una 4ª dirección del
+   agujero "doble comprobante" — ver
+   `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` en
+   `docs/pendientes-2026-09-12.md`. El gate fue explícito: esto requiere
+   una decisión de negocio vía `AskUserQuestion` antes de cualquier diseño
+   de fix — no se resuelve como parte del trabajo del caso 3.
+
+Sin `TEST_DATABASE_URL` en este entorno de diseño original, el Nivel 2
+quedó registrado con verificación de Postgres real pendiente. Los casos 1
+y 2 ya se habían cerrado el 21/09/2026 (`WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001`
+en `docs/resuelto.md`: 2/2 verde, 13 corridas consecutivas, 0 flakes,
+Postgres 16.13 local). **El caso 3 cierra acá, el 22/09/2026**: corrido
+contra un cluster Postgres 16 local (5 corridas consecutivas de la suite
+completa, 8/8 verde, 0 flakes) más la evidencia de mutación M1/M2/M3a/M3b
+de arriba. El Nivel 1 ya corría y se verificaba en este entorno desde el
+diseño original.
 
 ## 8. Secuenciación — `diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`
 

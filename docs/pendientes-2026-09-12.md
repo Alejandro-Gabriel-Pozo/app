@@ -1642,30 +1642,6 @@ anteriores.
   esta verificación, "el timeout existe en producción" es una inferencia,
   no un hecho confirmado. No bloquea commitear el código (la mitigación
   de fallo es fail-loud vía el build, no silenciosa) -- si bloquea pushear.
-- **`WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001` (21/09/2026, Wave 13 Zona 2,
-  gate `architecture-governor`, corregido en ronda 3 de pre-commit -- ver
-  abajo) -- §7 caso 3 del diseño
-  (`docs/diseno-invoice-retry-charge-guard-2026-09-18.md`) -- reproducir
-  el log de deadlock real de Wave 12 cruzando un guard FRESCO consolidado
-  con uno de RETRY sobre un subconjunto solapado de cargos -- no está
-  escrito, a propósito.** Necesita sostener un lock a mano vía una
-  segunda conexión pausada a mitad de transacción. **Causa corregida
-  (ronda 3, 21/09/2026): NO es "sin `TEST_DATABASE_URL` en este
-  entorno"** -- ese archivo SÍ corre contra Postgres real acá (ver
-  `WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` en `docs/resuelto.md`,
-  misma sesión). La causa real es de alcance: el caso 3 no se escribió
-  en el bloque que escribió los otros dos (caso 1 y caso 2), no que no
-  se pudiera correr. El comparador compartido
-  (`canonicalAccountsReceivableLockOrder()`, `payment-application.ts`) ya
-  se verificó por lectura de código (§3.1 del diseño, gate de pre-commit)
-  como preservador del orden AR-antes-que-reservations que Wave 12
-  reprodujo -- eso cubre la garantía estática, no la reproducción dinámica
-  del deadlock cruzado. Acción puntual que lo cierra: escribir el caso 3
-  siguiendo el patrón ya usado por
-  `invoice-accounts-receivable-reversed-guard.integration.test.ts`
-  (Wave 12) para su propia reproducción de carrera, y correrlo contra
-  Postgres real (local o `TEST_DATABASE_URL`, cualquiera de los dos ya
-  probado viable esta sesión).
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`
   (21/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de
   pre-commit, hallazgo C2) -- la aserción central del test "retry
@@ -3281,6 +3257,49 @@ futuros, cada uno con su propio alcance.
   cerrar como efecto colateral -- necesita su propio análisis de si
   vale la pena un predicado más amplio o si es un caso a
   aceptar/documentar.
+
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` (22/09/2026, Wave
+  13 Zona 2, gate `architecture-governor`, consulta de diseño para el
+  caso 3 de `docs/diseno-invoice-retry-charge-guard-2026-09-18.md` §7 --
+  hallazgo nuevo, no reproducido, solo por lectura de código. Movido a
+  esta sección en la ronda 2 del gate -- vivía bajo `## 🔍 Verificaciones
+  pendientes`, que es para código YA listo y gate-aprobado con una parte
+  sin confirmar en entorno real; esto es un bug abierto que necesita una
+  decisión de negocio antes de tener código.)
+  `assertChargesStillInvoiceable()` (`invoice.service.ts:1581-1646`)
+  cierra el hueco de reintento para `REVERTIDO`/`CANCELLED`, pero deja
+  abierta una CUARTA dirección del agujero de doble comprobante (las
+  otras 3 ya están cerradas -- ver `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`
+  en `docs/resuelto.md`): un cargo puede terminar con DOS CAE reales --
+  uno por una factura INDIVIDUAL y otro por una factura CONSOLIDADA que
+  lo incluye -- sin que ningún guard actual lo frene.
+  **Secuencia:** una consolidada I1{a,b} queda `REJECTED`. `a` sigue
+  siendo facturable individual -- el guard de `requestInvoice()`
+  (`:581`) solo bloquea `INVOICE_STATUSES_CONSUMING_CHARGE`, y el propio
+  docblock del repo dice que una consolidada `REJECTED` "SÍ es facturable
+  individual". Mientras la AR de `a` siga `PENDIENTE_FACTURAR` (I2, la
+  individual, todavía en vuelo; o quedó `FAILED_UNCERTAIN` con
+  `afipContacted`; o el `markInvoiced()` best-effort de I2 falló mudo),
+  un reintento de I1 vía `requestConsolidatedInvoice()` recalcula el
+  mismo hash, entra por `retryExisting(I1)` y emite un CAE real que
+  vuelve a incluir a `a` -- `assertChargesStillInvoiceable()` solo mira
+  `REVERTIDO`/`CANCELLED`, y el retry saltea a propósito el guard de
+  doble facturación (`:778-791`, la idempotencia corre ANTES que ese
+  guard, a propósito, para no rechazar un reintento legítimo del MISMO
+  pedido -- acá el pedido no es el mismo, pero el guard no lo distingue).
+  **No es una regresión de `7906a26`** -- antes de esta Wave el retry no
+  tenía ningún guard de estado, así que este camino ya estaba abierto;
+  simplemente no se había mapeado como una dirección propia del agujero
+  de doble comprobante.
+  **No reproducido contra Postgres real todavía** -- deducido leyendo
+  `invoice.service.ts:553-583,771-791,1497-1534`. Acción para cerrarlo:
+  (1) reproducir secuencialmente contra Postgres real (sin necesidad de
+  carrera -- la ventana es de tiempo, no de concurrencia); (2) es una
+  decisión de negocio, no solo técnica -- ¿el retry consolidado tiene
+  que re-chequear vínculo con facturas individuales del mismo cargo
+  (mismo criterio que el guard de double-billing fresco), o el negocio
+  prefiere aceptar la ventana y resolverla con la Nota de Crédito
+  existente? Requiere `AskUserQuestion` antes de diseñar el fix.
 
 ---
 

@@ -20,6 +20,78 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 22/09/2026
+
+- **`WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001` (Wave 13, Zona 2, gate
+  `architecture-governor` -- consultado como decisión de DISEÑO primero,
+  y con una segunda ronda de pre-commit -- ver abajo).** Origen:
+  `docs/pendientes-2026-09-12.md` (entrada agregada 21/09/2026 en ronda 3
+  de pre-commit, cortada de ahí en este mismo movimiento). El hallazgo
+  era: §7 caso 3 del diseño
+  (`docs/diseno-invoice-retry-charge-guard-2026-09-18.md`) -- "reproducir
+  el log de deadlock real de Wave 12 cruzando un guard FRESCO consolidado
+  con uno de RETRY" -- no estaba escrito.
+  **Corrección factual encontrada al investigar, no solo residuo de
+  alcance:** el texto original nunca describió un estado de código real --
+  `assertChargesStillInvoiceable()` nació ya canonizada en `7906a26`
+  (misma Wave), sin versión previa no-canonizada en el historial
+  (`git log -S"assertChargesStillInvoiceable"` confirmado). Una carrera
+  fresco-vs-retry GENUINA sobre el mismo conjunto de AR resultó además
+  estructuralmente casi imposible de construir -- **corregido en la
+  ronda 2 del gate:** no porque la idempotencia sea "por compañía" (era
+  incorrecto, ver el diseño reescrito para el detalle completo), sino
+  porque la clave de idempotencia consolidada es un hash del CONJUNTO de
+  cargos y, si el conjunto de una segunda llamada solapa sin coincidir, el
+  guard anti double-billing (respaldado por `idx_invoice_charges_ft`,
+  `src/db/schema.sql:3684`, `UNIQUE`) la frena antes de emitir nada.
+  Presentada la ambigüedad al dueño (`AskUserQuestion`), quien eligió
+  mandarla a `architecture-governor` como consulta de diseño en vez de
+  simular un guard no-canónico o saltear el ítem.
+  **Diseño aprobado por el gate:** observación DETERMINÍSTICA del
+  fingerprint de orden de locks (`pg_blocking_pids()` + sondas
+  `FOR UPDATE NOWAIT`), no un intento de deadlock -- detalle completo en
+  §7 caso 3 del diseño (reescrito en este mismo movimiento).
+  **Implementado y confirmado por corrida real, no por inferencia:**
+  `describe('§7 caso 3 (reescrito)...')` en
+  `invoice-retry-charge-guard.integration.test.ts` (6 arms: sitio
+  fresco/retry × posición k∈{0,1,2}), corrido con
+  `TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5433/postgres npx vitest run --config vitest.integration.config.ts src/tests/integration/invoice-retry-charge-guard.integration.test.ts`
+  contra un cluster Postgres 16 local -- **8/8 verde, repetido 5 veces
+  consecutivas, 0 flakes.**
+  **Garantía estadística del diseño (N=3, derivada en la ronda 2 del
+  gate):** el arm k=1 discrimina CUALQUIER orden mutado siempre (forzaría
+  F=E si pasara); los arms k=0 y k=2 discriminan 4 de las 5 permutaciones
+  erróneas posibles cada uno -- así que a lo sumo un arm de los 3 puede no
+  discriminar en una corrida dada, nunca dos. Evidencia de mutación
+  (obligatoria por el gate, corrida contra Postgres real, no deducida,
+  las 4 revertidas con `git diff --stat` confirmando 0 residuo en
+  `src/facturacion/invoice.service.ts` y la suite verde 8/8 de nuevo tras
+  cada una): **M1** (guard de retry ordenado por `financialTransactionId`
+  en vez del comparador canónico) hizo fallar 2 de 3 arms `retry`
+  (`retry k=1` entre ellos, como exige la garantía; `retry k=0` no
+  discriminó esta corrida puntual, dentro de lo que la garantía permite),
+  arms `fresco` y los 2 tests preexistentes se mantuvieron verdes;
+  **M2** (guard fresco sin ordenar `pending`) hizo fallar los 3 arms
+  `fresco`, arms `retry` y tests preexistentes se mantuvieron verdes.
+  **Ronda 2 del gate -- M3a/M3b, inicialmente marcadas opcionales por la
+  ronda 1 y revertida esa decisión al notar que son la dimensión que el
+  residuo original nombraba** ("el orden AR-antes-que-reservations que
+  Wave 12 reprodujo... no la reproducción dinámica"): **M3a** (guard
+  fresco, `requestConsolidatedInvoice()` -- lock de `reservations` movido
+  antes que el de AR, recreando la versión de Wave 12 que deadlockeaba)
+  hizo fallar los 3 arms `fresco` con el error real de Postgres
+  `could not obtain lock on row in relation "reservations"` en la sonda
+  `FOR UPDATE NOWAIT`, arms `retry` y tests preexistentes se mantuvieron
+  verdes; **M3b** (mismo movimiento en el guard de retry,
+  `assertChargesStillInvoiceable()`) hizo fallar los 3 arms `retry`, mismo
+  error real de Postgres, arms `fresco` y tests preexistentes se
+  mantuvieron verdes.
+  **Hallazgo nuevo, separado, NO resuelto por este bloque:** ver
+  `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` en
+  `docs/pendientes-2026-09-12.md` -- el gate fue explícito en que requiere
+  una decisión de negocio propia vía `AskUserQuestion` antes de cualquier
+  diseño de fix.
+
 ## 21/09/2026
 
 - **`WAVE13-ZONA2-INTEGRATION-TIER-UNEXECUTED-001` (Wave 13, Zona 2, gate
