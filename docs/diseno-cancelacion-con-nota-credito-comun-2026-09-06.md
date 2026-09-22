@@ -4055,6 +4055,48 @@ ningún archivo de forma permanente. **Todavía no autorizado:** commit de
 `docs/` (separado, a pedido explícito); push (casos 28-32 + C7 contra
 Postgres real, mutaciones de 28/29/32 con esa base, query de producción).
 
+**Commits ejecutados (22/09/2026), con autorización explícita del dueño
+en cada uno:** `d24570d` (código, los 6 archivos de `src/`) y `470e323`
+(docs, el registro de rondas 19-22 + revisión pre-commit — este mismo
+texto).
+
+### Condición de push — corrida real contra Postgres, no deducida (22/09/2026)
+
+Cluster Postgres 16 local descartable (`initdb --auth=trust`, puerto
+5433, fuera de `/tmp` por los permisos root de ese directorio en este
+entorno — el intento anterior de la ronda pre-commit 1 había fallado por
+eso). `TEST_DATABASE_URL` apuntado ahí, `npx vitest run --config
+vitest.integration.config.ts` sobre los 2 archivos de integración:
+
+- **Casos 28, 29, 30, 32 y C7 ampliado: 19/19 verde**, no 19 `skipped`
+  como en las rondas anteriores — la primera corrida real de este bloque
+  contra Postgres, no una deducción de lectura de código.
+- **Mutación del caso 29/28 (predicado anidado dentro del `NOT EXISTS`,
+  con paréntesis propio — la variante que R19-1 descartó por diseño):**
+  corrida contra Postgres real. Caso 28 y caso 29 fallan los dos, como
+  se esperaba (`expected 'VOIDED' to be 'PENDING'` /
+  `expected 'VOIDED' to be 'SETTLED'`) — confirma que el `AND` de nivel
+  superior es necesario, no solo una preferencia de estilo. Revertido;
+  los 8 casos de `financial-transaction.integration.test.ts` vuelven a
+  dar verde.
+- **Mutación del caso 32 (predicado sacado por completo):** corrida
+  contra Postgres real. El 2º `ADJUSTMENT` queda `VOIDED` en vez de
+  `PENDING` (`expected 'VOIDED' to be 'PENDING'`), confirmando que sin
+  Opción A ese caso fallaría — la ruta silenciosa `efecto_parcial` que
+  R20-3 describe. Revertido; los 11 casos de
+  `cancel-reservation-with-credit-note.integration.test.ts` vuelven a
+  dar verde.
+- **Después de las 2 mutaciones y sus reverts:** `git status --porcelain`
+  en 0 líneas — ninguna dejó rastro. Re-verificación completa:
+  `tsc --noEmit`, `lint`, `vitest run` (182 archivos, 2505 tests) y los
+  19 de integración, todo verde.
+
+**Todavía pendiente para el push, sin cambios:** la query de producción
+por tenant (`SELECT count(*) FROM financial_transactions WHERE type =
+'ADJUSTMENT' AND status = 'VOIDED' AND reversed_invoice_id IS NOT NULL`)
+— sigue "requiere query", sin canal autorizado a producción en este
+entorno. Push en sí, autorización explícita separada del dueño.
+
 ---
 
 **Estado real, verificado contra el código vivo.** La mitad fail-closed de
