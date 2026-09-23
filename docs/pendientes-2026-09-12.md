@@ -1713,7 +1713,12 @@ anteriores.
   ADR reintento-vs-reversa (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`),
   necesarios los dos, no alternativos (corregido en ronda 5 del gate,
   C1 -- esta entrada antes describía solo uno, Y vivía fuera de esta
-  sección pese a que el ADR ya citaba esta sección como su ubicación).**
+  sección pese a que el ADR ya citaba esta sección como su ubicación;
+  corregida otra vez en ronda 9 del ADR -- residuo B-1 de su ronda 8 del
+  gate: el ítem 2 de acá abajo seguía diciendo "antes de activar el
+  worker" cuando el ADR, desde su propia ronda 7, ya había movido esa
+  condición a "antes de desplegar el Bloque 4 completo" sin que esta
+  entrada se hubiera actualizado en el mismo cambio).**
   1. **Entre el deploy de 2a y el de 2b, antes de desplegar 2b (§3.6 del
      ADR -- no "antes de 2a/2b": `pending_since` todavía no existe antes
      de 2a):** confirmar el SHA real del commit que está sirviendo
@@ -1725,18 +1730,24 @@ anteriores.
      es el residuo esperado que las dos sentencias de backfill que 2b
      re-ejecuta (la directa y la inversa) limpian en su misma transacción
      de deploy, no bloquea.
-  2. **Antes de activar el worker, Bloque 4 (§4 del ADR):** consulta de
-     solo lectura por tenant, cuántas `invoices` están hoy `PENDING`, y
-     cuántas `FAILED_UNCERTAIN` con `afip_contacted = true` y sin
-     `uncertain_cleared_at`, separadas por `CHARGE` vs. NC -- para no
-     convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron
+  2. **Antes de DESPLEGAR el Bloque 4 completo (guard de solo lectura de
+     `retryExisting()` + worker, los dos juntos -- B-1, ronda 7 del ADR;
+     no solo antes de activar el worker dentro de él, §4 del ADR):**
+     consulta de solo lectura por tenant, cuántas `invoices` están hoy
+     `PENDING`, y cuántas `FAILED_UNCERTAIN` con `afip_contacted = true`
+     y sin `uncertain_cleared_at`, separadas por `CHARGE` vs. NC -- para
+     no convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron
      realmente coladas (el worker deriva ese volumen a las salidas
      manuales del Bloque 3 en cuanto arranca).
   **Ninguna de las dos verificada esta sesión -- sin acceso a producción
   desde este entorno.** El backfill de 2a en sí es seguro sin el dato de
-  (1) (argumento completo en §3.6 del ADR); el worker de 4 puede
-  implementarse y testearse sin el dato de (2), pero no activarse sin
-  correrla antes contra cada tenant real.
+  (1) (argumento completo en §3.6 del ADR); el Bloque 4 (guard + worker)
+  puede implementarse y testearse sin el dato de (2), pero no
+  DESPLEGARSE sin correrla antes contra cada tenant real -- no es solo
+  el worker el que espera este dato, es el deploy completo del bloque
+  (B-1: el guard de `retryExisting()` y el worker se activan juntos, en
+  el mismo deploy, para no dejar una `PENDING` colgada sin ninguna
+  salida en la ventana intermedia).
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001-PRE-DEPLOY-AUDIT-001`
   (23/09/2026, condición C4 del gate `architecture-governor`, ronda 2,
   sobre el diseño de `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
@@ -3549,6 +3560,237 @@ futuros, cada uno con su propio alcance.
   los dos bloques de implementación en curso lo cierra; queda como
   bloque de análisis propio, sin decisión de negocio tomada todavía sobre
   si vale la pena cerrarlo dado el cruce con `DUPLICATE-CAE-001`.
+- **`CREDIT-NOTE-REQUEST-PENDIENTE-RESOLVE-GUARD-001` (23/09/2026, gate
+  `architecture-governor`, ronda 6 del ADR de arriba -- hallazgo A-3,
+  bug PREVIO y VIVO, independiente de ese ADR -- **narrowed en la ronda 9
+  del mismo ADR (decisión del dueño, P-2): el call-site puntual de
+  `POST /credit-note-requests/:id/resolve` queda CERRADO por ese diseño
+  (todavía no implementado en código) -- ver §3.9 "P-2" en
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` para el
+  diseño completo. Este ítem sigue abierto porque (a) el código de P-2
+  todavía no existe (**corregido 23/09/2026, ronda 13, H3 del veredicto
+  de ronda 12 del gate -- la referencia anterior decía "ronda 9 pendiente
+  de su propio gate", ya stale. Ver
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, sección
+  "Historial de revisión", entrada más reciente, para el estado real del
+  diseño en el momento en que se lea esto -- no citar acá un número de
+  ronda ni un estado ("HOLD"/"APROBADO") que envejece solo**) y (b) el resto de la
+  superficie descripta más abajo -- fuera de
+  ESE call-site puntual -- sigue sin decisión.**
+  `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS.PENDIENTE`
+  (`credit-note-request.entities.ts`) incluye `'CERRADA'` como transición
+  directa -- no exige pasar por `EN_REVISION_MANUAL` primero -- y la ruta
+  `POST /api/credit-note-requests/:id/resolve`
+  (`credit-note-requests.routes.ts`) no chequea el estado de la solicitud
+  antes de llamar a `InvoiceService.resolveCreditNoteRequestManually()`
+  (solo `authorize(Roles.EMISOR_NOTA_CREDITO)`, verificado en código esta
+  sesión: ni la ruta ni el service leen `request.state` antes de escribir).
+  El propio docblock de `resolveCreditNoteRequestManually()`
+  (`invoice.service.ts`) afirma que `transitionWithClient()` "rechaza si
+  la fila no está en `EN_REVISION_MANUAL`" -- verificado FALSO contra el
+  `Record` real de transiciones.
+  **Consecuencia real (no el mecanismo):** un operador puede resolver
+  manualmente (`outcome: 'EMITIDA'`, con `cbteNro`/`cae` tipeados a mano)
+  una solicitud que sigue `PENDIENTE` -- es decir, ANTES de que el
+  camino automático de emisión siquiera haya fallado una vez -- y, si
+  gana la carrera contra ese camino automático, pisa el CAE real que
+  AFIP termine devolviendo. Tercer síntoma del mismo bug, sin relación
+  causal directa con los dos de arriba pero parte de la misma falta de
+  guard: nada transiciona `credit_note_request` a `CERRADA` cuando el
+  camino AUTOMÁTICO tiene éxito (`finalizeIssued()` no transiciona
+  ninguna solicitud; el único `toState: 'CERRADA'` automático real hoy
+  es el de la rama `REJECTED` de `issue()`) -- una solicitud ligada a una
+  factura emitida bien por el camino automático puede quedar abierta
+  indefinidamente, visible y resoluble en la bandeja.
+  **Mitigación parcial ya diseñada (no implementada) por el Bloque 3 del
+  ADR de arriba:** el predicado ESTRICTO de
+  `markIssuedFromManualResolutionWithClient()` (A-2) corre
+  INDEPENDIENTEMENTE del estado de `credit_note_request` -- mira solo
+  `invoices.status` -- así que, aunque la transición
+  `PENDIENTE -> CERRADA` siga siendo posible, la escritura que corrompía
+  el CAE real queda cerrada: si la factura ya llegó a `ISSUED`, o si dos
+  escritores compiten por la misma fila, el guard deja ganar a uno solo.
+  **Diseño ronda 9 (P-2) -- opción (1) de la lista de abajo, DECIDIDA por
+  el dueño y diseñada, acotada A ESE CALL-SITE, no a la máquina de
+  estados entera (sigue sin código -- ver el disclaimer del principio de
+  este ítem):** `resolveCreditNoteRequestManually()` exigirá, bajo lock
+  (dentro de la reclasificación de A-4, mismo orden
+  factura-primero-solicitud-después, sin locks nuevos --
+  `findByIdForUpdate()`), que `credit_note_request.state ===
+  'EN_REVISION_MANUAL'` para aceptar una resolución manual mientras la
+  solicitud SIGA `PENDIENTE` en el instante en que esta reclasificación
+  toma su propio lock sobre ella (precisión de ronda 11 -- no es una
+  garantía de que TODO desenlace de carrera pase por este guard
+  específico; una solicitud que arranca `PENDIENTE` puede perder la
+  carrera contra el camino automático ANTES de ese lock y terminar
+  resuelta por N-2 con el mismo desenlace correcto por otra vía, ver
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.9) --
+  una solicitud que SIGUE `PENDIENTE` en ese instante se rechaza con 409
+  (`CreditNoteRequestNotInManualReviewError`) sin escribir nada. Verificado
+  en esta sesión (grep contra HEAD, `transitionWithClient()` de
+  `CreditNoteRequestRepository`) que `resolveCreditNoteRequestManually()`
+  y `transitionCreditNoteRequestAfterFailure()` (el camino AUTOMÁTICO,
+  legítimo, no forma parte de este bug) son los ÚNICOS DOS callers de
+  ese método en todo el repo -- ningún tercer call-site puede alcanzar
+  `PENDIENTE -> CERRADA` por otra vía.
+
+  **Superficie real que quedará una vez que P-2 se implemente (hoy sigue
+  sin código):** (a) `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS.PENDIENTE`
+  seguirá permitiendo `'CERRADA'` EN EL TIPO -- deuda estructural
+  declarada, no un bug alcanzable una vez P-2 exista (el único caller que
+  podría explotarla, `resolve`, quedará guardado por el 409 de P-2).
+
+  **(b) CORRECCIÓN (23/09/2026, ronda 11, gate `architecture-governor`,
+  hallazgo #7 de su veredicto de ronda 10 -- la redacción anterior de
+  este punto estaba AL REVÉS para el caso común, y además hablaba de P-2
+  en presente cuando todavía no tiene código):** el texto anterior decía
+  que una solicitud ligada a una factura emitida bien por el camino
+  automático "puede seguir quedando abierta indefinidamente en la
+  bandeja, visible y ahora también resoluble (P-2 no la bloquea)" -- eso
+  es exactamente lo contrario de lo que pasa en el caso MÁS COMÚN. Si el
+  camino automático emite bien la factura EN EL PRIMER INTENTO (nunca
+  pasa por `FAILED_UNCERTAIN`), nada transiciona `credit_note_request` --
+  esa transición solo la dispara la rama de FALLO
+  (`transitionCreditNoteRequestAfterFailure()`), así que la solicitud
+  queda `PENDIENTE` para siempre, nunca `EN_REVISION_MANUAL`. HOY (sin
+  P-2), esa solicitud `PENDIENTE` sigue siendo resoluble vía
+  `POST /resolve` sin ningún guard de estado -- un operador puede
+  cerrarla a mano. **Con P-2 implementado, esa misma solicitud queda
+  BLOQUEADA DE POR VIDA:** `resolveCreditNoteRequestManually()` rechaza
+  cualquier intento porque `state !== 'EN_REVISION_MANUAL'` (sigue
+  `PENDIENTE`), y nada más en el repo transiciona una solicitud
+  `PENDIENTE` a `CERRADA` por la vía exitosa (`finalizeIssued()` no
+  transiciona ninguna) -- la solicitud queda visible en la bandeja, sin
+  ningún botón capaz de cerrarla. **Es un residuo NUEVO que introduce la
+  propia implementación de P-2 -- más angosto que el bug A-3 original**
+  (ese permitía cerrar sin guard; este, una vez P-2 exista, no va a
+  permitir cerrar en absoluto para este caso puntual) -- se registra acá
+  como tal, no como continuación del mismo síntoma. Cerrar esto de fondo
+  (lo que quedará, no lo que P-2 ya cierra) requiere: (2) que
+  `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS.PENDIENTE` deje de incluir
+  `'CERRADA'` en el tipo mismo, y/o (3) que `finalizeIssued()` transicione
+  `credit_note_request` a `CERRADA` en su propio éxito. Ninguna de las dos
+  decidida todavía -- bloque propio, sin `AskUserQuestion` corrida sobre
+  cuál (o cuáles) de las dos. Implementar P-2 sin encarar (2) y/o (3) dejará
+  cada emisión automática exitosa en el primer intento con una solicitud
+  huérfana e incerrable -- a tener en cuenta al secuenciar el Bloque 3.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-P3-LATE-REAL-CAE-SHADOWED-001` (23/09/2026,
+  gate `architecture-governor`, ronda 8, residuo encontrado real en el diseño de P3 --
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.9 "P3", registrado acá porque
+  P3 declara explícitamente que NO agrega una superficie durable nueva para este caso, y ese "no
+  lo hace" necesita quedar como hallazgo propio, no perderse dentro del párrafo que lo declara.)**
+  **Mecanismo:** cuando el guard nuevo de `finalizeIssued()` (`markIssuedWithClient()`, `WHERE
+  ... AND status <> 'ISSUED'`) se dispara porque la factura YA está `ISSUED` con un comprobante
+  que NO coincide con el que el camino automático intentaba grabar (dos comprobantes AFIP reales
+  distintos sobre la misma fila -- ver los 4 caminos de P3), el único rastro del comprobante que
+  el camino automático traía es un `logger.error(...)` -- no se persiste en ninguna columna,
+  tabla, ni cola. **Consecuencia real, no solo el mecanismo:** si el comprobante que YA quedó
+  `ISSUED` (el que ganó la escritura, sea por la vía manual con un CAE tipeado a mano CON error de
+  tipeo, o por la reconciliación contra AFIP de P-1 con un `cbteNro` equivocado que igual pasó la
+  validación cruzada de §3.14 por coincidencia de montos) es el comprobante INCORRECTO, y el
+  comprobante REAL que correspondía a esta factura queda únicamente en esa línea de log -- el
+  registrado en la base de datos como "el CAE de esta factura" puede terminar siendo el
+  equivocado, sin que ningún reporte lo vea: el reporte de reconciliación (d, §3.10) tampoco lo
+  detecta, porque para cuando ese reporte corre la factura YA está `ISSUED` (con el CAE que sea) y
+  ese reporte busca facturas SIN reconciliar, no facturas `ISSUED` con un CAE potencialmente
+  incorrecto -- no hay ninguna consulta que compare "el CAE que quedó grabado" contra "el CAE que
+  el log de `InvoiceIssuedComprobanteMismatchError` dice que se intentó grabar y no pudo". Con
+  rotación normal de logs (sin sink dedicado, ver el propio párrafo de P3 y el precedente ya
+  declarado por `honest-degradation` sobre `db/pg.client.ts::sslConfig()`), esa línea envejece y
+  desaparece -- el CAE incorrecto, si lo hay, queda como el registro oficial de la factura sin que
+  quede ningún camino, ni automático ni manual, para notar la discrepancia después de que el log
+  se pierda. **No es un bug de ESTE ADR** -- P3 no introduce el riesgo de "dos comprobantes reales
+  sobre la misma fila" (eso ya podía pasar antes, por las mismas 4 vías que P3 enumera); lo que P3
+  SÍ decide, a propósito, es no agregarle una superficie durable — decisión de scope explícita
+  (bloque aditivo, sin infraestructura de observabilidad nueva), no un descuido. **Acción que lo
+  cierra (ninguna decidida todavía, tres alternativas, ninguna trivial):** (1) agregar una tabla de
+  "comprobantes rechazados por mismatch" (entidad nueva, decisión de retención de datos propia,
+  `criterios-negocio` — mismo tipo de decisión que P3 ya declaró fuera de alcance para el caso de
+  intentos de resolución rechazados, §3.9); (2) que el reporte (d) de §3.10 agregue un `motivo`
+  nuevo que cruce `InvoiceIssuedComprobanteMismatchError` contra el CAE ya grabado (requiere que
+  el mismatch SÍ se persista en algún lado primero -- depende de (1)); (3) aceptar el residuo y
+  documentarlo como límite conocido del mecanismo, sin alarmar más allá de un log. Ninguna
+  decidida -- requiere `AskUserQuestion` antes de diseñarla, no una implementación directa.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-AFIP-PREVAILS-NEWER-ATTEMPT-SHADOW-001` (23/09/2026,
+  gate `architecture-governor`, ronda 12 -- H1 de su veredicto sobre la propuesta de ronda 11
+  de `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.14 ("AFIP prevalece").
+  Residuo ACEPTADO por decisión del dueño esta sesión ("Prevalece igual, registrar el
+  residuo"), no un bug pendiente de fix -- se registra para que quede como límite conocido,
+  no como algo que el texto del ADR pueda volver a afirmar que "nunca pasa".)**
+  **Mecanismo:** el escritor `markIssuedFromAfipReconciliationWithClient()`
+  (`POST /api/invoices/:id/reconcile-with-afip`) escribe con el predicado
+  `WHERE status = 'FAILED_UNCERTAIN' AND afip_contacted`, sin mirar `uncertain_cleared_at` --
+  a propósito, para cubrir con un solo `WHERE` tanto la población nunca-limpiada como la ya
+  declarada `NO_EMITIDA` a mano (rama 2, "AFIP prevalece"). El invariante de §3.5 (el reset de
+  `uncertain_cleared_at` a `NULL` cuando una fila vuelve a `FAILED_UNCERTAIN`) NO le da a este
+  predicado ninguna forma de distinguir "el intento que el operador está reconciliando ahora
+  mismo, con el `cbteNro` que trae" de "un intento MÁS NUEVO de la MISMA factura que, sin que
+  el operador lo sepa, volvió a caer en la misma ambigüedad" -- las dos filas matchean el mismo
+  `WHERE` por igual. `retryExisting()` (`invoice.service.ts`) reusa el MISMO
+  `existing.afipRequest` en cada reintento (mismo `CbteFch`, mismos montos) -- así que la
+  validación cruzada de 8 campos contra AFIP (§3.14, gap 4a) tampoco puede distinguir "el
+  comprobante real corresponde al intento 1" de "corresponde al intento 2": ambos intentos
+  generan el MISMO request hacia AFIP.
+  **Consecuencia real, no solo el mecanismo:** un operador reconcilia una factura `FAILED_UNCERTAIN`
+  contra AFIP con un `cbteNro` que corresponde al intento VIEJO (el que motivó la declaración
+  manual `NO_EMITIDA` que está reconciliando). La ventana NO se limita al lapso entre que ese
+  operador arranca el flujo y el `UPDATE` final -- cualquier reintento automático MÁS NUEVO de la
+  MISMA factura que haya vuelto a terminar `FAILED_UNCERTAIN`+`afip_contacted` en CUALQUIER momento
+  DESPUÉS de la declaración `NO_EMITIDA` (podrían ser horas o días antes de que el operador siquiera
+  abra `reconcile-with-afip`, no solo durante su sesión) deja la fila en ese mismo estado ambiguo
+  hasta que alguien la reconcilie -- la escritura de la reconciliación procede igual, sobre la fila
+  que en ese momento representa al intento NUEVO, no al viejo que el operador creía estar cerrando.
+  Si el comprobante real del intento
+  nuevo es GENUINAMENTE DISTINTO del que AFIP confirmó para el `cbteNro` del operador (dos
+  comprobantes reales distintos de la misma factura, en dos intentos distintos), ese comprobante
+  nuevo queda invisible para el sistema -- la fila termina `ISSUED` con el comprobante del
+  intento viejo, sin ninguna alerta de que un intento más reciente, con su propio resultado
+  real en AFIP, quedó tapado.
+  **Por qué se acepta sin mecanismo nuevo (decisión del dueño, esta sesión):** cerrar esto
+  exigiría que el sistema pueda distinguir "intento viejo" de "intento nuevo" en el predicado de
+  escritura o en la validación cruzada -- ninguno de los dos lo hace hoy, y agregarlo es
+  mecanismo/schema nuevo (ej. una columna de secuencia de intento, o que `retryExisting()` arme
+  un `afipRequest` distinguible por intento), no una corrección de texto. El dueño decidió
+  "prevalece igual" en vez de pedir ese mecanismo -- AFIP sigue siendo la fuente de verdad más
+  fuerte que el sistema tiene, incluso en este caso borde.
+  **Acción que lo cerraría (ninguna decidida):** (1) que el predicado de escritura compare contra
+  un identificador de intento (requiere que `invoices` o `afip_response` lleve una marca de
+  secuencia que hoy no existe); (2) que la validación cruzada incluya algo que SÍ cambie entre
+  intentos (hoy no hay ningún campo del `afipRequest` que lo haga, porque `retryExisting()`
+  reusa el mismo); (3) aceptar el residuo tal como está, con este registro como único rastro.
+  Ninguna decidida -- fuera de alcance del Bloque 3, `AskUserQuestion` ya corrida y resuelta en
+  "prevalece igual, sin mecanismo nuevo".
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-AFIP-PREVAILS-RESOLUTION-OUTCOME-STALE-001` (23/09/2026,
+  gate `architecture-governor`, ronda 12 -- H3 de su veredicto: la ronda 11 de
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.14 afirmaba que este
+  residuo "queda registrado como hallazgo nuevo en `docs/pendientes-2026-09-12.md`" -- un grep
+  contra este archivo en ronda 12 confirmó que NO estaba. Registrado recién ahora, ronda 13.)**
+  **Mecanismo:** cuando `reconcile-with-afip` reconcilia la rama 2 ("AFIP prevalece" -- una
+  factura cuya `credit_note_request` ya está `CERRADA` con `resolutionOutcome: 'NO_EMITIDA'`,
+  la declaración manual que la reconciliación acaba de contradecir), el escritor
+  `markIssuedFromAfipReconciliationWithClient()` **solo escribe la FACTURA** (`invoices.status
+  = 'ISSUED'` con el comprobante real) -- no transiciona ni toca `credit_note_request` en
+  absoluto, porque su población nunca tiene una solicitud ABIERTA (ver el guard de entrada de
+  §3.14). El `resolutionOutcome: 'NO_EMITIDA'` que quedó grabado en la solicitud `CERRADA`
+  queda DESACTUALIZADO -- la solicitud sigue diciendo, de forma persistente, que la factura
+  "no se emitió", mientras la factura misma ya es `ISSUED` con un comprobante real.
+  **Consecuencia real, no solo el mecanismo:** cualquier lectura que confíe en
+  `credit_note_request.resolutionOutcome` como fuente de verdad de "¿esta factura se emitió o
+  no?" (un reporte, una pantalla, una consulta manual) queda mostrando información
+  CONTRADICHA por el propio estado de la factura, sin ninguna alerta -- y el reporte de
+  reconciliación (d) de §3.10 HOY no lo detecta: su segundo `motivo`
+  (`'MANUAL_RESOLUTION_STATE_MISMATCH'`) filtra `credit_note_request` en estado
+  `EN_REVISION_MANUAL`, no `CERRADA`, así que esta combinación puntual (solicitud `CERRADA` con
+  un `resolutionOutcome` que ya no coincide con la factura real) nunca aparece en ese reporte.
+  El único rastro de que esto pasó es el `logger.warn`/`logger.error` que la reconciliación deja
+  al escribir (mismo criterio que P3 declara para su caso análogo, `ISSUE-BEFORE-REVERSE-WINDOW-001-P3-LATE-REAL-CAE-SHADOWED-001`
+  arriba) -- sin superficie durable nueva.
+  **Acción que lo cerraría (ninguna decidida):** (1) extender el filtro del `motivo`
+  `'MANUAL_RESOLUTION_STATE_MISMATCH'` de §3.10 para que también capture `credit_note_request`
+  `CERRADA` cuyo `resolutionOutcome` no coincide con el `invoices.status`/comprobante real
+  actual (no solo `EN_REVISION_MANUAL`); (2) agregar un `motivo` tercero, dedicado a este caso
+  puntual, en vez de extender el existente. Ninguna decidida -- fuera de alcance del Bloque 3
+  (`§3.10` es, además, un bloque de implementación propio, el 6, sin dependencia dura de 3).
 
 ---
 
