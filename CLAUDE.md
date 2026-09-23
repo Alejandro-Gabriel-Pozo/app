@@ -382,6 +382,21 @@ corrección de esta sección que resta en vez de sumar — mismo criterio
 igual: la cita se corrige en el mismo commit que produce el delta, no
 después.
 
+**Corrección 23/09/2026 (Bloque 3 de `ISSUE-BEFORE-REVERSE-WINDOW-001`,
+docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md §3.9/§3.14,
+gate `architecture-governor` sobre la implementación): 263 → 266.**
+`docs/inventario-rutas.md` regenerado en este mismo bloque (+3 rutas de
+`invoices.routes.ts`, nuevas en el árbol vivo, no `CLOSURE_MOUNTS`):
+`GET /api/invoices/uncertain`, `POST /api/invoices/:id/mark-not-issued`,
+`POST /api/invoices/:id/reconcile-with-afip`. **Esta corrección llegó
+tarde una vez** — el commit que subió el código de Bloque 3 quedó
+gateado con esta cita todavía en "263" como una de sus dos condiciones de
+pre-commit, precisamente el modo de falla que este párrafo existe para
+evitar (ver también, en la misma sesión, la corrección de integridad
+documental de ronda 14 en el propio ADR). Mismo criterio que las cuatro
+correcciones anteriores: la cita se corrige en el mismo commit que
+produce el delta.
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -410,8 +425,10 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 8 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-17 de 263 -- corrección 16/09/2026, Wave 7/D-06, ver arriba: bajó junto
-con el endpoint que documentaba). Depende de `NODE_ENV` — generado con `development`, `/` y
+17 de 266 -- corrección 23/09/2026, Bloque 3 de
+`ISSUE-BEFORE-REVERSE-WINDOW-001`, ver arriba: el total subió con las 3
+rutas nuevas de `invoices.routes.ts`, ninguna documentada en `spec.ts`,
+así que el numerador (17) no se movió, solo el denominador). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Consumo — qué ruta usa quién

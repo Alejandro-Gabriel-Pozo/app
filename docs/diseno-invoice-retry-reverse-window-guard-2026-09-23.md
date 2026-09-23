@@ -24,6 +24,14 @@ Bloques 3 y 4: diseño corregido en ronda 7, otra vez en ronda 9, y otra vez en 
 cambio), **sin código todavía**. 2c/5/6: sin cambios de esta ronda — 2c en HOLD por N7, 5 depende
 de 2c, 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implementado).
 
+**Corrección (ronda 14, ver Historial de revisión más abajo) — todo este encabezado (líneas 3-25)
+quedó stale y no se reescribe de nuevo por la misma razón que P2(b) ya señaló sobre el de ronda 6:
+otra foto fija con fecha de vencimiento repite el mismo modo de falla. Estado real: ver "Historial
+de revisión" (entrada más reciente) y `git log`/`git status` — no esta sección.** En particular:
+Bloque 2b ya NO está "corriendo en paralelo" — está COMMITEADO (`2c9b423`). Bloque 3 ya tiene
+código (revisado y aprobado por el gate de pre-commit, ver entrada ronda 14) — la frase "sin código
+todavía" de arriba quedó desactualizada apenas se implementó.
+
 **Dos decisiones de negocio del dueño (`AskUserQuestion`, esta sesión — reemplazan el criterio de
 "reconciliar y auto-cerrar" que tenía la propuesta de la ronda 6 para §3.9, "Resolución de
 ubicación A"):**
@@ -3090,3 +3098,32 @@ revisar. 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implem
   lo tocó) — su código puede estar en desarrollo en paralelo por otro agente con su propio gate; no
   asumir acá si existe o no código para Bloque 4 en el momento de la lectura, verificar
   `git status`/`git log` real en vez de confiar en esta frase.
+
+- **23/09/2026, ronda 14 — corrección de integridad documental, no re-diseño (gate
+  `architecture-governor`, pre-commit sobre la implementación de Bloque 3).** El commit `f9af82f`
+  (que subió este documento con las rondas 6-13 a `main`) trae un mensaje de commit que afirma
+  *"Bloque 3 alcanza APROBADO CON CONDICIONES en ronda 14... las 7 condiciones de esa ronda (3
+  obligatorias, 4 recomendadas) ya están aplicadas"*. **Esa afirmación no tiene respaldo en este
+  documento ni en ningún otro archivo del repo** — el gate de pre-commit que revisó la
+  implementación de Bloque 3 (esta misma entrada) hizo `grep -rln "ronda 14" docs/` y no encontró
+  ninguna ocurrencia previa a esta entrada, y el encabezado del documento seguía diciendo "ronda 11,
+  propuesta" con el Historial terminando en ronda 13 ("sigue en HOLD"). No se sabe qué pasó — si la
+  sesión que escribió ese mensaje de commit hizo la revisión pero no llegó a persistir el resultado
+  en este archivo antes de commitear, o si describió un trabajo que no se completó. No se
+  reconstruye retroactivamente una "ronda 14" ficticia con 7 condiciones inventadas — eso repetiría
+  el error, no lo corregiría.
+
+  En cambio: esta entrada **es** la ronda 14 real. El gate de pre-commit, al revisar el código de
+  Bloque 3 recién implementado, releyó la sustancia del diseño de ronda 13 (§3.9, §3.14, §6) de
+  forma independiente —sin apoyarse en la premisa de "ronda 14 ya aprobada"— y la encontró sólida:
+  sin huecos nuevos de matriz de impacto, guards de resolución manual y reconciliación AFIP
+  consistentes con lo diseñado en ronda 13, escritores separados correctamente (H2 de ronda 12
+  sigue corregido). El veredicto completo sobre el CÓDIGO (no sobre este documento) fue **APROBADO
+  CON CONDICIONES**, con dos condiciones: (1) esta misma corrección de integridad documental, y (2)
+  corregir las citas de "263" endpoints en `app-main/CLAUDE.md` (sección "Contratos") a 266, con su
+  propia entrada fechada — ambas docs-only, ninguna reabre el diseño de Bloque 3. Detalle completo
+  del veredicto sobre el código: fuera de este documento, en el registro de la sesión que lo generó.
+
+  **Estado real, no una foto fija:** Bloque 3 tiene código escrito, gate de pre-commit aprobado con
+  las 2 condiciones de arriba. Si el código ya está commiteado y con qué hash, verificar
+  `git log`/`git status` en el momento de la lectura — no asumirlo de esta frase.
