@@ -547,7 +547,18 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // createWithClient() (sella pending_since = NOW() en el INSERT) y
 // markIssuedWithClient()/markFailedWithClient() (lo limpian a NULL al
 // salir de PENDING), mismo commit.
-export const CURRENT_SCHEMA_VERSION = 61;
+//
+// v62 (23/09/2026): Bloque 2b del mismo ADR -- cierra la ventana que 2a
+// dejó abierta a propósito (BLOQUE 27, schema.sql): backfill inverso
+// (`pending_since = NULL WHERE status <> 'PENDING' AND pending_since IS
+// NOT NULL`, limpia el residuo que la instancia de código ANTERIOR a 2a
+// puede haber dejado si siguió atendiendo tráfico durante la ventana de
+// deploy de 2a) + el CHECK estructural `chk_invoices_pending_since`
+// (`(status = 'PENDING') = (pending_since IS NOT NULL)`, `DO $$ IF NOT
+// EXISTS (pg_constraint) ...`, sin DROP previo). Requiere el pre-flight
+// de despliegue documentado en el ADR §3.6 ANTES de correr este deploy
+// contra producción -- paso de runtime, no de este commit.
+export const CURRENT_SCHEMA_VERSION = 62;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

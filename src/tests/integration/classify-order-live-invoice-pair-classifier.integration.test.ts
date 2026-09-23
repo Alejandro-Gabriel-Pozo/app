@@ -96,8 +96,8 @@ describe.skipIf(skipIfNoDb)('classifyOrderLiveInvoice() -- clasificador por par 
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
-       VALUES ($1,$2,$3,$4,$5,'homologacion',1,8,1,96,'0',5,'PES',$6,$7,$8,'PENDING')`,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
+       VALUES ($1,$2,$3,$4,$5,'homologacion',1,8,1,96,'0',5,'PES',$6,$7,$8,'PENDING',NOW())`,
       [ncId, BIZ, opts.adjustmentId, opts.customerId, `idem-${ncId}`, opts.impNeto, opts.impIva, impTotal],
     );
     await invoiceRepo.markIssued(ncId, {
@@ -169,8 +169,8 @@ describe.skipIf(skipIfNoDb)('classifyOrderLiveInvoice() -- clasificador por par 
     await db.query(
       `INSERT INTO invoices (id, business_id, financial_transaction_id, customer_id, idempotency_key,
          environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
-         imp_neto, imp_iva, imp_total, status)
-       VALUES ($1,$2,$3,$4,$5,'homologacion',1,8,1,96,'0',5,'PES',100,0,100,'PENDING')`,
+         imp_neto, imp_iva, imp_total, status, pending_since)
+       VALUES ($1,$2,$3,$4,$5,'homologacion',1,8,1,96,'0',5,'PES',100,0,100,'PENDING',NOW())`,
       [ncId, BIZ, adj!.id, guest.id, `idem-${ncId}`],
     );
     await invoiceRepo.markIssued(ncId, { cbteNro: cbteNroCounter++, cae: `NC${cbteNroCounter}`, caeVto: '2030-01-01', afipResponse: {} });

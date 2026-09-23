@@ -478,9 +478,9 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
           condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
-          cae, cae_vto, status)
+          cae, cae_vto, status, pending_since)
        VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
-               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', NOW())`,
       [invoiceId, BUSINESS_ID, charge!.id, company.id, `idem-${invoiceId}`, cbteNro],
     );
 
@@ -624,15 +624,21 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
 
       const invoiceId = randomUUID();
       const cbteNro = cbteNroCounter++;
+      // pending_since: solo el status PENDING lo lleva poblado
+      // (chk_invoices_pending_since, Bloque 2b) -- FAILED_UNCERTAIN/REJECTED
+      // van con NULL, igual que markFailedWithClient() los deja.
       await db.query(
         `INSERT INTO invoices
            (id, business_id, financial_transaction_id, customer_id, idempotency_key,
             environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
             condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
-            cae, cae_vto, status, afip_contacted)
+            cae, cae_vto, status, afip_contacted, pending_since)
          VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
-                 5, 'PES', $7, 0, $7, NULL, NULL, $8, $9)`,
-        [invoiceId, BUSINESS_ID, scenario.chargeId, scenario.guest.id, `idem-${invoiceId}`, cbteNro, amount, opts.status, opts.afipContacted],
+                 5, 'PES', $7, 0, $7, NULL, NULL, $8, $9, $10)`,
+        [
+          invoiceId, BUSINESS_ID, scenario.chargeId, scenario.guest.id, `idem-${invoiceId}`, cbteNro, amount,
+          opts.status, opts.afipContacted, opts.status === 'PENDING' ? new Date() : null,
+        ],
       );
 
       return { ...scenario, invoiceId };
@@ -781,9 +787,9 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
              (id, business_id, financial_transaction_id, customer_id, idempotency_key,
               environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
               condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
-              cae, cae_vto, status, afip_contacted)
+              cae, cae_vto, status, afip_contacted, pending_since)
            VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
-                   5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', false)`,
+                   5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', false, NOW())`,
           [invoiceId, BUSINESS_ID, locked.chargeId, locked.guest.id, `idem-${invoiceId}`, cbteNro],
         );
 

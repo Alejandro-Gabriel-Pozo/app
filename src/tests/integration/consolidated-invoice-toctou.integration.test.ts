@@ -280,13 +280,17 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
    */
   async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<{ id: string }> {
     const invoiceId = randomUUID();
+    // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
     await db.query(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
           pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
-          imp_neto, imp_iva, imp_total, status)
-       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
-      [invoiceId, BIZ, chargeFtId, customerId, `invoice:consolidated:stuck-${invoiceId}`, CBTE_TIPO_FACTURA_B, status],
+          imp_neto, imp_iva, imp_total, status, pending_since)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7, $8)`,
+      [
+        invoiceId, BIZ, chargeFtId, customerId, `invoice:consolidated:stuck-${invoiceId}`, CBTE_TIPO_FACTURA_B, status,
+        status === 'PENDING' ? new Date() : null,
+      ],
     );
     await db.query(
       `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
@@ -304,13 +308,17 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
    */
   async function seedIndividualInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
     const invoiceId = randomUUID();
+    // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
     await db.query(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
           pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
-          imp_neto, imp_iva, imp_total, status)
-       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
-      [invoiceId, BIZ, chargeFtId, customerId, `invoice:${chargeFtId}`, CBTE_TIPO_FACTURA_B, status],
+          imp_neto, imp_iva, imp_total, status, pending_since)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7, $8)`,
+      [
+        invoiceId, BIZ, chargeFtId, customerId, `invoice:${chargeFtId}`, CBTE_TIPO_FACTURA_B, status,
+        status === 'PENDING' ? new Date() : null,
+      ],
     );
   }
 

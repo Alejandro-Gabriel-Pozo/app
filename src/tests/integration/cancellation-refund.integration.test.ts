@@ -208,9 +208,9 @@ async function seedCancelledReservationWithPendingInvoice(opts: { totalPrice: nu
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
      VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 96, '0',
-             5, 'PES', $6, 0, $6, 'PENDING')`,
+             5, 'PES', $6, 0, $6, 'PENDING', NOW())`,
     [invoiceId, BUSINESS_ID, charge!.id, guest.id, `idem-${invoiceId}`, opts.totalPrice],
   );
 

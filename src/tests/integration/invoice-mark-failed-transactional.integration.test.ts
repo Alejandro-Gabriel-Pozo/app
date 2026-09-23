@@ -26,7 +26,18 @@
  * sella con `NOW()` en el INSERT de `createWithClient()` (columna real, no
  * el mock de `pendingRow()` de `sql.invoice.repository.test.ts`) y se
  * limpia a `NULL` en `markIssuedWithClient()`/`markFailedWithClient()`.
- * Sin CHECK todavía (Bloque 2b) -- estos tests no lo ejercitan.
+ *
+ * Bloque 2b (mismo ADR, §3.6/§6) agrega `chk_invoices_pending_since`
+ * (`(status = 'PENDING') = (pending_since IS NOT NULL)`) -- desde acá,
+ * `seedPendingInvoice()` y todo INSERT crudo de una factura PENDING de
+ * este archivo llevan `pending_since` poblado (si no, la propia BD los
+ * rechaza). El último test del segundo `describe` -- que hasta 2b
+ * reproducía el escenario de backfill insertando una PENDING SIN
+ * `pending_since` -- se redefinió: esa precondición ya no se puede
+ * construir vía INSERT directo una vez que el CHECK existe, así que ahora
+ * prueba lo contrario (y, en los hechos, algo más fuerte): que el CHECK
+ * mismo rechaza el intento. Ver el comentario de ese test para el detalle
+ * completo del porqué.
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
@@ -74,12 +85,14 @@ describe.skipIf(skipIfNoDb)('markFailedWithClient() -- rollback forzado contra P
   /** PENDING inicial -- misma forma mínima que `SqlInvoiceRepository.createWithClient()` inserta. */
   async function seedPendingInvoice(customerId: string): Promise<string> {
     const invoiceId = randomUUID();
+    // pending_since: obligatorio desde el CHECK chk_invoices_pending_since
+    // (Bloque 2b) -- toda fila PENDING nace con la marca poblada.
     await db.query(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_request)
-       VALUES ($1,$2,NULL,$3,$4,'homologacion',1,$5,1,96,'0',5,'PES',100,21,121,'PENDING',$6)`,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_request, pending_since)
+       VALUES ($1,$2,NULL,$3,$4,'homologacion',1,$5,1,96,'0',5,'PES',100,21,121,'PENDING',$6,NOW())`,
       [invoiceId, BIZ, customerId, `idem-${invoiceId}`, CBTE_TIPO_FACTURA_B, JSON.stringify({})],
     );
     return invoiceId;
@@ -243,37 +256,89 @@ describe.skipIf(skipIfNoDb)('invoices.pending_since -- Bloque 2a (23/09/2026)', 
     },
   );
 
-  // Confirma la parte del backfill de §3.6 que sí corre en 2a (la directa,
-  // fila 22 de docs/inventario-dml-schema-2026-09-16.md): una fila PENDING
-  // que hubiera entrado a la BD por un camino previo a este bloque (sin
-  // pending_since) queda backfilleada a created_at cuando se re-aplica
-  // schema.sql -- ejercitado ya por
+  // Confirma la parte del backfill de §3.6 que corrió en 2a mientras el
+  // CHECK todavía no existía (fila 22 de
+  // docs/inventario-dml-schema-2026-09-16.md) -- ejercitado ya por
   // schema-redeploy-idempotent.integration.test.ts para el archivo entero;
-  // acá solo se confirma el WHERE puntual de la sentencia nueva.
-  it('backfill directo (BLOQUE 26): una PENDING sin pending_since se corrige al re-aplicar el backfill, tomando created_at', async () => {
+  // acá se confirma el WHERE puntual de la sentencia, en aislamiento.
+  it('backfill directo (BLOQUE 26): una PENDING sin pending_since se corrige al re-aplicar el backfill, tomando created_at -- reproducido ANTES de que el CHECK de este mismo bloque (2b) exista', async () => {
     const customer = await seedCustomer(db);
     const invoiceId = randomUUID();
     const createdAt = new Date('2026-01-01T00:00:00Z');
-    await db.query(
-      `INSERT INTO invoices
-         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
-          environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_request, created_at)
-       VALUES ($1,$2,NULL,$3,$4,'homologacion',1,$5,1,96,'0',5,'PES',100,21,121,'PENDING',$6,$7)`,
-      [invoiceId, BIZ, customer.id, `idem-backfill-${invoiceId}`, CBTE_TIPO_FACTURA_B, JSON.stringify({}), createdAt],
-    );
 
-    // Misma sentencia que BLOQUE 26 de schema.sql -- se re-corre a mano acá
-    // en vez de re-aplicar el archivo entero, para no acoplar este test a
-    // los efectos de TODO schema.sql (ya cubierto por
-    // schema-redeploy-idempotent.integration.test.ts).
-    await db.query(
-      `UPDATE invoices SET pending_since = created_at WHERE status = 'PENDING' AND pending_since IS NULL`,
-    );
+    // El CHECK de 2b (chk_invoices_pending_since) ya vive en el schema.sql
+    // que createTestDatabase() aplicó para esta suite -- por eso el INSERT
+    // de abajo, que reproduce el estado PRE-2b (PENDING sin pending_since),
+    // solo puede escribirse sacando el CHECK primero. Es exactamente la
+    // ventana real que el backfill de 2a existe para cubrir: filas que
+    // entraron a la BD ANTES de que el CHECK se aplicara. Se quita y se
+    // reaplica dentro de este mismo test (no toca las demás suites, cada
+    // una corre contra su propia BD vía createTestDatabase()).
+    await db.query('ALTER TABLE invoices DROP CONSTRAINT chk_invoices_pending_since');
+    try {
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_request, created_at)
+         VALUES ($1,$2,NULL,$3,$4,'homologacion',1,$5,1,96,'0',5,'PES',100,21,121,'PENDING',$6,$7)`,
+        [invoiceId, BIZ, customer.id, `idem-backfill-${invoiceId}`, CBTE_TIPO_FACTURA_B, JSON.stringify({}), createdAt],
+      );
 
-    const { rows } = await db.query<{ pending_since: Date | null }>(
-      'SELECT pending_since FROM invoices WHERE id = $1', [invoiceId],
+      // Misma sentencia que BLOQUE 26 de schema.sql -- se re-corre a mano
+      // acá en vez de re-aplicar el archivo entero, para no acoplar este
+      // test a los efectos de TODO schema.sql (ya cubierto por
+      // schema-redeploy-idempotent.integration.test.ts).
+      await db.query(
+        `UPDATE invoices SET pending_since = created_at WHERE status = 'PENDING' AND pending_since IS NULL`,
+      );
+
+      const { rows } = await db.query<{ pending_since: Date | null }>(
+        'SELECT pending_since FROM invoices WHERE id = $1', [invoiceId],
+      );
+      expect(rows[0]?.pending_since?.toISOString()).toBe(createdAt.toISOString());
+    } finally {
+      // Reaplicado SIEMPRE, incluso si el bloque de arriba falla -- deja la
+      // BD de esta suite en el mismo estado que schema.sql produce
+      // (BLOQUE 27), para no filtrar el DROP a ningún test que corra
+      // después dentro del mismo describe.
+      await db.query(
+        `ALTER TABLE invoices ADD CONSTRAINT chk_invoices_pending_since
+           CHECK ((status = 'PENDING') = (pending_since IS NOT NULL))`,
+      );
+    }
+  });
+
+  // Redesign post-CHECK (Bloque 2b) del test que hasta acá reproducía el
+  // escenario de backfill insertando una PENDING sin pending_since
+  // DIRECTAMENTE (sin tocar el CHECK) -- ya no es posible: con
+  // chk_invoices_pending_since puesto, ese INSERT viola la constraint en
+  // el momento mismo de escribirse, antes de que exista ninguna fila para
+  // backfillear. En vez de perder esa cobertura, se invierte: en vez de
+  // probar "el backfill corrige una fila que logró entrar sin
+  // pending_since", prueba "esa fila ya no puede entrar" -- una garantía
+  // estrictamente más fuerte para cualquier escritura POSTERIOR a este
+  // deploy (el backfill en sí sigue existiendo y sigue cubierto por el
+  // test de arriba, que reproduce la ventana pre-CHECK a propósito).
+  it('post-CHECK (BLOQUE 27): un INSERT de PENDING sin pending_since es rechazado por chk_invoices_pending_since -- el escenario de backfill deja de ser alcanzable vía escritura directa', async () => {
+    const customer = await seedCustomer(db);
+    const invoiceId = randomUUID();
+
+    await expect(
+      db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_request)
+         VALUES ($1,$2,NULL,$3,$4,'homologacion',1,$5,1,96,'0',5,'PES',100,21,121,'PENDING',$6)`,
+        [invoiceId, BIZ, customer.id, `idem-checkreject-${invoiceId}`, CBTE_TIPO_FACTURA_B, JSON.stringify({})],
+      ),
+    ).rejects.toThrow(/chk_invoices_pending_since/);
+
+    // Y no quedó ninguna fila a medio escribir -- el INSERT entero se revirtió.
+    const { rows } = await db.query<{ count: string }>(
+      'SELECT count(*) FROM invoices WHERE id = $1', [invoiceId],
     );
-    expect(rows[0]?.pending_since?.toISOString()).toBe(createdAt.toISOString());
+    expect(Number(rows[0]!.count)).toBe(0);
   });
 });

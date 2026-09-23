@@ -39,13 +39,15 @@ let dbName: string;
 /** Factura mínima -- solo lo que credit_note_request necesita como FK target. */
 async function seedInvoice(customerId: string, overrides: Partial<{ status: string }> = {}): Promise<string> {
   const id = randomUUID();
+  const status = overrides.status ?? 'PENDING';
+  // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
   await db.query(
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
-     VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, 1, 96, '0', 5, 'PES', 1000, 0, 1000, $5)`,
-    [id, BUSINESS_ID, customerId, `idem-${id}`, overrides.status ?? 'PENDING'],
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
+     VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, 1, 96, '0', 5, 'PES', 1000, 0, 1000, $5, $6)`,
+    [id, BUSINESS_ID, customerId, `idem-${id}`, status, status === 'PENDING' ? new Date() : null],
   );
   return id;
 }

@@ -90,13 +90,14 @@ async function seedCreditNote(opts: {
   status: 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN'; cbteTipo?: number;
 }): Promise<string> {
   const ncId = randomUUID();
+  // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
   await db.query(
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, issued_at)
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, issued_at, pending_since)
      VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, $9, $6, 1, 96, '0',
-             5, 'PES', $7, 0, $7, $8, ${opts.status === 'ISSUED' ? 'NOW()' : 'NULL'})`,
+             5, 'PES', $7, 0, $7, $8, ${opts.status === 'ISSUED' ? 'NOW()' : 'NULL'}, ${opts.status === 'PENDING' ? 'NOW()' : 'NULL'})`,
     [ncId, BUSINESS_ID, opts.revertingTxId, opts.customerId, `idem-${ncId}`,
      opts.status === 'ISSUED' ? cbteNroCounter++ : null, opts.impTotal, opts.status, opts.cbteTipo ?? 8],
   );
@@ -109,13 +110,14 @@ async function seedConsolidatedCreditNote(opts: {
   status: 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN'; cbteTipo?: number;
 }): Promise<string> {
   const ncId = randomUUID();
+  // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
   await db.query(
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, issued_at)
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, issued_at, pending_since)
      VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, $8, $5, 1, 96, '0',
-             5, 'PES', $6, 0, $6, $7, ${opts.status === 'ISSUED' ? 'NOW()' : 'NULL'})`,
+             5, 'PES', $6, 0, $6, $7, ${opts.status === 'ISSUED' ? 'NOW()' : 'NULL'}, ${opts.status === 'PENDING' ? 'NOW()' : 'NULL'})`,
     [ncId, BUSINESS_ID, opts.customerId, `idem-${ncId}`,
      opts.status === 'ISSUED' ? cbteNroCounter++ : null, opts.impTotal, opts.status, opts.cbteTipo ?? 8],
   );

@@ -458,9 +458,9 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.reverseTransfer() -- veri
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
           condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
-          cae, cae_vto, status)
+          cae, cae_vto, status, pending_since)
        VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
-               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', NOW())`,
       [consolidatedId, BUSINESS_ID, company.id, `idem-consolidada-${consolidatedId}`, cbteNroCounter++],
     );
     await db.query(
@@ -504,9 +504,9 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.reverseTransfer() -- veri
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
           condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
-          cae, cae_vto, status)
+          cae, cae_vto, status, pending_since)
        VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
-               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', NOW())`,
       [consolidatedId, BUSINESS_ID, company.id, `idem-consolidada-${consolidatedId}`, cbteNroCounter++],
     );
     await db.query(

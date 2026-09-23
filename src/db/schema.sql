@@ -4606,3 +4606,40 @@ ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ;
 
 UPDATE invoices SET pending_since = created_at WHERE status = 'PENDING' AND pending_since IS NULL;
 
+-- ===========================================================================
+-- BLOQUE 27 — invoices.pending_since, Bloque 2b (23/09/2026, schema v62,
+-- docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md §3.6/§6,
+-- ISSUE-BEFORE-REVERSE-WINDOW-001) -- cierra la ventana que el Bloque 26
+-- dejó abierta a propósito: agrega el backfill INVERSO y el CHECK
+-- estructural, recién ahora que la instancia de código que sirve tráfico
+-- es la única que puede escribir `pending_since` (confirmado por el
+-- pre-flight de despliegue entre 2a y 2b, ver el ADR -- paso de runtime,
+-- no de este commit).
+--
+-- Backfill inverso -- limpia el residuo que deja la instancia de código
+-- ANTERIOR a 2a si siguió atendiendo tráfico durante la ventana de deploy
+-- de 2a: su markIssuedWithClient()/markFailedWithClient() (de ANTES de
+-- este cambio) sacan la fila de PENDING sin limpiar `pending_since`
+-- (no conocían la columna), dejando filas NO-PENDING con `pending_since`
+-- poblado -- exactamente lo que el CHECK de abajo rechaza. No reemplaza
+-- al backfill directo del Bloque 26 (sigue arriba, sin gateo, se re-corre
+-- en este mismo deploy) -- corre ADEMÁS de él. Idempotente (`WHERE
+-- pending_since IS NOT NULL`), vuelve a correr sin costo en cualquier
+-- deploy posterior.
+UPDATE invoices SET pending_since = NULL WHERE status <> 'PENDING' AND pending_since IS NOT NULL;
+
+-- CHECK -- único indicador es status = 'PENDING'; a partir de acá el
+-- invariante queda impuesto por la base, no solo por convención de código.
+-- Bloque `DO $$ ... IF NOT EXISTS (pg_constraint) ...` -- SIN `DROP`
+-- previo (mismo criterio que chk_accounts_receivable_status, schema v52;
+-- un DROP+ADD incondicional forzaría revalidar la constraint contra toda
+-- la tabla en cada deploy, derrotando el propósito del IF NOT EXISTS --
+-- precedente ya corregido una vez en este mismo bloque lógico, ver N2 en
+-- el ADR).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_invoices_pending_since') THEN
+    ALTER TABLE invoices ADD CONSTRAINT chk_invoices_pending_since
+      CHECK ((status = 'PENDING') = (pending_since IS NOT NULL));
+  END IF;
+END $$;
+

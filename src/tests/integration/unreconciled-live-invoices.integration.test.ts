@@ -73,9 +73,9 @@ async function seedReservationWithIssuedInvoice(status: 'CANCELLED' | 'EXPIRED' 
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
      VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 96, '0',
-             5, 'PES', 826.45, 173.55, 1000, 'PENDING')`,
+             5, 'PES', 826.45, 173.55, 1000, 'PENDING', NOW())`,
     [invoiceId, BUSINESS_ID, charge!.id, guest.id, `idem-${invoiceId}`],
   );
   await invoiceRepo.markIssued(invoiceId, {
@@ -104,14 +104,18 @@ async function seedNcForReversal(opts: {
   revertingTransactionId: string; customerId: string; status: 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN';
 }) {
   const ncId = randomUUID();
+  // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
   await db.query(
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
         environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_contacted)
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_contacted, pending_since)
      VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 8, 1, 96, '0',
-             5, 'PES', 826.45, 173.55, 1000, $6, TRUE)`,
-    [ncId, BUSINESS_ID, opts.revertingTransactionId, opts.customerId, `idem-${ncId}`, opts.status],
+             5, 'PES', 826.45, 173.55, 1000, $6, TRUE, $7)`,
+    [
+      ncId, BUSINESS_ID, opts.revertingTransactionId, opts.customerId, `idem-${ncId}`, opts.status,
+      opts.status === 'PENDING' ? new Date() : null,
+    ],
   );
   if (opts.status === 'ISSUED') {
     const invoiceRepo = new SqlInvoiceRepository(db);
@@ -292,9 +296,9 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- filtro de estado 
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key,
           environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
-          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
        VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 96, '0',
-               5, 'PES', 826.45, 173.55, 1000, 'PENDING')`,
+               5, 'PES', 826.45, 173.55, 1000, 'PENDING', NOW())`,
       [invoiceId, 'biz-mutation-b1-filter', charge!.id, guest.id, `idem-${invoiceId}`],
     );
     await invoiceRepo2.markIssued(invoiceId, { cbteNro: 5555, cae: 'CAE-MUT', caeVto: '2030-01-01', afipResponse: {} });

@@ -305,8 +305,10 @@ describe('applyTenantSchema', () => {
     // window-guard-2026-09-23.md (ISSUE-BEFORE-REVERSE-WINDOW-001) --
     // invoices gana pending_since + backfill directo, SIN el CHECK todavía
     // (eso es el Bloque 2b, deploy posterior).
+    // 61 -> 62 el 23/09/2026: Bloque 2b del mismo ADR -- backfill inverso +
+    // chk_invoices_pending_since (BLOQUE 27, schema.sql).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(61);
+    expect(CURRENT_SCHEMA_VERSION).toBe(62);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {
