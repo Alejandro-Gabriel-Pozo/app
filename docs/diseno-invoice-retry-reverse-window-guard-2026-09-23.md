@@ -435,6 +435,21 @@ introducido por este bloque, pero se cierra acá porque el mecanismo nuevo lo vu
 alcanzable (antes hacía falta una secuencia rara para pisarlo; con un worker automático que
 corre solo, la secuencia se vuelve rutinaria).
 
+**Corrección al implementar (pre-commit, no cambia el comportamiento revisado por el gate —
+mismo estilo que la corrección de §3.1 sobre Bloque 1):** el `UPDATE` real de
+`markFailedWithClient()` (commit `93ab083`) pone `uncertain_cleared_at = NULL` de forma
+INCONDICIONAL, no acotado al literal "UPDATE que lleve A `FAILED_UNCERTAIN` con
+`afip_contacted = true`" de arriba — también corre para la rama `REJECTED` y para
+`afipContacted = false`. Es un superset seguro, verificado por el gate de pre-commit contra los 7
+lugares del código que leen esta columna (guard 8-bis de `reverseTransfer()`, la query de
+`GET /api/invoices/uncertain`, `takeRetryClaimWithClient()`, `retryExisting()`,
+`classifyManualResolutionOutcome()`, `markIssuedFromManualResolutionWithClient()`,
+`markIssuedFromAfipReconciliationWithClient()`): todos filtran ya por
+`status='FAILED_UNCERTAIN' AND afip_contacted` (o dependen de un escritor que ya lo exige) antes
+de importarles el valor de `uncertain_cleared_at`, así que el reset más amplio no cambia ningún
+comportamiento observable — solo cierra el hueco también para cualquier guard futuro que se
+olvide de repetir la condición compuesta.
+
 **Asignación de bloque (hueco de §6, ronda 4 del gate — este fix no estaba asignado a ningún
 bloque):** el fix de `markFailedWithClient()` va en el **Bloque 2c**, junto con el resto de §3.8
 — es prerrequisito de que el guard 8-bis relajado de 2c sea correcto (si `markFailedWithClient()`
