@@ -322,6 +322,12 @@ function domainErrorStatus(error: DomainError): number {
     // `INVOICE_RESOLUTION_CAE_MISMATCH`/`INVOICE_RESOLUTION_STATE_CONFLICT`
     // (decisiones 1/2 del dueño), `INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED`
     // (gap 4(c)), `AFIP_RECONCILIATION_PRECONDITION_FAILED` ("AFIP prevalece").
+    //
+    // Bloque 2c (23/09/2026, gate `architecture-governor`, ronda 15-bis, §3.2/
+    // §3.16) -- RETRY_INVOICE_IN_FLIGHT: la toma exclusiva de retryExisting()
+    // no encontró la factura en un estado reintentable (doble click, o ya no
+    // reintentable por otro motivo) -- mismo grupo semántico, precondición de
+    // estado que ya cambió, no regla de negocio violada.
     // Deliberadamente SIN mapeo (caen al 500 genérico, honest-degradation):
     // `INVOICE_RECONCILIATION_UNEXPECTED_STATE`/`INVOICE_ISSUED_COMPROBANTE_MISMATCH`
     // -- invariante roto real, ningún 4xx describe algo que el cliente pueda
@@ -403,6 +409,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'INVOICE_RESOLUTION_STATE_CONFLICT':
     case 'INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED':
     case 'AFIP_RECONCILIATION_PRECONDITION_FAILED':
+    case 'RETRY_INVOICE_IN_FLIGHT':
       return 409;
 
     // --- 503 Service Unavailable ---

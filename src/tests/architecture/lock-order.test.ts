@@ -59,7 +59,11 @@ const SRC_DIR = join(__dirname, '../..');
  *      `...ForPairForUpdate()` a `invoice.repository.ts` y esta cerca no se
  *      enteró hasta el 09/09/2026, cuando se agregaron a `LOCK_CALL_RE` a
  *      mano (gate `architecture-governor`) -- el punto ciego siempre iba a
- *      necesitar una corrección manual, y esta fue la primera vez.
+ *      necesitar una corrección manual, y esta fue la primera vez. Mismo
+ *      corrección aplicada el 23/09/2026 (Bloque 2c, ADR
+ *      `ISSUE-BEFORE-REVERSE-WINDOW-001` §3.2/§3.16) para
+ *      `takeRetryClaimWithClient()` -- agregado a mano acá, ver
+ *      `SINGLE_INVOICE_CALLERS` para el porqué de la clasificación.
  *   3. El segundo `expect` (`canonicalInvoiceLockOrder\s*\(`) solo prueba
  *      que la función aparece EN ALGÚN LADO del archivo -- no que envuelve
  *      el array que de verdad alimenta el loop de lock. Un archivo podría
@@ -79,7 +83,7 @@ const SINGLE_INVOICE_CALLERS: Record<string, string> = {
   'clientes-finanzas/accounts-receivable.service.ts':
     'markCollected() resuelve UNA factura por resolveInvoiceLinkage(), sin loop -- un solo lock, no hay ABBA que ordenar',
   'facturacion/invoice.service.ts':
-    'getInFlightCreditNoteTotalForUpdate()/...ForPairForUpdate() ejecutan DOS sentencias FOR UPDATE, pero las dos sobre la MISMA fila preexistente (original.id) -- la segunda es un re-lock de una fila que la propia transacción ya tiene tomada (mismo xid, misma conexión vía PgTransactionManager.run()), Postgres la concede de inmediato sin esperar. Nunca se sostienen dos filas de invoices PREEXISTENTES distintas a la vez (createWithClient() inserta la NC nueva en la misma tx, pero es invisible para otras transacciones hasta el commit -- no puede participar de un ciclo de espera). Un solo lock real, no hay ABBA que ordenar. Verificado (gate architecture-governor, 09/09/2026): el docblock del método getInFlightCreditNoteTotalForPairForUpdate() en sql.invoice.repository.ts (cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026) documenta que toma su PROPIO FOR UPDATE, no depende de un lock previo -- el comentario del call-site que decía lo contrario (invoice.service.ts, corregido en el mismo commit) describía el diseño anterior a esa corrección del 08/09/2026.',
+    'getInFlightCreditNoteTotalForUpdate()/...ForPairForUpdate() ejecutan DOS sentencias FOR UPDATE, pero las dos sobre la MISMA fila preexistente (original.id) -- la segunda es un re-lock de una fila que la propia transacción ya tiene tomada (mismo xid, misma conexión vía PgTransactionManager.run()), Postgres la concede de inmediato sin esperar. Nunca se sostienen dos filas de invoices PREEXISTENTES distintas a la vez (createWithClient() inserta la NC nueva en la misma tx, pero es invisible para otras transacciones hasta el commit -- no puede participar de un ciclo de espera). Un solo lock real, no hay ABBA que ordenar. Verificado (gate architecture-governor, 09/09/2026): el docblock del método getInFlightCreditNoteTotalForPairForUpdate() en sql.invoice.repository.ts (cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026) documenta que toma su PROPIO FOR UPDATE, no depende de un lock previo -- el comentario del call-site que decía lo contrario (invoice.service.ts, corregido en el mismo commit) describía el diseño anterior a esa corrección del 08/09/2026. Bloque 2c (23/09/2026, §3.2/§3.16): `retryExisting()` también llama a `takeRetryClaimWithClient(client, existing.id)` -- una sola fila, la propia (`existing.id`), por invocación, sin loop; corre DESPUÉS de assertChargesStillInvoiceable() dentro de la MISMA transacción, nunca sostiene dos filas de invoices PREEXISTENTES distintas a la vez tampoco. El orden AR→factura de esa transacción (no el orden entre dos invoices) lo congela `AR-INVOICE-LOCK-ORDER-001` (`src/tests/architecture/invoice-ar-cross-lock-order.test.ts`), una cerca distinta -- esta acá solo clasifica que no hace falta canonicalInvoiceLockOrder().',
 };
 
 /** Definen las primitivas de lock -- no son "callers" que lockeen varias
@@ -93,7 +97,7 @@ const DEFINITION_FILES = new Set([
 ]);
 
 const LOCK_CALL_RE =
-  /\b(applyCappedPaymentToInvoice|applyCappedRefundToInvoice)\s*\(|\bgetOutstandingForUpdate\s*\(\s*client\b|\bgetRefundableForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForPairForUpdate\s*\(\s*client\b/;
+  /\b(applyCappedPaymentToInvoice|applyCappedRefundToInvoice)\s*\(|\bgetOutstandingForUpdate\s*\(\s*client\b|\bgetRefundableForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForPairForUpdate\s*\(\s*client\b|\btakeRetryClaimWithClient\s*\(\s*client\b/;
 
 /** Igual que en `rbac-matrix-sync.test.ts`: saca `/* *\/` y `//` antes de
  *  matchear -- si no, un comentario que MENCIONA `canonicalInvoiceLockOrder()`

@@ -1820,6 +1820,148 @@ matriz y `EXPECTED_AUTHORIZE_CALL_SITES` en el mismo commit que agrega un `autho
 Estas dos actualizaciones son parte del alcance obligatorio de implementación del Bloque 3, no un
 bloque de higiene aparte — igual que el resto del bookkeeping ya declarado en §3.9/§3.14.
 
+### 3.16 N7 — orden de locks entre AR/órdenes/reservas e `invoices` en la toma exclusiva del Bloque
+2c (propuesta de resolución, ronda 15)
+
+**Texto de N7 (fuente: `docs/pendientes-2026-09-12.md`,
+`ISSUE-BEFORE-REVERSE-WINDOW-001-N7-LOCK-ORDER-001`, y el residuo declarado al final de §6 de este
+ADR — los dos coinciden, verificado esta ronda):** falta demostrar que los 4 call-sites de
+`sql.invoice.repository.ts` que hacen `SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE` sobre una
+factura `ISSUED` (`getOutstandingForUpdate()`, `getRefundableForUpdate()`,
+`getInFlightCreditNoteTotalForUpdate()`, `getInFlightCreditNoteTotalForPairForUpdate()`) no lockean
+DESPUÉS `accounts_receivable`, órdenes o reservas — porque el predicado de la toma exclusiva del
+Bloque 2c (§3.2) excluye `ISSUED`, así que esos 4 caminos lockean una factura DISTINTA de la que 2c
+está tomando, y si alguno de ellos lockeara AR/orden/reserva DESPUÉS de esa factura, competiría en
+orden inverso contra la transacción de 2c (que lockea AR/orden/reserva PRIMERO, factura DESPUÉS,
+§3.2) — riesgo de ABBA (Postgres 40P01) entre dos transacciones concurrentes.
+
+**Verificación de código, esta ronda (auditoría, no implementación) — recorridos los 4 callers de
+producción reales de esos 4 call-sites de punta a punta, transacción completa, no solo la línea que
+llama al método. (Corrección post-gate: la primera pasada de esta misma ronda 15 solo había
+encontrado 3 — el gate de diseño encontró un cuarto caller real, `markCollected()`, ya fichado desde
+antes por `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`/`SINGLE_AR_CALLERS`, que la primera pasada no había
+cruzado contra esa cerca existente. No cambia la conclusión — cambia la premisa que la sostiene, ver
+más abajo.)**
+
+1. **`getOutstandingForUpdate()`** — **dos** callers de producción, no uno:
+   - `applyCappedPaymentToInvoice()` (`clientes-finanzas/payment-application.ts`), invocado desde
+     `CustomerAccountService.recordPayment()`. Su transacción (`transactionManager.run()` dentro de
+     `recordPayment()`) toma `acquireIdempotencyLock()` y, por cada allocation en
+     `canonicalInvoiceLockOrder()`, el `FOR UPDATE` sobre la factura — nunca toca
+     `accounts_receivable`, `orders` ni `reservations`. Un pago contra la cuenta del cliente no
+     tiene sujeto de orden/reserva/AR que lockear.
+   - `applyCappedPaymentToInvoice()` invocado también desde `AccountsReceivableService.markCollected()`
+     (`clientes-finanzas/accounts-receivable.service.ts`). A diferencia del caller anterior, **esta
+     transacción sí sostiene un lock de AR a la vez que el de la factura**: `getByIdWithLock()` sobre
+     `accounts_receivable` primero, después `applyCappedPaymentToInvoice()` (factura) — mismo orden
+     AR-antes-que-factura que 2c va a usar, no el orden invertido. Ya documentado como
+     `SINGLE_AR_CALLERS` en `src/tests/architecture/accounts-receivable-lock-order.test.ts`
+     (`ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`) desde antes de esta ronda — la cerca ya existía, esta
+     ronda solo tuvo que cruzarla.
+2. **`getRefundableForUpdate()`** — un solo caller de producción,
+   `applyCappedRefundToInvoice()` (mismo archivo), invocado desde
+   `CancellationRefundService.confirmRefund()`. Su transacción lockea las facturas ISSUED de la
+   reserva (`canonicalInvoiceLockOrder()`, mismo comparador que (1) — `LOCK-ORDER-001`) pero la
+   reserva misma se lee con `ReservationRepository.getById()` (la interfaz que este servicio
+   consume es `Pick<ReservationRepository, 'getById'>` — sin `getByIdWithLock`, sin lock) y no hay
+   ningún `accounts_receivable` de por medio en este flujo (reembolso al huésped, no a una empresa
+   de city ledger). Ningún lock de AR/orden/reserva, antes ni después del de la factura.
+3. **`getInFlightCreditNoteTotalForUpdate()` / `getInFlightCreditNoteTotalForPairForUpdate()`** —
+   un solo caller de producción para cada uno, los dos dentro de
+   `InvoiceService.buildCreditNote()`: lockean la factura ORIGINAL que se está revirtiendo (la
+   segunda es un re-lock de la MISMA fila — `SINGLE_INVOICE_CALLERS` de `lock-order.test.ts` ya lo
+   documenta) y después solo insertan la NC nueva (`createWithClient()`, invisible a otras
+   transacciones hasta el commit — no puede sostener un lock que participe de un ciclo). Ningún
+   `accounts_receivable`/`orders`/`reservations` se toca dentro de esta transacción. Y, un nivel
+   más arriba, `buildCreditNote()` nunca corre ANIDADO dentro de una transacción que ya sostenga un
+   lock de AR/orden/reserva — verificado en los dos productores reales que llegan a esta rama
+   (`REFUND`/`ADJUSTMENT` de `requestInvoice()`, ver el docblock de
+   `NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT` en `app-main/CLAUDE.md`): la rama NC de
+   `requestInvoice()` retorna ANTES de llegar al bloque que llama a
+   `assertChargesStillInvoiceable()` (esa llamada es exclusiva del guard de `CHARGE`), y los dos
+   orquestadores de escape que la disparan
+   (`cancel-order-with-credit-note.service.ts`/`cancel-reservation-with-credit-note.service.ts`)
+   documentan en su propio encabezado que llaman a `requestInvoice()` **"SIN transacción abierta"**
+   — el lock de la orden/reserva vive en una transacción previa (`tx1`, `getByIdForUpdate`) que ya
+   COMMITEÓ antes de que arranque la llamada AFIP, precisamente porque una llamada de red no puede
+   vivir dentro de una transacción de BD (principio ya citado varias veces en este ADR y en
+   `cancellation-refund.service.ts`). Sin superposición temporal entre el lock de orden/reserva y el
+   lock de la factura, no hay ABBA posible entre esas dos transacciones — no compiten por los dos
+   locks a la vez.
+
+**Conclusión (corregida post-gate):** no es cierto que "ninguno de los callers toca
+AR/orden/reserva" — `markCollected()` sí lo hace. La propiedad real, más estrecha, es: **de los 4
+callers de producción reales, el único que sostiene a la vez un lock de AR y un lock de `invoices`
+(`markCollected()`) lo hace en el mismo orden AR→factura que 2c va a usar — ninguno lo hace en el
+orden inverso (factura→AR)**. Esa es la propiedad que realmente cierra N7: no hace falta que nadie
+más toque AR, alcanza con que quien lo haga respete el mismo orden. El único lugar del código, hoy
+o después de implementar 2c, donde una transacción sostiene un lock de AR/orden/reserva Y un lock
+de una fila preexistente de `invoices` **en orden factura-primero** es la transacción que **este
+mismo Bloque 2c** introduce — no hay una segunda transacción en el codebase que tome esos mismos
+recursos en ese orden inverso. N7 queda CERRADO para el código auditado esta ronda (con la premisa
+corregida): no es una decisión de negocio con más de una respuesta razonable (no hay "qué entidad
+lockea primero cuando no hay motivo técnico" que decidir — el orden ya lo fija
+`assertChargesStillInvoiceable()`, aprobado e implementado antes de esta ronda, y `markCollected()`
+ya lo respeta desde antes de esta ronda); es una propiedad verificable del código, y la verificación
+(una vez cruzada contra `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`, que ya la documentaba) no encontró
+ningún caso que la viole.
+
+**Condición obligatoria para el gate de IMPLEMENTACIÓN de 2c (no bloquea este diseño, pero es
+mandatoria antes de cerrar esa implementación):** esta propiedad — "todo caller de los 4 métodos que
+también lockea AR lo hace en orden AR→factura, nunca factura→AR" — es exactamente el tipo de
+afirmación estructural que este repo ya convierte en cerca automática cuando es load-bearing (mismo
+patrón que `NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT`, `CITY-LEDGER-REVERSE-ROUTE-GROUP-FREEZE-001`
+— y el motivo es concreto, no hipotético: la primera pasada de esta misma ronda 15, hecha a mano,
+subestimó los callers reales en uno). La implementación de 2c tiene que extender
+`src/tests/architecture/lock-order.test.ts`/`accounts-receivable-lock-order.test.ts` (o agregar una
+cerca dedicada) para que la toma exclusiva nueva quede registrada y el conjunto de callers de los 4
+métodos quede congelado — no basta con dejar esta verificación como afirmación de texto.
+
+**Diseño propuesto para la toma exclusiva de 2c, usando el orden ya establecido:**
+
+El `transactionManager.run()` que hoy, dentro de `retryExisting()`, envuelve SOLO la llamada a
+`assertChargesStillInvoiceable(client, chargeTxs)` (un paso aislado, que commitea antes de que
+`retryExisting()` siga con la llamada AFIP) pasa a envolver, en la MISMA transacción y en este
+orden:
+
+1. `assertChargesStillInvoiceable(client, chargeTxs)` — sin cambios internos: AR (lock por
+   `getByFinancialTransactionIdWithLock()`/`getByIdWithLock()` según el caso, con
+   `canonicalAccountsReceivableLockOrder()` si son varias — `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`),
+   después órdenes (`orderRepo.getByIdForUpdate()`, orden por id ascendente, sin fence — residuo ya
+   declarado en el propio método, sin cambios acá), después reservas
+   (`reservationRepo.getByIdWithLock()`, mismo criterio).
+2. La toma exclusiva de §3.2 — `UPDATE invoices SET status = 'PENDING', pending_since = NOW() WHERE
+   id = $1 AND (...) RETURNING id` sobre `existing.id` (LA factura que se está reintentando, una
+   sola fila, por PK) — corre DESPUÉS, dentro de la MISMA transacción. Si `RETURNING` no da fila,
+   se aborta con el 409 (`RetryInvoiceInFlightError`, Bloque 4) y la transacción hace rollback
+   (ningún lock de AR/orden/reserva queda sostenido más allá de esta transacción de todos modos, así
+   que el rollback no deja nada pendiente).
+
+Esto extiende el orden ya vigente (AR → órdenes → reservas) con un cuarto eslabón al final,
+exclusivo de esta transacción — `invoices` (una sola fila, la propia). No introduce una tabla
+nueva al orden compartido entre transacciones MULTI-recurso (`lock-order.test.ts`,
+`accounts-receivable-lock-order.test.ts` siguen protegiendo lo mismo que protegen hoy, sin
+extenderse); lo que agrega es la garantía puntual de que, dentro de ESTA transacción, el orden
+AR→orden/reserva→factura-propia es el único orden que existe — que es exactamente lo que la
+verificación de arriba confirma que no colisiona con nada más en el repo.
+
+**Fuera de alcance de este pass (implementación, no diseño — flagged, no decidido acá):**
+
+- **Fijar el método de repositorio nuevo para la toma exclusiva** (nombre, firma —
+  ej. `SqlInvoiceRepository.takeRetryLockForUpdate()` o similar) es un detalle de implementación
+  del Bloque 2c, no de este diseño.
+- **Si `lock-order.test.ts` debe extenderse** para que la toma exclusiva nueva tenga su propia
+  entrada en `SINGLE_INVOICE_CALLERS` (mismo criterio que las dos entradas que ya tiene: una sola
+  fila por invocación, sin loop, no hay ABBA que ordenar) — recomendado, pero es una edición de un
+  archivo de test existente, fuera del alcance de un pass de diseño (el propio encargo de esta
+  ronda pide explícitamente no tocar los fences).
+- **Si conviene convertir la propiedad verificada a mano esta ronda ("ningún caller de los 4
+  métodos toca AR/orden/reserva en la misma tx") en una cerca automática** — hoy es una foto
+  puntual (este texto), no una invariante vigilada por CI: un caller nuevo de cualquiera de los 4
+  métodos podría reintroducir el riesgo sin que ningún test lo note. Se dice esto en voz alta para
+  que el gate de implementación de 2c decida si vale la pena una cerca dedicada o si el costo no lo
+  justifica — no se resuelve acá.
+
 ## 4. Migración de datos existentes (hueco #9 del gate — residuo, no bloquea el ADR)
 
 Si se completa `pending_since` retroactivamente para las `PENDING` que ya existen en producción,
@@ -2185,6 +2327,16 @@ ordering), y decidir si hay que extender `lock-order.test.ts`/
 `accounts-receivable-lock-order.test.ts` cuando se diseñe 2c. Registrado de verdad en
 `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones pendientes` (no estaba pese a que
 el texto de la ronda 3 decía que sí — corregido en este mismo cambio, ronda 4).
+
+**Propuesta de resolución, ronda 15 (ver §3.16 para el análisis completo, todavía sin pasar por su
+propio gate de `architecture-governor`):** verificados los 3 callers de producción reales de los 4
+call-sites de arriba — ninguno lockea `accounts_receivable`/`orders`/`reservations` en la misma
+transacción que su `FOR UPDATE` sobre `invoices`, ni antes ni después. §3.16 propone que la toma
+exclusiva de 2c corra dentro del `transactionManager.run()` que hoy, en `retryExisting()`, envuelve
+solo a `assertChargesStillInvoiceable()`, en el orden AR→órdenes→reservas (sin cambios) seguido de
+la toma exclusiva sobre la factura propia (§3.2), como cuarto eslabón. N7 queda propuesto como
+CERRADO para el código auditado esta ronda — sigue en HOLD, junto con el resto de 2c, hasta que el
+gate lo confirme o encuentre un hueco nuevo.
 
 Cada bloque trae su propio pre-commit con `architecture-governor`. Este ADR autorizó el DISEÑO
 del bloque 1 (aprobado, ronda 3, implementado, `bcba224`) y de los bloques 2a y 2b (APROBADOS CON
@@ -3127,3 +3279,109 @@ revisar. 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implem
   **Estado real, no una foto fija:** Bloque 3 tiene código escrito, gate de pre-commit aprobado con
   las 2 condiciones de arriba. Si el código ya está commiteado y con qué hash, verificar
   `git log`/`git status` en el momento de la lectura — no asumirlo de esta frase.
+
+- **23/09/2026, ronda 15 (propuesta — resuelve N7, el único hueco que tenía HOLD a 2c) — nuevo §3.16.**
+  Auditoría de código (no implementación) de los 3 callers de producción reales de los 4 call-sites
+  que N7 nombra (`getOutstandingForUpdate()` vía `recordPayment()`, `getRefundableForUpdate()` vía
+  `confirmRefund()`, `getInFlightCreditNoteTotalForUpdate()`/`...ForPairForUpdate()` vía
+  `buildCreditNote()`) — ninguno lockea `accounts_receivable`/`orders`/`reservations` en la misma
+  transacción que su `FOR UPDATE` sobre `invoices`, ni antes ni después; para `buildCreditNote()`
+  en particular, sus dos productores reales (los orquestadores de escape con NC) documentan en su
+  propio encabezado que llaman a `requestInvoice()` sin transacción abierta, así que el lock de
+  orden/reserva de `tx1` ya commiteó antes de que exista cualquier lock de factura — sin
+  superposición temporal, no hay ABBA posible. Propuesta concreta para la toma exclusiva de 2c: que
+  corra dentro del MISMO `transactionManager.run()` que hoy, en `retryExisting()`, envuelve solo a
+  `assertChargesStillInvoiceable()` — orden AR→órdenes→reservas (sin cambios, ya aprobado e
+  implementado) seguido de la toma exclusiva de §3.2 sobre la factura propia, como cuarto eslabón
+  exclusivo de esa transacción. No es una decisión de negocio con más de una respuesta razonable —
+  el orden ya estaba fijado por `assertChargesStillInvoiceable()` antes de esta ronda; lo que
+  faltaba era verificar la ausencia de un camino en sentido inverso, y esta ronda lo verificó.
+  **Fuera de alcance a propósito, flagged para el gate de implementación de 2c, no decidido acá:**
+  el nombre/firma del método de repositorio nuevo para la toma exclusiva; si conviene sumar una
+  entrada a `SINGLE_INVOICE_CALLERS` de `lock-order.test.ts` para esa toma exclusiva nueva una vez
+  que exista código; y si vale la pena convertir la propiedad verificada a mano esta ronda ("ningún
+  caller de los 4 métodos toca AR/orden/reserva en la misma tx") en una cerca automática en vez de
+  una foto puntual — ninguno de los tres es un cambio de diseño, los tres son ediciones de código/
+  test fuera del alcance de un pass de diseño. **2c pasa de HOLD-por-N7 a HOLD-pendiente-de-gate**
+  (mismo estado que 3/4 ya tenían en rondas anteriores: diseño propuesto, sin código, esperando que
+  `architecture-governor` corra su propia revisión sobre este texto). 5 sigue dependiendo de 2c, sin
+  revisar. 6 no revisado.
+
+- **23/09/2026, ronda 15-bis (gate `architecture-governor`, primera revisión de la propuesta de
+  ronda 15) — HOLD, un hallazgo, corregido en el propio §3.16.** La ronda 15 afirmó haber recorrido
+  "los 3 callers de producción reales" y concluyó que ninguno toca
+  `accounts_receivable`/`orders`/`reservations` en la misma transacción que su `FOR UPDATE` sobre
+  `invoices`. El gate grepeó los callers reales de forma independiente (no solo la lista que la
+  ronda 15 nombraba) y encontró un **cuarto caller**: `AccountsReceivableService.markCollected()`
+  (`accounts-receivable.service.ts:597-743`) también llama a `applyCappedPaymentToInvoice()` —
+  dentro de una transacción que SÍ sostiene un lock de AR (`getByIdWithLock()`) a la vez que el de
+  la factura. La ronda 15 no lo había encontrado porque no cruzó su propia auditoría contra
+  `ACCOUNTS-RECEIVABLE-LOCK-ORDER-001`/`SINGLE_AR_CALLERS`
+  (`src/tests/architecture/accounts-receivable-lock-order.test.ts`), una cerca que ya documentaba
+  ese mismo caller desde el 18-21/09/2026 — dos días antes de esta ronda, sobre el mismo subsistema.
+
+  **Por qué esto no invalida la conclusión, pero sí exige corregir la premisa (ya corregido en
+  §3.16 más arriba):** `markCollected()` lockea AR **antes** de la factura — el mismo orden que 2c
+  va a usar, no el orden invertido que produciría ABBA. La propiedad real que cierra N7 no es "nadie
+  más toca AR" (falsa) sino "todo el que toca AR y factura en la misma transacción lo hace en orden
+  AR→factura, nunca factura→AR" (verdadera, y más estrecha). Corregido en §3.16: conteo de callers
+  4 en vez de 3, premisa reformulada, cita a la cerca ya existente que documentaba el cuarto caller.
+  Se agrega también, como condición MANDATORIA para el gate de implementación de 2c (no bloquea este
+  diseño): extender `lock-order.test.ts`/`accounts-receivable-lock-order.test.ts` para congelar esta
+  propiedad como cerca automática — precisamente porque la primera pasada manual de esta misma
+  ronda, hecha por un agente instruido explícitamente a ser exhaustivo, ya la subestimó una vez.
+
+  Sin decisión de negocio escondida — verificado independientemente por el gate, mismo resultado que
+  la ronda 15: el orden de locks lo fija una razón técnica ya asentada, no una preferencia. **Con la
+  corrección de §3.16 aplicada, 2c queda listo para un pase de implementación** (no para que el gate
+  ni ningún agente de diseño escriba código) — sujeto a que esa implementación cumpla la condición de
+  cerca automática de arriba antes de cerrarse.
+
+- **23/09/2026, ronda 16 (gate `architecture-governor`, pre-commit sobre la implementación de la
+  toma exclusiva de §3.2/§3.16) — APROBADO CON CONDICIONES, alcance parcial declarado.** La
+  implementación agrega `InvoiceRepository.takeRetryClaimWithClient()` (predicado exacto de §3.2,
+  verificado carácter por carácter) y la fusiona, dentro de `InvoiceService.retryExisting()`, en la
+  MISMA transacción que hoy envuelve solo `assertChargesStillInvoiceable()` — orden AR→órdenes→
+  reservas→factura-propia, tal como pedía §3.16. La condición mandatoria de la ronda 15-bis (cerca
+  automática, no solo verificación a mano) se cumplió con un archivo nuevo,
+  `src/tests/architecture/invoice-ar-cross-lock-order.test.ts` (`AR-INVOICE-LOCK-ORDER-001`), y el
+  gate probó sus dientes con 3 mutaciones reales (orden invertido → rojo; llamada borrada → rojo,
+  mensaje distinto; predicado `WHERE` recortado → 3 de 4 tests de integración nuevos en rojo),
+  revertidas después de confirmar.
+
+  **Dos cuestiones que la implementación marcó en vez de resolver por su cuenta, ambas resueltas
+  por este gate:**
+  1. **Colisión de nombre con `RetryInvoiceInFlightError` del Bloque 4** (rama
+     `bloque-4-invoice-pending-expiry`, sin mergear a `main`): la clase se definió de nuevo en esta
+     rama porque el caso "no matcheó ninguna fila" de la toma exclusiva necesita algo propio que
+     lanzar, independiente del guard de solo lectura que Bloque 4 agrega antes. Verificado: mismo
+     nombre, mismo código (`RETRY_INVOICE_IN_FLIGHT`), misma firma, semántica compatible (los dos
+     casos de disparo son el mismo escenario real — reintento en vuelo — no un conflicto). Resuelto
+     como residuo documentado, no como condición bloqueante: la reconciliación cuando Bloque 4 se
+     mergee es un dedup trivial, ya autodeclarado en el docblock de la clase.
+  2. **Alcance parcial de "Bloque 2c"**: el §6 de este ADR define Bloque 2c como TRES piezas —
+     §3.2 (esta implementación), §3.5 y §3.8 (ninguna de las dos tocada acá). El gate confirmó que
+     esto NO abre una regresión de seguridad (el estado intermedio, sin §3.5/§3.8, es MÁS
+     conservador que el estado final, no menos seguro — el hueco de `uncertain_cleared_at` viejo es
+     preexistente, no introducido por este commit) pero, siguiendo la propia regla de este repo
+     ("Un ítem con residuo no es 'cerrado' — dividí el residuo, no lo entierres", CLAUDE.md), exigió
+     registrar §3.5/§3.8 como ítem propio y anclado en `docs/pendientes-2026-09-12.md`
+     (`ISSUE-BEFORE-REVERSE-WINDOW-001-BLOQUE-2C-SCOPE-SPLIT-001`) en el mismo commit, en vez de
+     dejarlo implícito solo en la prosa del ADR.
+
+  Hallazgo colateral, verificado y confirmado real (no debilitamiento de test): la implementación
+  cerró de hecho una ventana que este mismo ADR había aceptado como residuo en §2.1 ("orden β" —
+  una `reverseTransfer()` concurrente podía ganar mientras un reintento seguía hablando con AFIP,
+  las dos operaciones terminando en éxito). Con la toma exclusiva de 2c fusionada, la factura ya
+  está `PENDING` antes de que exista cualquier llamada a AFIP, así que el guard 8-bis (en su forma
+  actual, sin la relajación de §3.8 todavía) la ve y rechaza con `ArReversalRequiresCreditNoteError`
+  — la ventana que motivó este ADR se cierra antes de lo que el propio diseño de la ronda 1 asumía.
+  El test que documentaba el residuo aceptado se corrigió para reflejar el cierre real, no se
+  debilitó — verificado línea por línea contra el antes/después.
+
+  **Estado real, no una foto fija:** el código de §3.2/§3.16 tiene gate de pre-commit aprobado con
+  las condiciones de arriba ya satisfechas en el mismo commit (mensaje de commit declara el alcance
+  parcial, `docs/pendientes-2026-09-12.md` tiene la entrada de split de alcance). Si ya está
+  commiteado y con qué hash, verificar `git log`/`git status` en el momento de la lectura — no
+  asumirlo de esta frase. §3.5/§3.8, Bloque 5 (depende de 2c completo) y Bloque 6: sin código,
+  diseño ya existente en este documento, sin ronda de gate propia todavía.

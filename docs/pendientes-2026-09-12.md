@@ -1709,6 +1709,33 @@ anteriores.
   `lock-order.test.ts`/`accounts-receivable-lock-order.test.ts` para que lo confirme en código)
   que ninguno toma un lock sobre `accounts_receivable`/`orders`/`reservations` DESPUÉS de su
   `FOR UPDATE` sobre `invoices`.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-BLOQUE-2C-SCOPE-SPLIT-001` (23/09/2026, condición 2 del gate
+  `architecture-governor` sobre la implementación del Bloque 2c de
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`; ver también su §6, que asigna las
+  tres partes de abajo al mismo bloque, y la entrada "ronda 16" del Historial de revisión de ese
+  ADR).** El §6 del ADR define "Bloque 2c" como TRES piezas: §3.2 (toma exclusiva —
+  **implementada y gate-aprobada esta sesión**, ver §3.16/ronda 15-16 del ADR), §3.5 y §3.8 (las
+  dos SIN implementar todavía, residuo de este commit). El gate verificó que no dejar
+  implementadas §3.5/§3.8 no abre una regresión de seguridad nueva (el comportamiento actual de
+  `markFailedWithClient()`/guard 8-bis es más conservador, no menos seguro, que el estado
+  intermedio) — pero deja el Bloque 2c del ADR incompleto hasta que las dos piezas de abajo se
+  implementen, JUNTAS (§3.8 lo exige explícitamente: relajar el guard sin el reset de §3.5 ya
+  desplegado abriría una ventana peor que la actual).
+  1. **§3.5 — reset de `uncertain_cleared_at` en `markFailedWithClient()`**
+     (`src/facturacion/sql.invoice.repository.ts::markFailedWithClient()`). Hoy ningún método
+     existente vuelve a `NULL` ese campo — si una factura ya limpiada vuelve a caer en
+     `FAILED_UNCERTAIN` con `afipContacted`, el valor viejo sigue poblado y esquiva el chequeo
+     temprano de `retryExisting()`. Prerrequisito técnico de (2).
+  2. **§3.8 — guard 8-bis de `reverseTransfer()` respeta `uncertainClearedAt`**
+     (`src/clientes-finanzas/accounts-receivable.service.ts::reverseTransfer()`, rama
+     `FAILED_UNCERTAIN` con `afipContacted` de la tabla de §3.1/guard 8-bis). Agregar
+     `&& fila.uncertainClearedAt == null` a la condición de bloqueo de esa fila — mismo criterio
+     que `retryExisting()` ya aplica. Bloqueado en implementarse solo (sin (1) ya desplegado)
+     porque abriría una ventana donde una reversa pasa mientras una factura recién re-fallada
+     hereda un `uncertain_cleared_at` viejo sin revisión real.
+  **Acción puntual que lo cierra:** implementar (1) y (2) en el mismo commit, con su propio pase
+  por el gate `architecture-governor` (diseño ya está — §3.5/§3.8 del ADR, sin ronda pendiente de
+  diseño; falta el gate de pre-commit sobre el código).
 - **Verificaciones pendientes -- dos gates de producción distintos del
   ADR reintento-vs-reversa (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`),
   necesarios los dos, no alternativos (corregido en ronda 5 del gate,
