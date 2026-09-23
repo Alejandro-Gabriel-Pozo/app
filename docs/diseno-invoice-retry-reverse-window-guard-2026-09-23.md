@@ -1,11 +1,24 @@
 # ADR — cerrar la ventana reintento-de-factura vs. reversa (`ISSUE-BEFORE-REVERSE-WINDOW-001`)
 
-**Fecha:** 23/09/2026. **Estado (ronda 3, gate `architecture-governor`): bloque 1 APROBADO CON
-CONDICIONES (alcance ampliado en §6, punto 1); bloques 2-6 en HOLD — 7 huecos nuevos (N1-N7,
-ver §3.1-§3.9 y §6) encontrados sobre el texto de la ronda 2, pendientes de una ronda 4 antes de
-gatear el diseño del bloque 2.** **Bloque 1 implementado** (pre-commit gate aprobado con las
-condiciones C1-C4 de esa ronda ya aplicadas): `getAllLinkedInvoicesWithClient()` + guard 8-bis de
-`reverseTransfer()` reescrito fila por fila. Bloques 2a en adelante: sin código, en HOLD.
+**Fecha:** 23/09/2026. **Estado (ronda 5, gate `architecture-governor`): 2a y 2b APROBADOS CON
+CONDICIONES (C1-C4 de la ronda 5, todas aplicadas en este texto — ver Historial de revisión) →
+READY FOR IMPLEMENTATION, sin ronda 6 para estos dos bloques, sujeto a **C5**: implementar 2a
+requiere árbol de trabajo limpio, con `DUPLICATE-CAE-001` ya commiteado primero (§5 de este mismo
+documento exige releer `retryExisting()` sobre ese diff real antes de tocar los mismos dos
+archivos). 3 y 4 vuelven a HOLD por dos
+ubicaciones nuevas que la propia ronda 5 encontró: **ubicación A** (la rama `EMITIDA` de
+`resolveCreditNoteRequestManually()` sobrescribiría campos AFIP de una factura ya `ISSUED` cuando
+un operador recibe el 409 nuevo de N6 y no tiene otra salida — choca con §8, "factura ISSUED es
+inmutable" — bloquea el diseño del Bloque 3) y **ubicación B** (con el reorder de N3 ya aplicado,
+el Bloque 4 puede activarse mientras una `PENDING` vieja está siendo reintentada por
+`retryExisting()` — que hoy no vuelve a sellarla — y el worker la marca `FAILED_UNCERTAIN` en
+plena llamada a AFIP; rompe el margen de §3.4 y el invariante de
+`transitionCreditNoteRequestAfterFailure()` — bloquea el diseño del Bloque 4). 2c sigue en HOLD
+por N7 (sin cambios). 5 depende de 2c. 6 no revisado en ronda 5. Bloque 1 sigue APROBADO (ronda 3,
+implementado, ver abajo) y ya no forma parte de este HOLD.** **Bloque 1 implementado** (pre-commit
+gate aprobado con las condiciones C1-C4 de esa ronda ya aplicadas): `getAllLinkedInvoicesWithClient()`
++ guard 8-bis de `reverseTransfer()` reescrito fila por fila. Bloques 2a-2b: diseño listo, sin
+código todavía. Bloques 3-6: en HOLD, sin código.
 **Hallazgo que cierra:** `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
 (`docs/pendientes-2026-09-12.md`). **No se une con** `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
 (hallazgo hermano, mismo archivo, gate separado en curso) — comparten la raíz (un cargo con
@@ -274,6 +287,13 @@ introducido por este bloque, pero se cierra acá porque el mecanismo nuevo lo vu
 alcanzable (antes hacía falta una secuencia rara para pisarlo; con un worker automático que
 corre solo, la secuencia se vuelve rutinaria).
 
+**Asignación de bloque (hueco de §6, ronda 4 del gate — este fix no estaba asignado a ningún
+bloque):** el fix de `markFailedWithClient()` va en el **Bloque 2c**, junto con el resto de §3.8
+— es prerrequisito de que el guard 8-bis relajado de 2c sea correcto (si `markFailedWithClient()`
+no resetea el campo, una factura recién re-fallada podría heredar un `uncertain_cleared_at` viejo
+y el guard la trataría como ya limpiada sin revisión real). El `UPDATE` del worker (§3.3) ya trae
+`uncertain_cleared_at = NULL` en su propio SQL — eso va en el Bloque 4, sin depender de este fix.
+
 ### 3.6 Única fuente de verdad para "en vuelo" (hueco #7, corregido ronda 2 — schema y migración)
 
 **Resolución:** el único indicador es `status = 'PENDING'`. La columna nueva se llama
@@ -300,7 +320,15 @@ ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ;
 -- esa fila entró en PENDING la única vez que pudo hacerlo hasta ahora.
 UPDATE invoices SET pending_since = created_at WHERE status = 'PENDING' AND pending_since IS NULL;
 
-DROP CONSTRAINT IF EXISTS chk_invoices_pending_since;
+-- Backfill inverso (obligatorio en 2b, hueco N1 ronda 4 -- ver más abajo por
+-- qué). Limpia el residuo que deja la instancia de código ANTERIOR a 2a si
+-- sigue atendiendo tráfico durante la ventana de deploy: su
+-- markIssuedWithClient()/markFailedWithClient() sacan la fila de PENDING sin
+-- limpiar pending_since (no la conocen), dejando filas NO-PENDING con
+-- pending_since poblado -- exactamente lo que el CHECK de abajo rechaza. No
+-- reemplaza al backfill directo, corre además de él.
+UPDATE invoices SET pending_since = NULL WHERE status <> 'PENDING' AND pending_since IS NOT NULL;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_invoices_pending_since') THEN
     ALTER TABLE invoices ADD CONSTRAINT chk_invoices_pending_since
@@ -309,9 +337,18 @@ DO $$ BEGIN
 END $$;
 ```
 
-El backfill con `created_at` es seguro PORQUE hasta este bloque `retryExisting()` nunca vuelve a
-poner `PENDING` (solo el INSERT inicial lo hace) — no hay ninguna `PENDING` existente hoy que
-esté "en vuelo por un reintento" sin haberlo estado también en su creación. Esto deja de ser
+**Corrección N2 (ronda 3 del gate, aplicada en ronda 4):** la versión anterior de este bloque
+tenía un `DROP CONSTRAINT IF EXISTS chk_invoices_pending_since;` suelto antes del `DO $$`. Además
+de no ser SQL válido por sí solo (le falta `ALTER TABLE invoices`), es exactamente el patrón que
+este mismo documento prohíbe en su propia convención de evolución idempotente de schema: un DROP
+antes del check-and-create fuerza revalidar la constraint contra toda la tabla en cada deploy,
+derrotando el propósito del `IF NOT EXISTS`. Precedente verificado:
+`chk_accounts_receivable_status` (schema v52) no lleva ningún DROP previo. Se retira sin
+reemplazo — el `DO $$ ... END $$;` ya es idempotente por sí mismo.
+
+El backfill directo con `created_at` es seguro PORQUE hasta este bloque `retryExisting()` nunca
+vuelve a poner `PENDING` (solo el INSERT inicial lo hace) — no hay ninguna `PENDING` existente hoy
+que esté "en vuelo por un reintento" sin haberlo estado también en su creación. Esto deja de ser
 cierto en cuanto este bloque se despliega, así que el orden importa: el backfill corre como
 parte del MISMO deploy que agrega la columna, antes de que cualquier reintento pueda volver a
 poner `PENDING`.
@@ -319,11 +356,123 @@ poner `PENDING`.
 **`CURRENT_SCHEMA_VERSION`** (`src/platform/tenant-db.setup.ts`) sube en este mismo bloque —
 dispara `DEFENSIVE_DEVELOPING.md` §3 (toca `src/platform/`), a completar en el commit.
 
-**La consulta de solo lectura por tenant de §4 tiene que correr ANTES del deploy de este
-bloque** (no antes de "activar el worker", como decía la ronda 1) — el `UPDATE` de backfill de
-arriba corre en cada tenant en el momento del deploy, así que hace falta saber cuántas filas
-`PENDING` existen hoy para no sorprenderse con el volumen del backfill, aunque el backfill en sí
-sea seguro por el argumento de arriba.
+**El backfill directo NO puede gatearse por versión de schema (hueco N1, ronda 4 del gate) —
+tiene que volver a correr en 2b también.** Las dos sentencias `UPDATE` de arriba son idempotentes
+(la directa solo toca filas con `pending_since IS NULL`; la inversa solo filas con
+`pending_since IS NOT NULL`), así que repetirlas en el deploy de 2b no tiene costo — es la única
+forma de que 2b quede correcto también contra un tenant cuyo deploy de 2a haya corrido con la
+instancia vieja todavía sirviendo tráfico (ver el punto siguiente), no solo contra el camino
+feliz de "2a ya corrió limpio, 2b solo agrega el CHECK".
+
+**Por qué hace falta el backfill inverso (hueco N1, ronda 4 del gate — el caso que la versión
+anterior de este texto no cubría):** `migrate:tenants` corre dentro del `buildCommand` de
+`render.yaml` — la instancia de código ANTERIOR a 2a sigue atendiendo tráfico durante toda la
+ventana de deploy de 2a. Esa instancia vieja no conoce `pending_since`: su
+`markIssuedWithClient()`/`markFailedWithClient()` (`sql.invoice.repository.ts`) sacan la fila de
+`PENDING` con un `UPDATE` que no toca esa columna. Si el backfill directo de 2a ya le puso
+`pending_since` a una fila (porque estaba `PENDING` en el momento del backfill) y la instancia
+vieja la mueve a `ISSUED`/`REJECTED`/`FAILED_UNCERTAIN` un instante después, la fila queda con
+`status <> 'PENDING'` y `pending_since` poblado — exactamente lo que el CHECK de 2b rechaza. Sin
+el backfill inverso, `migrate:tenants` en el deploy de 2b falla contra esas filas → el build
+entero cae (R15) → todos los deploys quedan bloqueados, no solo este.
+
+**Registro en el inventario de DML (hueco N1, ronda 4 del gate — corregido en ronda 5, C3):** las
+dos sentencias `UPDATE` son una fila nueva CADA UNA en `docs/inventario-dml-schema-2026-09-16.md`,
+que hoy cuenta 21/21 sentencias de `schema.sql`, sin ninguna de estas dos. **No van en el mismo
+commit** — la sentencia directa (backfill) existe desde 2a; la inversa (normalización) recién
+existe desde 2b (no hay SQL de 2b sin el CHECK que la motiva). Por eso: **fila 22, sentencia
+directa, en el commit que implemente 2a. Fila 23, sentencia inversa, en el commit que implemente
+2b** — cada una con el formato de ese documento (columna, línea real de `schema.sql` en el commit
+que la agrega, guard antes, clasificación, guard después) — **no en este bloque de diseño**,
+porque `schema.sql` todavía no tiene este SQL.
+
+Clasificación real (no "auto-limitantes desde que corren" — esa frase mezclaba dos ventanas
+distintas del mismo SQL, corregido acá): en la ventana de 2a, ANTES de que 2b agregue el CHECK, la
+sentencia directa (`pending_since = created_at WHERE status = 'PENDING' AND pending_since IS
+NULL`, fila 22) es de **disparo abierto benigno**, sin gateo por versión, con el mismo argumento
+que ya justifica no gatearla: si vuelve a dispararse en un deploy posterior, corrige (deja
+`pending_since` poblado donde corresponde), nunca daña un dato correcto. Desde que 2b agrega
+`chk_invoices_pending_since`, las dos sentencias (fila 22, directa, y fila 23, inversa) quedan
+**auto-limitantes por el CHECK** — el mismo precedente que la fila 8 de ese documento (guardada
+por un CHECK equivalente), no un motivo nuevo. Confirmar esta clasificación contra el código real
+al implementar 2a/2b, no darla por sentada de este texto.
+
+**Rollback de 2b (hueco N1, ronda 4 del gate):** revertir el commit de 2b NO saca el CHECK de la
+base. `schema.sql` en este repo solo agrega — un rollback de código hace que `migrate:tenants`
+vuelva a correr el `schema.sql` del commit anterior (sin el `ADD CONSTRAINT`), pero el constraint
+que YA se aplicó contra la base real en el deploy de 2b sigue ahí, porque nada lo dropea. Volver a
+código anterior a 2a (que inserta `PENDING` sin `pending_since`) con el CHECK todavía puesto en la
+base rompería ese código en el primer `INSERT`/`UPDATE` que lo viole. El rollback de 2b, si hace
+falta llegar hasta ahí, requiere un paso manual explícito además de revertir el commit:
+`ALTER TABLE invoices DROP CONSTRAINT chk_invoices_pending_since;` contra cada tenant, antes de (o
+en el mismo cambio que) desplegar el código anterior a 2a.
+
+**Alcance de fixtures de test afectados por el CHECK de 2b (hueco N1, ronda 4 del gate):** la
+columna `invoices.pending_since` no tiene `DEFAULT` que la derive de `status` — cualquier
+`INSERT` crudo de una factura `'PENDING'` sin `pending_since` explícito viola el CHECK apenas esté
+puesto. Grep real corrido esta sesión (`insert into invoices` cruzado contra los que además usan
+status `'PENDING'` para `invoices` — literal, por parámetro por defecto de un helper, o por
+`it.each`) da **12 archivos**:
+
+- `src/tests/integration/accounts-receivable-invoice-linkage.integration.test.ts`
+- `src/tests/integration/cancellation-refund.integration.test.ts`
+- `src/tests/integration/classify-order-live-invoice-pair-classifier.integration.test.ts`
+- `src/tests/integration/classify-reservation-live-invoice-pair.integration.test.ts`
+- `src/tests/integration/consolidated-invoice-toctou.integration.test.ts`
+- `src/tests/integration/credit-note-cap.integration.test.ts`
+- `src/tests/integration/credit-note-compensation.integration.test.ts`
+- `src/tests/integration/credit-note-request-repository.integration.test.ts`
+- `src/tests/integration/invoice-mark-failed-transactional.integration.test.ts`
+- `src/tests/integration/refund-issued-race.integration.test.ts`
+- `src/tests/integration/reverse-transfer.integration.test.ts`
+- `src/tests/integration/unreconciled-live-invoices.integration.test.ts`
+
+Cada uno inserta al menos una factura `'PENDING'` por SQL crudo (directo, o vía un helper de seed
+con ese valor por default o por parámetro) sin `pending_since`. Verificado que quedan FUERA de
+este alcance, a propósito: los archivos cuyo `'PENDING'` es de otra entidad (reserva, orden, hold,
+`financial_transactions`) — `audit-log-transactional`, `cancel-order-with-credit-note`,
+`cancel-reservation-with-credit-note` (su `'PENDING'` es de `financial_transactions`),
+`charge-uniqueness`, `customer-portal-ownership`, `customer-token-staff-route-ownership`,
+`financial-transaction` (ídem), `invoice-order-reservation-item`, `invoice-order-service-item`,
+`order-flow`, `reservation-price-adjustment-stay`, `reservations-unpaginated-limit` — y los que sí
+insertan `invoices` pero solo con `'ISSUED'`/`'REJECTED'`/`'FAILED_UNCERTAIN'`:
+`classify-order-live-invoice-pair.integration.test.ts` (sin sufijo `-classifier`),
+`credit-note-cap-service`, `credit-note-lines`, `credit-note-pair-cap`, `customer-account-payment`,
+`for-key-share-lock-semantics`, `order-effects`, `reservation.service.integration.test.ts`,
+`schema-redeploy-idempotent`. El alcance de 2b incluye agregar `pending_since` (a `created_at`, o
+a cualquier valor reciente si el test no lo usa) a cada `INSERT`/helper de la lista de 12, en el
+mismo commit que agrega el CHECK — de lo contrario el tier de integración se pone rojo contra
+Postgres real apenas se implemente 2b.
+
+**Pre-flight ENTRE 2a Y 2b (antes del deploy de 2b — corregido en ronda 5: no "antes de 2a/2b",
+`pending_since` todavía no existe antes de 2a) (hueco N1, ronda 4 del gate; corregido en ronda 5,
+C4) — dos verificaciones, además de la de §4:**
+1. Confirmar PRIMERO la identidad real del commit que está sirviendo el tráfico después del
+   deploy de 2a — no alcanza con que `/health` responda 200 (eso confirma que el proceso está
+   vivo, no cuál código corre). Confirmar el SHA real desplegado (Render expone el commit del
+   deploy activo) antes de asumir que la instancia vieja (sin `pending_since`) ya dejó de atender
+   tráfico.
+2. Consulta de solo lectura por tenant, medida DOS VECES separadas en el tiempo (no una sola
+   lectura puntual): `SELECT count(*) FROM invoices WHERE (status = 'PENDING') <> (pending_since
+   IS NOT NULL);`. **"Bloquea hasta confirmar 0" no se puede exigir acá** — ese conteo en 0 es
+   precisamente lo que las dos sentencias de backfill que 2b re-ejecuta (arriba: la directa, para
+   una `PENDING` que 2a no llegó a backfillear; la inversa, para el caso N1) recién dejan, dentro
+   de su propia transacción de deploy; pedirlo en 0 ANTES de desplegar 2b invitaría a correr el
+   UPDATE de forma manual contra producción, fuera del mecanismo versionado. La lectura correcta
+   de las dos medidas: si el conteo CRECE entre la primera y la segunda, hay un escritor que el
+   backfill de 2a no cubrió — HOLD, investigar antes de desplegar 2b. Si el conteo se mantiene
+   ESTABLE (mayor o igual a 0, sin crecer), es el residuo esperado (de cualquiera de los dos
+   casos) que las dos sentencias de backfill que 2b re-ejecuta van a limpiar en su misma
+   transacción de deploy — no bloquea.
+
+**Esto NO reemplaza la verificación de §4 — son dos gates distintos, en momentos distintos
+(inconsistencia §4 vs. esta sección, cerrada en ronda 4 del gate):** el pre-flight de arriba mide
+el volumen y la consistencia de `pending_since` ENTRE el deploy de 2a Y el de 2b, antes de
+desplegar 2b. El de §4 mide cuántas filas `PENDING`/`FAILED_UNCERTAIN` sin `uncertain_cleared_at`
+existen ANTES de activar el worker (Bloque 4) — para no convertir en `FAILED_UNCERTAIN` filas que
+nunca estuvieron realmente coladas. Las dos condiciones son NECESARIAS, no alternativas: son
+gates en momentos distintos del mismo plan de deploy (2a→2b vs. 4), no dos formas de decir lo
+mismo.
 
 Todo escritor que saque una factura de `PENDING` sin limpiar `pending_since` falla en la base,
 no en silencio. Call-sites a tocar: `createWithClient()` (setea `pending_since = NOW()` junto
@@ -370,7 +519,8 @@ reversa en plena emisión.
 
 ### 3.9 Salida manual para facturas `CHARGE` (hueco de la pregunta 2 del gate — el más grande)
 
-La bandeja del Bloque 5 (`resolveCreditNoteRequestManually()`) está acotada a
+La bandeja del Bloque 5 del ADR común cancelar-con-NC (§6.5 bis, ya implementado en producción —
+no el Bloque 5 de ESTE ADR, en §6) (`resolveCreditNoteRequestManually()`) está acotada a
 `credit_note_request` — filas que solo existen para `tx.type === 'ADJUSTMENT'`
 (`invoice.service.ts`). Una factura `CHARGE` que el worker de vencimiento (§3.3) lleve a
 `FAILED_UNCERTAIN` no tiene NINGUNA salida dentro del sistema hoy — viola directamente el
@@ -392,9 +542,14 @@ CLAUDE.md):
   `resolveCreditNoteRequestManually()` con `outcome: 'NO_EMITIDA'`: llama a
   `markUncertainClearedWithClient()`. **Corrección (hueco N6, ronda 3 del gate):**
   `markUncertainClearedWithClient()` hoy actualiza con `WHERE id = $1`, sin condición de status
-  (`sql.invoice.repository.ts`) — seguro en el Bloque 5 porque `credit_note_request` ya trae su
-  propia máquina de estados como guard previo, pero esta ruta nueva no tiene ese guard. Este
-  bloque agrega el predicado a la condición del `UPDATE`:
+  (`sql.invoice.repository.ts`). La ronda 3 de este documento decía que esto era "seguro en el
+  Bloque 5 del ADR común cancelar-con-NC porque `credit_note_request` ya trae su propia máquina de
+  estados como guard previo" —
+  **inexacto (precisión de la ronda 4): esa máquina de estados protege el estado de la SOLICITUD
+  de NC (`credit_note_request.status`), no el estado de la FACTURA (`invoices.status`), que es lo
+  que realmente importa acá** (ver el bullet de N6 al final de esta sección, con el caso real
+  donde esa diferencia rompe algo). Esta ruta nueva tampoco tenía ningún guard de estado de
+  factura. Este bloque agrega el predicado a la condición del `UPDATE`:
   `WHERE id = $1 AND status = 'FAILED_UNCERTAIN' AND afip_contacted AND uncertain_cleared_at IS NULL`
   — si no matchea (la factura ya se limpió, ya se resolvió sola, o nunca estuvo en ese estado),
   rechaza en vez de escribir un estado inconsistente. **Rechaza
@@ -412,7 +567,39 @@ CLAUDE.md):
 - Ambas rutas nuevas: sumar a `EXPECTED_AUTHORIZE_CALL_SITES`, `rbac-matriz-endpoints.md`
   sección 4/2, `docs/inventario-rutas.md` (`npm run docs:routes`), y evaluar si necesitan
   entrada en `NO_CONSUMER_ROUTES` (no van a tener consumidor en `appfrontend-main` hasta que se
-  construya la pantalla — igual que las dos bandejas existentes del Bloque 5, ya en esa lista).
+  construya la pantalla — igual que las dos bandejas existentes del Bloque 5 del ADR común
+  cancelar-con-NC, ya en esa lista).
+- **N6 (ronda 4 del gate; ubicación A encontrada en ronda 5, ver Historial de revisión) — el
+  predicado de arriba también alcanza al Bloque 5 del ADR común cancelar-con-NC (§6.5 bis, ya
+  implementado en producción — no el Bloque 5 de ESTE ADR, en §6)
+  (`resolveCreditNoteRequestManually()`, `invoice.service.ts` — buscar por nombre, no por línea),
+  y ESO es un cambio de comportamiento de ESTE bloque (3), no un efecto colateral gratis del
+  predicado de este mismo bloque (3):** `resolveCreditNoteRequestManually()` llama al MISMO
+  `markUncertainClearedWithClient()` que el predicado de arriba protege — no es un método
+  distinto. Caso de §3.13 (factura que pasa a `ISSUED` tarde mientras la solicitud de NC sigue
+  `EN_REVISION_MANUAL`): HOY, sin el predicado, el código escribe `uncertain_cleared_at` sobre
+  una factura ya `ISSUED` y cierra la solicitud como `NO_EMITIDA` — una escritura sin sentido
+  sobre un estado terminal. CON el predicado de este bloque aplicado, el mismo caso cae en el
+  `throw new Error(...)` genérico que hoy vive en `markUncertainClearedWithClient()`
+  (`sql.invoice.repository.ts`) — mejor que escribir un estado inconsistente, pero termina en un
+  **500 sin tipar**, no en una respuesta que el operador pueda entender. Este bloque agrega:
+  **(a)** un error tipado nuevo (nombre a definir en la implementación) que
+  `markUncertainClearedWithClient()` lance en vez del `throw new Error(...)` genérico cuando el
+  `UPDATE` no matchea, mapeado a **409** en `error.middleware.ts` (mismo grupo semántico que el
+  409 de §3.7 — precondición que ya cambió, no regla de negocio violada) y propagado también
+  hacia `resolveCreditNoteRequestManually()`, que hoy no espera ningún error de esa llamada;
+  **(b)** un test de integración que reproduzca el caso de §3.13 llamando específicamente a
+  `resolveCreditNoteRequestManually()` (no solo al flujo genérico de `mark-not-issued` de
+  arriba), confirmando que ya NO escribe `uncertain_cleared_at` sobre una factura `ISSUED` ni
+  cierra la solicitud de NC como `NO_EMITIDA` cuando la factura se emitió de verdad.
+
+  **Ubicación A (ronda 5 del gate, ver Historial de revisión — bloquea el diseño de ESTE bloque
+  todavía):** con el 409 de arriba puesto, la única salida que le queda al operador frente al caso
+  de §3.13 es la rama `EMITIDA` de `resolveCreditNoteRequestManually()`, que llama a
+  `markIssuedWithClient()` SIN condición de status — sobrescribiría los campos AFIP de una factura
+  ya `ISSUED` con datos cargados a mano. El diseño de este bloque no queda cerrado hasta resolver
+  esto; ver el detalle completo en la entrada de la ronda 5 del Historial de revisión, al final de
+  este documento.
 
 ### 3.10 Reporte de reconciliación — candidato (d), complemento (decisión del dueño, RBAC `MANAGEMENT`)
 
@@ -506,6 +693,13 @@ separadas por `CHARGE` vs. NC. Se registra como verificación pendiente en
 puntual que la cierra (correr esa consulta contra cada tenant real antes de activar el worker en
 producción — el worker puede implementarse y testearse sin este dato, pero no activarse).
 
+**Distinto del pre-flight de §3.6 (inconsistencia cerrada en ronda 4 del gate; corregido en ronda
+5 — no "antes de 2a/2b", `pending_since` no existe antes de 2a):** el de acá mide el volumen de
+`PENDING`/`FAILED_UNCERTAIN` sin `uncertain_cleared_at` ANTES de ACTIVAR EL WORKER (Bloque 4). El
+de §3.6 mide la consistencia de `pending_since` (y el SHA del commit servido) ENTRE el deploy de
+2a Y el de 2b, antes de desplegar 2b. Son dos gates en momentos distintos del mismo plan, ambos
+necesarios — uno no reemplaza al otro.
+
 ## 5. Secuencia con `DUPLICATE-CAE-001`
 
 Hallazgo hermano, mismo archivo, gate de diseño separado en curso (esta sesión). Comparten la
@@ -521,6 +715,40 @@ primero — no se diseñan en paralelo a ciegas. Se implementan en el orden en q
 apruebe; el segundo trae al gate el diff real del primero como parte de su propio pre-commit.
 
 ## 6. Orden de implementación propuesto (bloques separados, cada uno con su gate de pre-commit)
+
+**Orden de DEPLOY (decisión del dueño, `AskUserQuestion`, 23/09/2026 — opción B recomendada por
+el gate en la ronda 4, N3): `2a → 2b → 3 → 4 → 2c → 5`, con `6` independiente (sin dependencia
+dura de ningún otro bloque, puede ir en cualquier momento).** Los identificadores de bloque
+(`1`/`2a`/`2b`/`2c`/`3`/`4`/`5`/`6`) NO cambian — son los mismos usados en el resto de este
+documento (§3.1-§3.13) — lo que cambia es el ORDEN en que se despliegan, listado abajo en ese
+orden. Esto reemplaza la nota de la ronda 3 "bloques 2c/3/4 deploy together" (retirada — con este
+orden ya no aplica: cada bloque se despliega solo cuando está listo, sin atarse a que otro esté
+commiteado en la misma ventana). Razonamiento:
+
+- **2a→2b primero:** prerrequisito estructural de todo lo demás (columna + CHECK).
+- **3 (salida manual) antes que 2c:** el Bloque 3 es puramente aditivo — le da salida a `CHARGE`
+  `FAILED_UNCERTAIN`, que hoy no tiene ninguna (§3.9). No depende de que exista el 409 de 2c ni
+  del worker de 4 para ser útil por sí solo.
+- **4 (worker) antes que 2c:** con 3 ya desplegado, el worker deriva cada `PENDING` vencida a una
+  salida que YA EXISTE. Mientras tanto `retryExisting()` sigue funcionando SIN CAMBIOS porque
+  todavía no existe el 409 de 2c — el worker no le quita ninguna salida a nadie, solo agrega una
+  nueva para el caso colgado. **Por qué es seguro activarlo antes de que 2c exista:** hoy, sin
+  2c, "una `PENDING` vencida" solo puede venir del flujo FRESCO (`createWithClient()`) —
+  `retryExisting()` todavía no vuelve a marcar `PENDING` (eso es exactamente lo que agrega 2c),
+  así que el universo de filas que el worker puede tocar en este punto del despliegue es el mismo
+  que ya existe hoy, sin ningún reintento que reponga `PENDING` de por medio.
+  **Este argumento quedó refutado en la ronda 5 del gate (ubicación B, ver Historial de
+  revisión) — no cubre a `retryExisting()` reintentando una `PENDING` VIEJA en vuelo (sin volver
+  a sellar `pending_since`), solo cubre quién puede CREAR una `PENDING` nueva. El diseño del
+  Bloque 4 no queda cerrado hasta resolver esto en la ronda 6.**
+- **2c último de los cinco:** recién acá se quita el reintento libre (se introduce el 409),
+  cuando las dos salidas alternativas (3 y 4) ya están en producción. La invariante de "salida
+  propia siempre disponible" se sostiene POR CONSTRUCCIÓN del orden de deploys, no por una regla
+  de disciplina de push que dependa de que nadie la rompa en una sesión futura — cada deploy
+  individual ya es seguro por sí mismo, sin ventana insegura entre uno y el siguiente.
+- **5 (alcance NC) después de 2c:** extiende el MISMO mecanismo de toma exclusiva que 2c
+  introduce (§3.11) — no puede desplegarse antes de que 2c exista.
+- **6 (reporte) independiente:** sin dependencia dura de ningún otro bloque.
 
 1. **Bloque 1 — `getAllLinkedInvoicesWithClient()` + guard 8-bis evaluado fila por fila (§3.1),
    preservando EXACTAMENTE la tabla de predicados de hoy, mismo error 422 existente.** El fix de
@@ -558,43 +786,55 @@ apruebe; el segundo trae al gate el diff real del primero como parte de su propi
    (`createWithClient()`, `markIssuedWithClient()`, `markFailedWithClient()`) para que mantengan
    `pending_since` consistente — pero sin agregar el CHECK. También revierte limpio: el código
    nuevo escribe la columna, el viejo la ignora, ninguno rompe.
-2b. **Bloque 2b — el CHECK `chk_invoices_pending_since`** (§3.6), en un deploy POSTERIOR a 2a,
-   una vez confirmado que la versión que sirve tráfico ya es la que mantiene la columna en todos
-   sus escritores. La consulta de producción de §4 corre antes del deploy de 2a (mide el volumen
-   del backfill), no antes de 2b.
-2c. **Bloque 2c — toma exclusiva completa (§3.2) + error 409 nuevo (§3.7) + guard 8-bis respeta
-   `uncertainClearedAt` (§3.8, movido acá desde el bloque 1).** Depende de 2a/2b.
-
-**Huecos de secuencia entre 2c, 3 y 4 (N3, ronda 3 del gate) — los bloques 2c, 3 y 4 DEPLOYAN
-JUNTOS, en el mismo deploy, aunque se implementen y gateen como commits/PRs separados:** hoy
-`retryExisting()` es la salida documentada para una `PENDING` huérfana (el propio código y el
-botón "Reintentar factura" del frontend dependen de poder reintentarla). El bloque 2c le quita
-esa salida (409 en vez de reintentar). Si 2c se deploya solo, sin que el bloque 3 (salida
-manual) y el bloque 4 (worker que resuelve el limbo) ya estén live, una `PENDING` colgada queda
-sin NINGUNA salida hasta el próximo deploy — viola el principio de salida propia por una ventana
-de tiempo, no de diseño. Los tres bloques pueden implementarse y gatearse en commits separados
-(cada uno con su propio pre-commit), pero el ORDEN DE DEPLOY los ata: no hay deploy intermedio
-entre el commit de 2c y el commit de 4.
-
+2b. **Bloque 2b — el CHECK `chk_invoices_pending_since` + backfill inverso** (§3.6, hueco N1
+   ronda 4), en un deploy POSTERIOR a 2a, una vez confirmado que la versión que sirve tráfico ya
+   es la que mantiene la columna en todos sus escritores (SHA del commit confirmado, no solo
+   `/health` — ver pre-flight de §3.6). El pre-flight de §4 (volumen de `PENDING`/
+   `FAILED_UNCERTAIN` sin `uncertain_cleared_at`) corre antes del deploy de 4, no de 2a/2b — dos
+   gates distintos, en momentos distintos, ambos necesarios (§3.6/§4).
 3. **Bloque 3 — salida manual para `CHARGE`/NC (§3.9)**, incluida la exclusión de facturas con
-   `credit_note_request` propia y el predicado corregido de `mark-not-issued` (N6).
+   `credit_note_request` propia y el predicado corregido de `mark-not-issued` (N6) — **y, por N6
+   (ronda 4), el error tipado nuevo + el test de `resolveCreditNoteRequestManually()` sobre el
+   caso de §3.13 (bullet final de §3.9).** Puede desplegarse solo, sin depender de 2c ni de 4.
 4. **Bloque 4 — worker de vencimiento (§3.3, §3.4)**, incluida la transición de
-   `credit_note_request` a `EN_REVISION_MANUAL` cuando corresponda (§3.9).
-5. **Bloque 5 — alcance NC en la toma de marca (§3.11).**
-6. **Bloque 6 — reporte (d) (§3.10)** — sin dependencia dura de 1-5, puede ir en paralelo o
-   después.
+   `credit_note_request` a `EN_REVISION_MANUAL` cuando corresponda (§3.9). Depende de que 3 ya
+   esté desplegado (necesita una salida a la que derivar cada `PENDING` vencida). **El argumento
+   de seguridad de desplegarlo antes de que 2c exista quedó REFUTADO en la ronda 5 del gate
+   (ubicación B, ver Historial de revisión) — diseño en HOLD hasta resolverlo en la ronda 6.**
+2c. **Bloque 2c — toma exclusiva completa (§3.2) + error 409 nuevo (§3.7) + guard 8-bis respeta
+   `uncertainClearedAt` (§3.8, movido acá desde el bloque 1) + reset de `uncertain_cleared_at` en
+   `markFailedWithClient()` (§3.5 — hueco de asignación cerrado en ronda 4: prerrequisito de que
+   §3.8 sea correcto, sin él una factura recién re-fallada podría heredar un valor viejo y el
+   guard la trataría como ya limpiada sin revisión real).** Depende de 2a/2b (columna) y de que
+   3/4 ya estén en producción (orden de deploy de arriba).
+5. **Bloque 5 — alcance NC en la toma de marca (§3.11).** Depende de 2c (extiende el mismo
+   mecanismo).
+6. **Bloque 6 — reporte (d) (§3.10)** — sin dependencia dura de ningún otro bloque, puede ir en
+   paralelo o después de cualquiera de los cinco anteriores.
 
-**Residuo declarado (N7, ronda 3 del gate, sin cerrar en este ADR):** falta el análisis de orden
-de locks entre la toma de la marca "en vuelo" (AR → órdenes/reservas → `invoices`, orden ya
-establecido por `assertChargesStillInvoiceable()`) y otros caminos que lockean `invoices`
-PRIMERO (ej. `getOutstandingForUpdate()`) — un ABBA potencial que ningún bloque de este ADR
-cierra todavía. Se registra como verificación pendiente antes del gate de implementación del
-bloque 2c.
+**Residuo declarado (N7, ronda 3 del gate — lectura confirmada correcta en la ronda 4, con una
+precisión, sigue sin cerrar en este ADR):** N7 no bloquea 2a/2b/3 — esos bloques no toman locks
+nuevos, solo cambian cláusulas `SET` sobre filas que las mismas sentencias ya lockean, y el
+backfill es una sola sentencia. Pero N7 ES una pregunta de DISEÑO, no de implementación — tiene
+que quedar escrita y revisada en un gate ANTES de aprobar el diseño de 2c, no descubrirse recién
+mientras se lo implementa. Punto de partida para ese análisis futuro (inferido, no demostrado —
+se deja así, como nota para cuando se diseñe 2c): los 4 `SELECT 1 FROM invoices WHERE id = $1 FOR
+UPDATE` de `sql.invoice.repository.ts` (`getOutstandingForUpdate()`, `getRefundableForUpdate()`,
+`getInFlightCreditNoteTotalForUpdate()`, `getInFlightCreditNoteTotalForPairForUpdate()`) lockean
+la factura original `ISSUED`, y el predicado de la toma del Bloque 2c excluye `ISSUED` — falta
+demostrar que esos 4 caminos no lockean DESPUÉS `accounts_receivable`, órdenes o reservas (lock
+ordering), y decidir si hay que extender `lock-order.test.ts`/
+`accounts-receivable-lock-order.test.ts` cuando se diseñe 2c. Registrado de verdad en
+`docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones pendientes` (no estaba pese a que
+el texto de la ronda 3 decía que sí — corregido en este mismo cambio, ronda 4).
 
 Cada bloque trae su propio pre-commit con `architecture-governor`. Este ADR autoriza el DISEÑO
-del bloque 1 (aprobado, ronda 3) — los bloques 2a en adelante quedan en HOLD hasta una ronda 4
-que resuelva N1-N7 de forma completa (no solo la reordenada acá) antes de su propio gate de
-implementación.
+del bloque 1 (aprobado, ronda 3, implementado — ver encabezado) y de los bloques 2a y 2b
+(APROBADOS CON CONDICIONES en la ronda 5, condición **C5** para 2a: árbol de trabajo limpio, con
+`DUPLICATE-CAE-001` ya commiteado — ver Historial de revisión). Los bloques 3 y 4 volvieron a HOLD
+en la ronda 5 por las ubicaciones A y B (ver Historial de revisión) — su diseño no está cerrado
+todavía. 2c sigue en HOLD por N7 (registrado como pregunta de diseño para antes de su propio
+gate). 5 depende de 2c, sin revisar. 6 no revisado en la ronda 5.
 
 ## 7. Tests (por bloque, contra Postgres real donde aplique)
 
@@ -636,8 +876,11 @@ implementación.
 - Si arreglar (o no) los otros 8 call-sites de `resolveInvoiceLinkage()` que comparten el mismo
   riesgo estructural que §3.1 (§3.12) — queda registrado como hallazgo nuevo separado, fuera de
   los 6 bloques de este ADR.
-- Los números reales de producción (§4) — bloquean el DEPLOY del bloque 2 (no solo la activación
-  del worker, corregido en §3.6), no la implementación ni los tests de ningún bloque.
+- Los números reales de producción — dos gates distintos, ambos necesarios (reconciliado en
+  ronda 4, ver §3.6/§4): el pre-flight de §3.6 bloquea el DEPLOY de 2a/2b (consistencia de
+  `pending_since` y SHA del commit servido); el de §4 bloquea la ACTIVACIÓN del worker (Bloque
+  4, volumen de `PENDING`/`FAILED_UNCERTAIN` sin `uncertain_cleared_at`). Ninguno de los dos
+  bloquea la implementación ni los tests de ningún bloque.
 
 ## Historial de revisión
 
@@ -663,3 +906,89 @@ implementación.
   la tabla de §3.12 estaba mal (decía que 8 call-sites comparten el riesgo; en realidad son 4 no,
   1 con residuo, 3 acotados a `DUPLICATE-CAE-001`). Esta versión responde a todo salvo N1-N3/N7,
   que quedan reordenados en §6 para una ronda 4 antes del gate de implementación del bloque 2a.
+- **23/09/2026, ronda 4: HOLD ACOTADO.** N2 resuelto (aplicado — el `DROP CONSTRAINT` suelto e
+  inválido de §3.6 se retiró, sin reemplazo). N1, N3 y N6 quedan resueltos EN INTENCIÓN, cada uno
+  con un hueco que este texto ahora cierra: **N1** — faltaba el caso inverso (instancia de código
+  anterior a 2a sirviendo tráfico durante la ventana de deploy sin limpiar `pending_since`),
+  cerrado en §3.6 con el backfill inverso, la declaración de que el backfill no se gatea por
+  versión (tiene que rerunnear en 2b), el registro pendiente en
+  `docs/inventario-dml-schema-2026-09-16.md`, el rollback manual explícito de 2b, la lista real de
+  12 archivos de fixtures afectados (grep corrido esta ronda, con exclusiones verificadas) y el
+  pre-flight con SHA de commit. **N3** — reorder de deploy `2a→2b→3→4→2c→5` (con `6`
+  independiente), decisión ya confirmada por el dueño (`AskUserQuestion`), aplicado en §6,
+  retirando la nota "2c/3/4 deploy together" de la ronda 3. **N6** — declarado en §3.9 como
+  cambio de comportamiento del **Bloque 3 de este ADR**, disparado sobre
+  `resolveCreditNoteRequestManually()` (que pertenece al Bloque 5 del ADR común cancelar-con-NC,
+  §6.5 bis, ya implementado en producción — no el Bloque 5 de ESTE ADR, en §6), con el error
+  tipado nuevo (409) y el test requerido agregados como parte del Bloque 3, y la afirmación
+  inexacta sobre la máquina de estados de `credit_note_request` corregida. **N7** —
+  lectura confirmada correcta, con una precisión (no bloquea 2a/2b/3; es una pregunta de DISEÑO
+  para antes del gate de implementación de 2c, con los 4 call-sites de `FOR UPDATE` de
+  `sql.invoice.repository.ts` citados por nombre en §6) — registrado de verdad en
+  `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones pendientes` (no estaba, pese a
+  que el texto de la ronda 3 decía que sí). Huecos de texto menores cerrados: el reset de
+  `uncertain_cleared_at` de §3.5 asignado explícitamente al Bloque 2c; la inconsistencia §4 vs.
+  §3.6/§6/pendientes reconciliada como dos gates necesarios en momentos distintos, no
+  alternativos. Queda para la ronda 5.
+
+- **23/09/2026, ronda 5: 2a/2b APROBADOS CON CONDICIONES → READY FOR IMPLEMENTATION; 3 y 4 vuelven
+  a HOLD por dos ubicaciones nuevas.** Verificó los arreglos de la ronda 4 contra el archivo real
+  (no tomó el auto-reporte del agente que los aplicó por buena fe): confirmó el backfill inverso
+  en §3.6 antes del bloque `DO`, la lista de 12 fixtures (grep re-corrido, exacta, con las 3
+  exclusiones verificadas), el reorder de §6, la corrección de N6 en §3.9, y N7 en
+  `docs/pendientes-2026-09-12.md`. Encontró un hueco de reconciliación no cerrado (la entrada de
+  pendientes seguía describiendo un solo gate donde el ADR ya declaraba dos) y dio 4 condiciones,
+  todas aplicadas en este mismo commit de docs:
+  - **C1** — reescribir la entrada de `docs/pendientes-2026-09-12.md` (antes "consulta antes del
+    bloque 2a") con los DOS gates reales (§3.6 entre 2a y 2b, antes de desplegar 2b; §4 antes de
+    activar el worker en 4), Y reubicarla dentro de `## 🔍 Verificaciones pendientes` (vivía en
+    `## Hallazgos nuevos`, sin coincidir con lo que el propio ADR §4 ya citaba como su
+    ubicación) — aplicado, verificado en confirmación posterior.
+  - **C2** — corregir la ambigüedad de "Bloque 5" en el bullet de N6 (§3.9 y encabezado): es el
+    Bloque 5 del ADR común cancelar-con-NC (§6.5 bis, ya implementado), no el Bloque 5 de ESTE
+    ADR (§6); y el predicado que dispara el cambio es el del Bloque 3 de este ADR, no el de 2c —
+    aplicado.
+  - **C3** — corregir la clasificación "auto-limitantes desde que corren" del inventario de DML
+    en §3.6: en la ventana de 2a (sin CHECK todavía), la sentencia directa es de disparo abierto
+    BENIGNO (si vuelve a dispararse, corrige, no daña); recién desde 2b las dos sentencias quedan
+    auto-limitantes por el CHECK, mismo precedente que la fila 8 del inventario — aplicado.
+  - **C4** — reescribir el pre-flight 1 de 2b en §3.6: "bloquea hasta confirmar 0" no se puede
+    exigir, porque ese 0 es justamente lo que las DOS sentencias de backfill que 2b re-ejecuta
+    (la directa y la inversa) dejan dentro de su transacción de deploy; reemplazado por confirmar
+    el SHA primero y medir el conteo DOS veces separadas en el tiempo (crece → HOLD; estable →
+    residuo esperado, no bloquea) — aplicado.
+
+  Encontró además dos ubicaciones NUEVAS, ninguna de la ronda 4, que bloquean el diseño de 3 y 4
+  respectivamente (no bloquean 2a/2b, que quedan aprobados):
+  - **Ubicación A (bloquea el diseño del Bloque 3):** con el 409 nuevo de N6 puesto, la única
+    salida que le queda al operador frente al caso de §3.13 es la rama `EMITIDA` de
+    `resolveCreditNoteRequestManually()`, que llama a `markIssuedWithClient()` SIN condición de
+    status — sobrescribiría `cae`, `cbte_nro`, `cae_vto`, `afip_response` e `issued_at` de una
+    factura ya `ISSUED` con datos cargados a mano por el operador. Choca directo con §8
+    (factura `ISSUED` es un documento inmutable). El texto no declaraba cuál es la salida propia
+    después de ese 409 — hueco real, no solo de redacción. Queda para la ronda 6.
+  - **Ubicación B (bloquea el diseño del Bloque 4, causada por el propio reorder de N3 que esta
+    misma ronda recomendó):** en `HEAD` (`bcba224`), `retryExisting()` reintenta una `PENDING`
+    sin volver a sellar `pending_since` — el docblock ya declara ese caso como "reintento
+    seguro" y el código no escribe ningún estado antes de llamar a `issue()`. Con el Bloque 4
+    desplegado ANTES que 2c (el orden que N3 ya fijó en §6), un operador que reintenta una
+    `PENDING` vencida —el uso documentado del botón— dispara una llamada a AFIP; si esa llamada
+    tarda, el worker ve el `pending_since` viejo y mueve la fila a `FAILED_UNCERTAIN` en plena
+    emisión (y, si es `ADJUSTMENT`, lleva la solicitud de NC a `EN_REVISION_MANUAL`). Rompe el
+    margen de N ≫ 80s de §3.4 (que asume que `pending_since` marca el inicio del intento en
+    vuelo) y el invariante que el propio docblock de `transitionCreditNoteRequestAfterFailure()`
+    declara ("`EN_REVISION_MANUAL` no debería ser alcanzable desde estos 3 call-sites hoy") — con
+    este hueco, se vuelve alcanzable de forma rutinaria, sumado a la ubicación A. El argumento de
+    seguridad que §6 ya tenía escrito para el Bloque 4 solo cubre quién puede CREAR una `PENDING`
+    nueva, no quién puede estar reintentando una que ya existe. Dirección sugerida para la ronda
+    6 (no decidida todavía): mover a este mismo bloque (4) el rechazo de `retryExisting()` sobre
+    facturas `PENDING` — sin 2c nada vuelve a poner una fila en `PENDING`, así que un chequeo de
+    solo lectura alcanzaría, coherente con la política ya decidida en §2 ("siempre 409 mientras
+    la marca esté fresca"). Puede necesitar una pregunta nueva al dueño si mueve el 409 de
+    `PENDING` de 2c a 4. Queda para la ronda 6.
+
+  2c sigue en HOLD por N7 (sin cambios de esta ronda). 5 depende de 2c, sin revisar. 6 no
+  revisado en esta ronda. Condición **C5** para implementar 2a: árbol de trabajo limpio, con
+  `DUPLICATE-CAE-001` ya commiteado — ese hallazgo hermano toca los mismos dos archivos
+  (`sql.invoice.repository.ts`, `invoice.repository.ts`) que 2a va a tocar, y §5 de este ADR ya
+  exige que quien implemente segundo relea sobre el diff real del primero.

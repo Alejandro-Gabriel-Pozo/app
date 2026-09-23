@@ -1690,6 +1690,53 @@ anteriores.
   intermitente sin que ningún test real haya fallado -- monitorear el
   job en `main` después del push y, si se repite, priorizar este ítem
   antes que agregar más suites de integración.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-N7-LOCK-ORDER-001` (23/09/2026, ADR
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §6, hueco N7 de la ronda 3 del
+  gate `architecture-governor`, lectura confirmada correcta en la ronda 4 — registrado de verdad
+  acá recién ahora, pese a que el texto de la ronda 3 ya decía que estaba registrado.)** Pregunta
+  de DISEÑO, no de implementación: falta demostrar el orden de locks entre la toma de la marca
+  "en vuelo" del Bloque 2c de ese ADR (AR → órdenes/reservas → `invoices`, orden ya establecido
+  por `assertChargesStillInvoiceable()`) y los 4 call-sites de `sql.invoice.repository.ts` que
+  hacen `SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE` sobre una factura `ISSUED`
+  (`getOutstandingForUpdate()`, `getRefundableForUpdate()`,
+  `getInFlightCreditNoteTotalForUpdate()`, `getInFlightCreditNoteTotalForPairForUpdate()`). El
+  predicado de la toma del Bloque 2c excluye `ISSUED`, así que en principio no compiten por la
+  misma fila — pero falta confirmar que esos 4 caminos no lockeen DESPUÉS
+  `accounts_receivable`, órdenes o reservas (un ABBA potencial contra el orden que 2c ya fija).
+  No verificado esta sesión — es un análisis de diseño sobre código real, no una corrida contra
+  Postgres. Acción puntual que lo cierra: antes de llevar el diseño del Bloque 2c de ese ADR a su
+  propio gate de implementación, recorrer los 4 call-sites de arriba y confirmar (o extender
+  `lock-order.test.ts`/`accounts-receivable-lock-order.test.ts` para que lo confirme en código)
+  que ninguno toma un lock sobre `accounts_receivable`/`orders`/`reservations` DESPUÉS de su
+  `FOR UPDATE` sobre `invoices`.
+- **Verificaciones pendientes -- dos gates de producción distintos del
+  ADR reintento-vs-reversa (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`),
+  necesarios los dos, no alternativos (corregido en ronda 5 del gate,
+  C1 -- esta entrada antes describía solo uno, Y vivía fuera de esta
+  sección pese a que el ADR ya citaba esta sección como su ubicación).**
+  1. **Entre el deploy de 2a y el de 2b, antes de desplegar 2b (§3.6 del
+     ADR -- no "antes de 2a/2b": `pending_since` todavía no existe antes
+     de 2a):** confirmar el SHA real del commit que está sirviendo
+     tráfico después de 2a (no alcanza con `/health`), y medir dos
+     veces, separadas en el tiempo,
+     `SELECT count(*) FROM invoices WHERE (status = 'PENDING') <> (pending_since IS NOT NULL);`
+     por tenant -- si el conteo crece entre las dos medidas, HOLD (hay un
+     escritor que el backfill de 2a no cubrió); si se mantiene estable,
+     es el residuo esperado que las dos sentencias de backfill que 2b
+     re-ejecuta (la directa y la inversa) limpian en su misma transacción
+     de deploy, no bloquea.
+  2. **Antes de activar el worker, Bloque 4 (§4 del ADR):** consulta de
+     solo lectura por tenant, cuántas `invoices` están hoy `PENDING`, y
+     cuántas `FAILED_UNCERTAIN` con `afip_contacted = true` y sin
+     `uncertain_cleared_at`, separadas por `CHARGE` vs. NC -- para no
+     convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron
+     realmente coladas (el worker deriva ese volumen a las salidas
+     manuales del Bloque 3 en cuanto arranca).
+  **Ninguna de las dos verificada esta sesión -- sin acceso a producción
+  desde este entorno.** El backfill de 2a en sí es seguro sin el dato de
+  (1) (argumento completo en §3.6 del ADR); el worker de 4 puede
+  implementarse y testearse sin el dato de (2), pero no activarse sin
+  correrla antes contra cada tenant real.
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001-PRE-DEPLOY-AUDIT-001`
   (23/09/2026, condición C4 del gate `architecture-governor`, ronda 2,
   sobre el diseño de `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
@@ -3353,7 +3400,6 @@ futuros, cada uno con su propio alcance.
   bloque (no corrida todavía -- sin acceso a producción desde este
   entorno).
 
-
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
   (22/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de
   pre-commit -- residuo YA aceptado por §2.1 del diseño, ahora
@@ -3463,12 +3509,16 @@ futuros, cada uno con su propio alcance.
   como complemento. ADR completo:
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`.
   **Estado real (no "en progreso" genérico): bloque 1 (guard 8-bis
-  evaluado fila por fila) APROBADO CON CONDICIONES por el gate, ronda 3
-  -- implementable. Bloques 2-6 (schema, worker, salida manual, alcance
-  NC, reporte) en HOLD, 7 huecos nuevos (N1-N7) encontrados sobre el
-  texto de la ronda 2, requieren una ronda 4 del ADR antes de su propio
-  gate de implementación** -- ver el ADR, sección "Historial de
-  revisión", para el detalle de cada ronda.
+  evaluado fila por fila) APROBADO por el gate, ronda 3, COMMITEADO
+  (`bcba224`). Bloques 2a y 2b APROBADOS CON CONDICIONES en la ronda 5
+  -- READY FOR IMPLEMENTATION, sujeto a C5 (árbol limpio, con
+  `DUPLICATE-CAE-001` ya commiteado). Bloques 3 y 4 vuelven a HOLD en la
+  ronda 5 por dos ubicaciones nuevas (A: `resolveCreditNoteRequestManually()`
+  sobrescribiría una factura ISSUED; B: el worker puede activarse en
+  plena carrera con `retryExisting()` sobre una PENDING vieja) -- ronda 6
+  pendiente. 2c en HOLD por N7 (pregunta de diseño de lock ordering). 5
+  depende de 2c, sin revisar. 6 no revisado** -- ver el ADR, sección
+  "Historial de revisión", para el detalle de cada ronda.
 
 - **`INVOICE-LINKAGE-LIMIT1-MULTI-INVOICE-001` (23/09/2026, gate
   `architecture-governor`, ronda 3 del ADR de arriba -- hallazgo
@@ -3499,20 +3549,6 @@ futuros, cada uno con su propio alcance.
   los dos bloques de implementación en curso lo cierra; queda como
   bloque de análisis propio, sin decisión de negocio tomada todavía sobre
   si vale la pena cerrarlo dado el cruce con `DUPLICATE-CAE-001`.
-
-- **Verificación pendiente -- consulta de producción antes del bloque 2a
-  del ADR de arriba (23/09/2026, gate, ronda 2-3).** Antes de desplegar
-  la columna `pending_since` + backfill (§3.6/§6 del ADR), hace falta una
-  consulta de solo lectura por tenant: cuántas `invoices` están hoy
-  `PENDING`, y cuántas `FAILED_UNCERTAIN` con `afip_contacted = true` y
-  sin `uncertain_cleared_at`, separadas por `CHARGE` vs. NC. **No
-  verificado esta sesión -- sin acceso a producción desde este entorno.**
-  El backfill en sí es seguro sin este dato (argumento completo en §3.6
-  del ADR -- toda `PENDING` existente hoy nace del camino fresco, nunca
-  de un reintento, porque el reintento recién empieza a poner `PENDING`
-  con este mismo bloque), pero el volumen real evita sorpresas en el
-  deploy. Acción puntual que lo cierra: correr la consulta contra cada
-  tenant real, antes del deploy del bloque 2a.
 
 ---
 
