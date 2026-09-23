@@ -1203,6 +1203,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
           ncInvoiceId: null,
           ncStatus: null,
           ncAfipContacted: null,
+          creditNoteRequestId: null,
         });
       }
 
@@ -1252,8 +1253,122 @@ export class SqlInvoiceRepository implements InvoiceRepository {
           ncInvoiceId: nc?.id ?? null,
           ncStatus: nc?.status ?? null,
           ncAfipContacted: nc?.afip_contacted ?? null,
+          creditNoteRequestId: null,
         });
       }
+    }
+
+    // Bloque 6 del ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026, §3.10,
+    // gate architecture-governor, ronda 18) -- dos candidatos más, SQL
+    // directo, sin pasar por classifyOrderLiveInvoice()/
+    // classifyReservationLiveInvoice() (esos dos resuelven la doctrina de
+    // compensación de órdenes/reservas, que no aplica acá -- ver el
+    // docblock de UnreconciledLiveInvoice para el porqué completo de cada
+    // uno).
+
+    // Candidato AR_REVERTED_INVOICE_LIVE -- ¿la AR que este CHARGE originó
+    // ya se revirtió, pero el mismo CHARGE sigue con una factura viva sin
+    // reconciliar? El UNION ALL de abajo (individual: invoices.financial_transaction_id
+    // directo; consolidada: invoice_charges) es la MISMA forma que
+    // getAllLinkedInvoicesWithClient() usa (arriba en este archivo), pero
+    // NO se extrajo a una constante compartida como NC_LINKAGE_UNION --
+    // decisión deliberada de esta implementación, no del §3.10 original
+    // (que sí lo pedía): el set de columnas difiere (acá hace falta
+    // pto_vta/cbte_nro/imp_total/issued_at para la fila del reporte, ese
+    // método necesita status/afip_contacted/uncertain_cleared_at para el
+    // guard 8-bis) y unificarlas de verdad exigiría tocar
+    // resolveInvoiceLinkage()/getAllLinkedInvoicesWithClient() -- dos
+    // métodos ya en producción que blindan la cancelación real (guard
+    // 8-bis) -- para un cambio que es puramente de reporte. Riesgo/beneficio
+    // no lo justifica en este bloque; residuo declarado, no oculto (mismo
+    // riesgo de divergencia silenciosa que el propio docblock de
+    // NC_LINKAGE_UNION ya señala sobre estas dos copias). Alcanzable pese
+    // al guard 8-bis de reverseTransfer(): ese guard no toma lock cruzado
+    // AR↔factura, ver el residuo declarado en el propio docblock de
+    // reverseTransfer() (accounts-receivable.service.ts) y en §3.10 del ADR.
+    const { rows: arReversedRows } = await client.query<{
+      ar_id: string; reversed_at: Date; invoice_id: string;
+      pto_vta: number; cbte_nro: string | null; imp_total: string; issued_at: Date | null;
+    }>(
+      `SELECT ar.id AS ar_id, ar.reversed_at, linked.id AS invoice_id,
+              linked.pto_vta, linked.cbte_nro, linked.imp_total, linked.issued_at
+         FROM accounts_receivable ar
+         JOIN ( -- mismo UNION ALL individual+consolidada que getAllLinkedInvoicesWithClient()
+           SELECT id, financial_transaction_id, status, pto_vta, cbte_nro, imp_total, issued_at
+             FROM invoices WHERE financial_transaction_id IS NOT NULL
+           UNION ALL
+           SELECT i.id, ic.financial_transaction_id, i.status, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at
+             FROM invoice_charges ic JOIN invoices i ON i.id = ic.invoice_id
+         ) linked ON linked.financial_transaction_id = ar.financial_transaction_id
+        WHERE ar.status = 'REVERTIDO'
+          AND linked.status = ANY($1::text[])`,
+      [[...INVOICE_STATUSES_CONSUMING_CHARGE]],
+    );
+    for (const row of arReversedRows) {
+      results.push({
+        entityType: 'ACCOUNTS_RECEIVABLE',
+        entityId: row.ar_id,
+        entityStatus: 'REVERTIDO',
+        invoiceId: row.invoice_id,
+        ptoVta: row.pto_vta,
+        cbteNro: row.cbte_nro === null ? null : Number(row.cbte_nro),
+        impTotal: parseFloat(row.imp_total),
+        issuedAt: row.issued_at,
+        motivo: 'AR_REVERTED_INVOICE_LIVE',
+        sinceAt: row.reversed_at,
+        revertingTransactionId: null,
+        revertingType: null,
+        revertingStatus: null,
+        ncInvoiceId: null,
+        ncStatus: null,
+        ncAfipContacted: null,
+        creditNoteRequestId: null,
+      });
+    }
+
+    // Candidato MANUAL_RESOLUTION_STATE_MISMATCH -- una credit_note_request
+    // EN_REVISION_MANUAL cuya propia factura (cnr.invoice_id, la NC en
+    // revisión -- no reversed_invoice_id, la original que revierte) ya
+    // alcanzó un desenlace real que la solicitud todavía no refleja.
+    // entityType/entityId resuelven vía chk_credit_note_request_order_or_reservation
+    // (CHECK: exactamente uno de order_id/reservation_id no-nulo).
+    const { rows: manualMismatchRows } = await client.query<{
+      credit_note_request_id: string; order_id: string | null; reservation_id: string | null;
+      invoice_id: string; status: InvoiceStatus; pto_vta: number; cbte_nro: string | null;
+      imp_total: string; issued_at: Date | null; uncertain_cleared_at: Date | null;
+      order_status: string | null; reservation_status: string | null;
+    }>(
+      `SELECT cnr.id AS credit_note_request_id, cnr.order_id, cnr.reservation_id,
+              cnr.invoice_id, i.status, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at,
+              i.uncertain_cleared_at, o.status AS order_status, r.status AS reservation_status
+         FROM credit_note_request cnr
+         JOIN invoices i ON i.id = cnr.invoice_id
+         LEFT JOIN orders o ON o.id = cnr.order_id
+         LEFT JOIN reservations r ON r.id = cnr.reservation_id
+        WHERE cnr.state = 'EN_REVISION_MANUAL'
+          AND (i.status = 'ISSUED' OR (i.status = 'FAILED_UNCERTAIN' AND i.uncertain_cleared_at IS NOT NULL))`,
+      [],
+    );
+    for (const row of manualMismatchRows) {
+      results.push({
+        entityType: row.order_id !== null ? 'ORDER' : 'RESERVATION',
+        entityId: (row.order_id ?? row.reservation_id)!,
+        entityStatus: (row.order_status ?? row.reservation_status) ?? 'DESCONOCIDO',
+        invoiceId: row.invoice_id,
+        ptoVta: row.pto_vta,
+        cbteNro: row.cbte_nro === null ? null : Number(row.cbte_nro),
+        impTotal: parseFloat(row.imp_total),
+        issuedAt: row.issued_at,
+        motivo: 'MANUAL_RESOLUTION_STATE_MISMATCH',
+        sinceAt: row.status === 'ISSUED' ? (row.issued_at ?? row.uncertain_cleared_at ?? new Date(0)) : (row.uncertain_cleared_at ?? new Date(0)),
+        revertingTransactionId: null,
+        revertingType: null,
+        revertingStatus: null,
+        ncInvoiceId: null,
+        ncStatus: null,
+        ncAfipContacted: null,
+        creditNoteRequestId: row.credit_note_request_id,
+      });
     }
 
     // Ordenado por antigüedad -- el más viejo primero, mismo criterio que

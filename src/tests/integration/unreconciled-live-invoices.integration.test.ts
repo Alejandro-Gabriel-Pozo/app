@@ -135,6 +135,98 @@ async function seedNcForReversal(opts: {
   return ncId;
 }
 
+/**
+ * Bloque 6 del ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026, §3.10, gate
+ * `architecture-governor`, ronda 18) -- CHARGE contra un cliente COMPANY
+ * (mismo shape que `postStayTransfer()` deja en producción, ver
+ * `reverse-transfer.integration.test.ts`: el CHARGE contra la empresa nace
+ * con `reservation_id` poblado), con una Factura B ISSUED sobre ese cargo,
+ * y una `accounts_receivable` que referencia el mismo `financial_transaction_id`
+ * forzada a `REVERTIDO` DIRECTO por SQL -- no hay forma de disparar esa
+ * combinación desde la API pública: el guard 8-bis de `reverseTransfer()`
+ * existe justo para impedirla. Mismo criterio de armado directo que ya usan
+ * `seedReversal()`/`seedNcForReversal()` de arriba para sus propios estados
+ * inalcanzables vía API.
+ */
+async function seedArReversedScenario(reservationStatus: 'CONFIRMED' | 'CANCELLED') {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guest = await seedCustomer(db);
+  const company = await seedCustomer(db);
+  await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+  const reservation = await seedReservation(db, resource.id, guest.id, {
+    totalPrice: 1000, status: reservationStatus,
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+
+  const stayId = randomUUID();
+  await db.query(
+    `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+     VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+    [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+  );
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+  const charge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: 1000,
+    currency: 'ARS', status: 'SETTLED',
+  });
+
+  const invoiceId = randomUUID();
+  const invoiceRepo = new SqlInvoiceRepository(db);
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, pending_since)
+     VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 96, '0',
+             5, 'PES', 826.45, 173.55, 1000, 'PENDING', NOW())`,
+    [invoiceId, BUSINESS_ID, charge!.id, company.id, `idem-${invoiceId}`],
+  );
+  await invoiceRepo.markIssued(invoiceId, {
+    cbteNro: cbteNroCounter++, cae: `CAE${cbteNroCounter}`, caeVto: '2030-01-01', afipResponse: {},
+  });
+
+  const arId = randomUUID();
+  await db.query(
+    `INSERT INTO accounts_receivable
+       (id, business_id, stay_id, company_customer_id, amount, status,
+        transferred_by, financial_transaction_id, reversed_by, reversed_at, reversed_reason)
+     VALUES ($1, $2, $3, $4, 1000, 'REVERTIDO', 'ident-test', $5, 'ident-reverse', NOW(),
+             'ventana TOCTOU simulada -- test ADR ISSUE-BEFORE-REVERSE-WINDOW-001 Bloque 6')`,
+    [arId, BUSINESS_ID, stayId, company.id, charge!.id],
+  );
+
+  return { reservation, company, arId, invoiceId };
+}
+
+/**
+ * Bloque 6 (§3.10) -- `credit_note_request` EN_REVISION_MANUAL cuya propia
+ * factura (`invoice_id`, la NC en revisión -- NUNCA `reversed_invoice_id`,
+ * la original que revierte) ya alcanzó `ISSUED` por fuera del flujo normal
+ * de resolución. `financial_transaction_id` de esta factura queda NULL a
+ * propósito -- no participa de ningún JOIN de candidatos B1/B2/AR, el
+ * único vínculo que esta query necesita es `credit_note_request.invoice_id`.
+ */
+async function seedNcInvoiceIssuedDirect(customerId: string): Promise<string> {
+  const ncInvoiceId = randomUUID();
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status, afip_contacted, pending_since)
+     VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 8, 1, 96, '0',
+             5, 'PES', 826.45, 173.55, 1000, 'PENDING', TRUE, NOW())`,
+    [ncInvoiceId, BUSINESS_ID, customerId, `idem-${ncInvoiceId}`],
+  );
+  const invoiceRepo = new SqlInvoiceRepository(db);
+  await invoiceRepo.markIssued(ncInvoiceId, {
+    cbteNro: cbteNroCounter++, cae: `NC${cbteNroCounter}`, caeVto: '2030-01-01', afipResponse: {},
+  });
+  return ncInvoiceId;
+}
+
 describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de facturas vivas no conciliadas', () => {
   let invoiceRepo: SqlInvoiceRepository;
 
@@ -240,6 +332,64 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de factur
     // ni siquiera se clasifica. Es la fila normal, sana, de todos los días.
     const rows = findRowFor(await invoiceRepo.listUnreconciledLiveInvoices(db), reservation.id);
     expect(rows).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------
+  // Bloque 6 del ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026, §3.10,
+  // gate architecture-governor, ronda 18) -- los dos motivos nuevos.
+  // -------------------------------------------------------------------
+
+  it('AR_REVERTED_INVOICE_LIVE -- AR revertida con la factura del mismo CHARGE todavía viva (ventana TOCTOU del guard 8-bis)', async () => {
+    const { arId, invoiceId } = await seedArReversedScenario('CONFIRMED');
+
+    const rows = (await invoiceRepo.listUnreconciledLiveInvoices(db)).filter((r) => r.entityId === arId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      entityType: 'ACCOUNTS_RECEIVABLE', entityId: arId, entityStatus: 'REVERTIDO',
+      invoiceId, motivo: 'AR_REVERTED_INVOICE_LIVE',
+      revertingTransactionId: null, revertingType: null, revertingStatus: null,
+      ncInvoiceId: null, ncStatus: null, ncAfipContacted: null, creditNoteRequestId: null,
+    });
+    expect(rows[0]!.sinceAt).toBeInstanceOf(Date);
+  });
+
+  it('MANUAL_RESOLUTION_STATE_MISMATCH -- credit_note_request EN_REVISION_MANUAL cuya propia factura ya llegó a ISSUED', async () => {
+    const { reservation, guest, invoiceId: reversedInvoiceId } = await seedReservationWithIssuedInvoice('CONFIRMED');
+    const ncInvoiceId = await seedNcInvoiceIssuedDirect(guest.id);
+
+    const cnrId = randomUUID();
+    await db.query(
+      `INSERT INTO credit_note_request (id, business_id, invoice_id, reversed_invoice_id, reservation_id, state)
+       VALUES ($1,$2,$3,$4,$5,'EN_REVISION_MANUAL')`,
+      [cnrId, BUSINESS_ID, ncInvoiceId, reversedInvoiceId, reservation.id],
+    );
+
+    const rows = (await invoiceRepo.listUnreconciledLiveInvoices(db)).filter((r) => r.creditNoteRequestId === cnrId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      entityType: 'RESERVATION', entityId: reservation.id, entityStatus: 'CONFIRMED',
+      invoiceId: ncInvoiceId, motivo: 'MANUAL_RESOLUTION_STATE_MISMATCH', creditNoteRequestId: cnrId,
+    });
+  });
+
+  it('REGRESIÓN -- AR_REVERTED_INVOICE_LIVE y B1 (TERMINAL_CON_COMPROBANTE_VIVO) sobre la MISMA reserva/comprobante emiten filas separadas, ninguna suprime a la otra', async () => {
+    // El CHARGE contra la empresa nace con reservation_id poblado (mismo
+    // shape que postStayTransfer() en producción) -- si esa reserva
+    // también llega a CANCELLED, el mismo comprobante matchea B1 (paso 1
+    // del clasificador, ft.reservation_id = r.id) Y AR_REVERTED_INVOICE_LIVE
+    // -- doctrina de "no deduplicar" ya establecida para B1 vs. B2 (ver
+    // docblock de UnreconciledLiveInvoice), extendida acá sin reabrirla.
+    const { reservation, arId, invoiceId } = await seedArReversedScenario('CANCELLED');
+
+    const rows = (await invoiceRepo.listUnreconciledLiveInvoices(db)).filter((r) => r.invoiceId === invoiceId);
+
+    expect(rows).toHaveLength(2);
+    const terminal = rows.find((r) => r.motivo === 'TERMINAL_CON_COMPROBANTE_VIVO');
+    const arReverted = rows.find((r) => r.motivo === 'AR_REVERTED_INVOICE_LIVE');
+    expect(terminal).toMatchObject({ entityType: 'RESERVATION', entityId: reservation.id, entityStatus: 'CANCELLED' });
+    expect(arReverted).toMatchObject({ entityType: 'ACCOUNTS_RECEIVABLE', entityId: arId, entityStatus: 'REVERTIDO' });
   });
 });
 

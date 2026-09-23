@@ -19,9 +19,17 @@
  *      cargo es REFUND/ADJUSTMENT (Nota de Crédito del escape de
  *      cancelación, decisión separada del dueño: sigue alcanzando con
  *      `Roles.EMISOR_NOTA_CREDITO`).
- * GET  /api/invoices/unreconciled — FRONT_DESK (10/09/2026, bandeja "factura
+ * GET  /api/invoices/unreconciled — MANAGEMENT (10/09/2026, bandeja "factura
  *      viva no conciliada" -- ver InvoiceRepository.listUnreconciledLiveInvoices().
- *      Registrada ANTES de /:id, no la muevas después)
+ *      Registrada ANTES de /:id, no la muevas después. RBAC subido de
+ *      FRONT_DESK a MANAGEMENT el 23/09/2026, ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`
+ *      Bloque 6, §3.10 -- mismo criterio que el reporte (d) de §3.10 --ver
+ *      el docblock de `GET /uncertain` más abajo, que cita esta misma
+ *      razón desde que se escribió. Endpoint completo subido de una, sin
+ *      partir en dos: sin consumidor conocido hoy en `appfrontend-main`
+ *      -grepeado antes de implementar, `NO_CONSUMER_ROUTES` de
+ *      `route-consumer-coverage.test.ts` ya lo declaraba-, así que no había
+ *      ningún caller `FRONT_DESK` real que perder.)
  * GET  /api/invoices/uncertain — MANAGEMENT (23/09/2026, ADR
  *      `ISSUE-BEFORE-REVERSE-WINDOW-001` Bloque 3, §3.9 -- bandeja nueva de
  *      facturas `FAILED_UNCERTAIN` sin resolver, ver
@@ -267,9 +275,17 @@ export function createInvoicesRouter(container: AppContainer): Router {
   // `unreconciled` como un `:id` y esta ruta quedaría inalcanzable, sin
   // ningún error visible (`GET /api/invoices/unreconciled` devolvería
   // 404 `INVOICE_NOT_FOUND`, no la lista).
+  //
+  // RBAC MANAGEMENT (23/09/2026, ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`
+  // Bloque 6, §3.10 -- subido de `FRONT_DESK`) -- mismo criterio que el
+  // reporte (d) de §3.10 -- ambos exponen estado de facturación sin
+  // reconciliar. Endpoint completo, los 4 `motivo` juntos (B1/B2 más los
+  // dos nuevos de este bloque), no partido en dos rutas -- precondición ya
+  // verificada: sin consumidor conocido hoy (`NO_CONSUMER_ROUTES` de
+  // `route-consumer-coverage.test.ts`).
   router.get(
     '/unreconciled',
-    authorize(Roles.FRONT_DESK),
+    authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const list = await new SqlInvoiceRepository(req.db!).listUnreconciledLiveInvoices(req.db!);

@@ -448,6 +448,40 @@ describe('GET /api/invoices/uncertain', () => {
   });
 });
 
+// ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 6, §3.10 -- RBAC
+// subido de FRONT_DESK a MANAGEMENT. Mismo patrón que las pruebas de
+// authorize() real de PUT//DELETE / (AfipCredentialsRouter, más abajo en
+// este archivo): ejercita el middleware en el índice 0 del stack
+// [authorize, handler] (esta ruta no lleva gate de módulo), no solo el
+// handler final asumiendo que la autorización ya pasó.
+describe('GET /api/invoices/unreconciled -- RBAC (ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 6, §3.10)', () => {
+  it('FRONT_DESK -- 403 (RBAC subido de FRONT_DESK a MANAGEMENT el 23/09/2026)', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const authorizeMw = getMiddlewareAt(router, 'get', '/unreconciled', 0);
+    const req = { user: { id: 'identity-1', businessId: 'biz-1', permissionGroups: [Roles.FRONT_DESK] } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    authorizeMw(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('MANAGEMENT -- pasa (next() sin error, sin 403)', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const authorizeMw = getMiddlewareAt(router, 'get', '/unreconciled', 0);
+    const req = { user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    authorizeMw(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/invoices/:id/mark-not-issued', () => {
   it('propaga el error del service vía next() (ej. InvoiceHasOpenCreditNoteRequestError, InvoiceUncertainClearPreconditionError)', async () => {
     const router = createInvoicesRouter(FAKE_CONTAINER);

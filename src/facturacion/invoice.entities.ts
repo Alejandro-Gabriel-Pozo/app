@@ -212,6 +212,42 @@ export interface CreateInvoiceInput {
  * completan para `motivo === 'REVERSION_ABIERTA'` -- un candidato B1
  * puro no tiene, todavía, ninguna fila revertidora que describir.
  *
+ * **Bloque 6 del ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026, §3.10,
+ * gate `architecture-governor`, ronda 18) -- dos motivos más, mismo
+ * contrato de salida, sin endpoint separado:**
+ * - `motivo: 'AR_REVERTED_INVOICE_LIVE'` -- el `CHARGE` de una
+ *   `accounts_receivable` ya `REVERTIDO` (`reverseTransfer()`,
+ *   `accounts-receivable.service.ts`) sigue teniendo una factura viva sin
+ *   reconciliar (`INVOICE_STATUSES_CONSUMING_CHARGE`) sobre el mismo
+ *   `financial_transaction_id` -- la ventana TOCTOU que el propio docblock
+ *   de `reverseTransfer()` declara como residuo (su guard 8-bis no toma
+ *   lock cruzado AR↔factura). `entityType: 'ACCOUNTS_RECEIVABLE'`
+ *   (decisión del dueño, `AskUserQuestion`, 23/09/2026 -- ni `'ORDER'` ni
+ *   `'RESERVATION'` describen bien a una AR revertida: la reserva de la
+ *   que nace el `CHARGE` puede seguir perfectamente viva), `entityId: ar.id`,
+ *   `entityStatus: 'REVERTIDO'`. `sinceAt = ar.reversed_at`. No deduplica
+ *   contra B1/B2 sobre la misma reserva -- mismo criterio que B1 vs. B2
+ *   entre sí (arriba): la AR y la reserva son hechos distintos.
+ * - `motivo: 'MANUAL_RESOLUTION_STATE_MISMATCH'` -- una `credit_note_request`
+ *   sigue `EN_REVISION_MANUAL` pero su propia factura (`cnr.invoice_id`,
+ *   la NC en revisión, no `reversed_invoice_id`) ya alcanzó un desenlace
+ *   real que la solicitud todavía no refleja (`ISSUED`, o
+ *   `FAILED_UNCERTAIN` con `uncertain_cleared_at` poblado). Sin acción
+ *   nueva -- `POST /api/credit-note-requests/:id/resolve` ya maneja los
+ *   dos casos de forma idempotente (§3.10); esta fila es pura visibilidad.
+ *   `entityType`/`entityId` resuelven por `chk_credit_note_request_order_or_reservation`
+ *   (CHECK: exactamente uno de `order_id`/`reservation_id` no-nulo).
+ *   `creditNoteRequestId` (único campo nuevo del tipo, ver abajo) puebla
+ *   `cnr.id`.
+ *
+ * Los dos motivos nuevos son consultas SQL directas en
+ * `listUnreconciledLiveInvoices()`, sin pasar por
+ * `classifyOrderLiveInvoice()`/`classifyReservationLiveInvoice()` -- esos
+ * dos resuelven la doctrina de compensación de órdenes/reservas, que no
+ * aplica acá (el predicado de cada uno es autocontenido, sin estado de
+ * orden/reserva de por medio para `AR_REVERTED_INVOICE_LIVE`, y sin
+ * doctrina de compensación para `MANUAL_RESOLUTION_STATE_MISMATCH`).
+ *
  * **Falso positivo RESUELTO (11/09/2026, 3.3-d residual 1,
  * docs/diseno-33d-residuales-2026-09-11.md)** para el camino RESOLVED de
  * `classifyReservationLiveInvoice`: una cancelación consolidada-parcial ya
@@ -237,7 +273,7 @@ export interface CreateInvoiceInput {
  * `classifyOrderLiveInvoice`/`classifyReservationLiveInvoice`.
  */
 export interface UnreconciledLiveInvoice {
-  entityType: 'ORDER' | 'RESERVATION';
+  entityType: 'ORDER' | 'RESERVATION' | 'ACCOUNTS_RECEIVABLE';
   entityId: string;
   entityStatus: string;
   invoiceId: string;
@@ -245,7 +281,7 @@ export interface UnreconciledLiveInvoice {
   cbteNro: number | null;
   impTotal: number;
   issuedAt: Date | null;
-  motivo: 'TERMINAL_CON_COMPROBANTE_VIVO' | 'REVERSION_ABIERTA';
+  motivo: 'TERMINAL_CON_COMPROBANTE_VIVO' | 'REVERSION_ABIERTA' | 'AR_REVERTED_INVOICE_LIVE' | 'MANUAL_RESOLUTION_STATE_MISMATCH';
   sinceAt: Date;
   revertingTransactionId: string | null;
   revertingType: 'REFUND' | 'ADJUSTMENT' | null;
@@ -253,4 +289,12 @@ export interface UnreconciledLiveInvoice {
   ncInvoiceId: string | null;
   ncStatus: InvoiceStatus | null;
   ncAfipContacted: boolean | null;
+  /**
+   * Bloque 6 (§3.10) -- id de la `credit_note_request` en revisión, poblado
+   * SOLO para `motivo === 'MANUAL_RESOLUTION_STATE_MISMATCH'` (es el id que
+   * el frontend necesita para accionar `POST /credit-note-requests/:id/resolve`).
+   * `null` para los otros tres motivos -- mismo criterio que los campos de
+   * reversión, exclusivos de `REVERSION_ABIERTA`.
+   */
+  creditNoteRequestId: string | null;
 }
