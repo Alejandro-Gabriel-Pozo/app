@@ -173,14 +173,14 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getAllLinkedInvoicesWithClient(
     _client: SqlClient,
     ftId: string,
-  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>> {
-    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }> = [];
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }>> {
+    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }> = [];
     const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
-    if (individual) result.push({ id: individual.id, status: individual.status, afipContacted: individual.afipContacted });
+    if (individual) result.push({ id: individual.id, status: individual.status, afipContacted: individual.afipContacted, uncertainClearedAt: individual.uncertainClearedAt });
     const consolidatedId = this.charges.get(ftId);
     if (consolidatedId) {
       const consolidated = this.invoices.get(consolidatedId);
-      if (consolidated) result.push({ id: consolidated.id, status: consolidated.status, afipContacted: consolidated.afipContacted });
+      if (consolidated) result.push({ id: consolidated.id, status: consolidated.status, afipContacted: consolidated.afipContacted, uncertainClearedAt: consolidated.uncertainClearedAt });
     }
     return result;
   }

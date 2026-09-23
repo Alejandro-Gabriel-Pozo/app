@@ -313,6 +313,80 @@ describe('SqlInvoiceRepository — pending_since (Bloque 2a)', () => {
 
     expect(invoice!.pendingSince).toEqual(new Date('2026-09-23T00:00:00Z'));
   });
+
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.5 -- reset de
+  // uncertain_cleared_at en markFailedWithClient(). Co-ubicado con los
+  // tests de pending_since de arriba porque es el mismo método/misma
+  // infraestructura de mock (pendingRow()), no porque sea Bloque 2a.
+  it.each(['REJECTED', 'FAILED_UNCERTAIN'] as const)(
+    'markFailedWithClient() limpia uncertain_cleared_at = NULL al marcar %s, incondicionalmente (§3.5)',
+    async (status) => {
+      const mockSqlClient = mockClient([pendingRow({ status, pending_since: null, afip_contacted: true, uncertain_cleared_at: null })]);
+      const repo = new SqlInvoiceRepository(mockSqlClient);
+
+      await repo.markFailedWithClient(mockSqlClient, 'inv-1', {
+        status, errorMessage: 'test', afipContacted: true,
+      });
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toMatch(/SET[\s\S]*uncertain_cleared_at\s*=\s*NULL/);
+    },
+  );
+
+  it('markFailedWithClient() -- escenario exacto de §3.5: una factura YA limpiada (uncertain_cleared_at no-nulo) vuelve a caer en FAILED_UNCERTAIN con afipContacted:true; el UPDATE resetea el campo a NULL en vez de dejar el valor viejo', async () => {
+    // El mock no reejecuta SQL contra un motor real -- lo que prueba este
+    // test es lo mismo que el de arriba (la sentencia UPDATE resetea
+    // uncertain_cleared_at incondicionalmente), pero partiendo
+    // explícitamente de una fila que YA tenía un uncertain_cleared_at
+    // poblado (el escenario textual del hueco #4 del ADR), para que quede
+    // anclado el caso real, no solo el genérico.
+    const mockSqlClient = mockClient([pendingRow({
+      status: 'FAILED_UNCERTAIN', pending_since: null, afip_contacted: true,
+      // La fila que RETURNING * devolvería tras el fix -- ya reseteada.
+      uncertain_cleared_at: null, uncertain_cleared_by: null,
+    })]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const invoice = await repo.markFailedWithClient(mockSqlClient, 'inv-1', {
+      status: 'FAILED_UNCERTAIN', errorMessage: 'AFIP respondió ambiguo de nuevo', afipContacted: true,
+    });
+
+    const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toMatch(/SET[\s\S]*uncertain_cleared_at\s*=\s*NULL/);
+    expect(invoice.uncertainClearedAt).toBeNull();
+  });
+});
+
+// ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.1 ("corrección al
+// implementar el bloque 1") / §3.8 -- getAllLinkedInvoicesWithClient() ahora
+// trae uncertainClearedAt, que el guard 8-bis de reverseTransfer()
+// (accounts-receivable.service.ts) usa para no bloquear una fila ya
+// limpiada por revisión manual.
+describe('SqlInvoiceRepository — getAllLinkedInvoicesWithClient() trae uncertainClearedAt (ADR Bloque 2c, §3.1/§3.8)', () => {
+  it('mapea uncertain_cleared_at (no-nulo) desde la fila cruda a uncertainClearedAt', async () => {
+    const clearedAt = new Date('2026-09-20T12:00:00Z');
+    const mockSqlClient = mockClient([
+      { id: 'inv-1', status: 'FAILED_UNCERTAIN', afip_contacted: true, uncertain_cleared_at: clearedAt },
+    ]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const rows = await repo.getAllLinkedInvoicesWithClient(mockSqlClient, 'ft-1');
+
+    expect(rows).toEqual([{ id: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: clearedAt }]);
+    const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain('uncertain_cleared_at');
+  });
+
+  it('mapea uncertain_cleared_at = NULL desde la fila cruda a uncertainClearedAt: null (caso "todavía no limpiada", sigue bloqueando)', async () => {
+    const mockSqlClient = mockClient([
+      { id: 'inv-1', status: 'FAILED_UNCERTAIN', afip_contacted: true, uncertain_cleared_at: null },
+    ]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const rows = await repo.getAllLinkedInvoicesWithClient(mockSqlClient, 'ft-1');
+
+    expect(rows).toEqual([{ id: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: null }]);
+  });
 });
 
 // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3 -- guards

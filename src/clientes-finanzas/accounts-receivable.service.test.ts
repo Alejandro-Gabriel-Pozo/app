@@ -237,7 +237,7 @@ class FakeInvoiceRepository implements Pick<
   public invoiceIdByFinancialTransactionId = new Map<string, string>();
   public outstandingByInvoiceId = new Map<string, number>();
   /** AR-FACT-NO-ISSUED-01 -- configura el caso NOT_ISSUED por ftId. */
-  public notIssuedByFinancialTransactionId = new Map<string, { invoiceId: string; status: 'PENDING' | 'REJECTED' | 'FAILED_UNCERTAIN'; afipContacted: boolean }>();
+  public notIssuedByFinancialTransactionId = new Map<string, { invoiceId: string; status: 'PENDING' | 'REJECTED' | 'FAILED_UNCERTAIN'; afipContacted: boolean; uncertainClearedAt?: Date | null }>();
   /** Bloque 6, §9.1 -- clasificación por reservationId/orderId. Default 'RECONCILED' (no bloquea) para no romper los tests que no ejercitan el guard nuevo. */
   public reservationClassification = new Map<string, 'RECONCILED' | 'NOT_RECONCILED'>();
   public orderClassification = new Map<string, 'RECONCILED' | 'NOT_RECONCILED'>();
@@ -252,8 +252,12 @@ class FakeInvoiceRepository implements Pick<
    * mismo ftId (`invoiceIdByFinancialTransactionId`/
    * `notIssuedByFinancialTransactionId` solo modelan una cada uno). Si
    * está seteado para un ftId, `getAllLinkedInvoicesWithClient()` lo usa
-   * tal cual y NO deriva de los otros dos mapas para ese ftId. */
-  public linkedInvoicesOverride = new Map<string, Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>>();
+   * tal cual y NO deriva de los otros dos mapas para ese ftId.
+   * `uncertainClearedAt` es opcional en los dos mapas (ADR Bloque 2c,
+   * §3.1/§3.8) -- default `null` si el test no lo setea, mismo
+   * comportamiento que todos los tests de antes de ese bloque esperaban
+   * (fila NO limpiada, sigue bloqueando). */
+  public linkedInvoicesOverride = new Map<string, Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt?: Date | null }>>();
 
   async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
     const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
@@ -275,14 +279,14 @@ class FakeInvoiceRepository implements Pick<
   async getAllLinkedInvoicesWithClient(
     _client: SqlClient,
     financialTransactionId: string,
-  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>> {
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }>> {
     const override = this.linkedInvoicesOverride.get(financialTransactionId);
-    if (override) return override;
-    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }> = [];
+    if (override) return override.map((o) => ({ id: o.id, status: o.status, afipContacted: o.afipContacted, uncertainClearedAt: o.uncertainClearedAt ?? null }));
+    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }> = [];
     const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
-    if (issuedId) result.push({ id: issuedId, status: 'ISSUED', afipContacted: true });
+    if (issuedId) result.push({ id: issuedId, status: 'ISSUED', afipContacted: true, uncertainClearedAt: null });
     const notIssued = this.notIssuedByFinancialTransactionId.get(financialTransactionId);
-    if (notIssued) result.push({ id: notIssued.invoiceId, status: notIssued.status, afipContacted: notIssued.afipContacted });
+    if (notIssued) result.push({ id: notIssued.invoiceId, status: notIssued.status, afipContacted: notIssued.afipContacted, uncertainClearedAt: notIssued.uncertainClearedAt ?? null });
     return result;
   }
 
@@ -1141,6 +1145,46 @@ describe('AccountsReceivableService.reverseTransfer (Bloque 3c-ii, 14/09/2026, d
     seedCharge();
     seedGuestPayment();
     invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis -- CHARGE con factura FAILED_UNCERTAIN CON afipContacted pero uncertainClearedAt AÚN NULO (default -- no seteado explícitamente), sigue bloqueando (ADR Bloque 2c, §3.8 -- mismo caso que el test de arriba, ancla explícita de "no cambia el comportamiento default")', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: null });
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis -- CHARGE con factura FAILED_UNCERTAIN CON afipContacted, pero YA LIMPIADA (uncertainClearedAt no-nulo): NO bloquea (ADR Bloque 2c, §3.8 -- comportamiento nuevo, mismo criterio que retryExisting())', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', {
+      invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true,
+      uncertainClearedAt: new Date('2026-09-20T00:00:00Z'),
+    });
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+  });
+
+  it('guard 8-bis, bloque 2c -- DOS facturas FAILED_UNCERTAIN+afipContacted sobre el mismo cargo, UNA limpiada y OTRA no: bloquea igual por la que sigue sin limpiar (uncertainClearedAt no exime a las demás filas)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-limpiada', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: new Date('2026-09-20T00:00:00Z') },
+      { id: 'inv-sin-limpiar', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: null },
+    ]);
 
     await expect(
       service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
