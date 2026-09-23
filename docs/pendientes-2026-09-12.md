@@ -3312,6 +3312,64 @@ futuros, cada uno con su propio alcance.
   problema (esa es doble CAE sobre el MISMO cargo desde dos caminos de
   facturación; esta es un solo CAE válido emitido sobre un cargo cuya AR
   ya estaba revertida en el momento de la emisión).
+  **(6) Actualización 23/09/2026 -- diseño en curso, 3 rondas de gate:**
+  el dueño ya decidió el candidato (vía `AskUserQuestion`): (b) + salida
+  propia -- marcar la factura "en vuelo" dentro de la transacción del
+  guard del reintento (mismo patrón que el camino fresco), con
+  vencimiento automático + bandeja manual para el caso colgado, más (d)
+  como complemento. ADR completo:
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`.
+  **Estado real (no "en progreso" genérico): bloque 1 (guard 8-bis
+  evaluado fila por fila) APROBADO CON CONDICIONES por el gate, ronda 3
+  -- implementable. Bloques 2-6 (schema, worker, salida manual, alcance
+  NC, reporte) en HOLD, 7 huecos nuevos (N1-N7) encontrados sobre el
+  texto de la ronda 2, requieren una ronda 4 del ADR antes de su propio
+  gate de implementación** -- ver el ADR, sección "Historial de
+  revisión", para el detalle de cada ronda.
+
+- **`INVOICE-LINKAGE-LIMIT1-MULTI-INVOICE-001` (23/09/2026, gate
+  `architecture-governor`, ronda 3 del ADR de arriba -- hallazgo
+  colateral, no el objeto del ADR).** `resolveInvoiceLinkage()`
+  (`sql.invoice.repository.ts`) devuelve UNA sola fila
+  (`ORDER BY (status = 'ISSUED') DESC, id LIMIT 1`) cuando un cargo tiene
+  más de una factura ligada -- tiene 9 call-sites de producción. De esos
+  9, el que motivó el ADR de arriba (guard 8-bis de `reverseTransfer()`)
+  ya se cierra en su bloque 1. De los 8 restantes, verificado en código
+  (no estimado): **4 NO comparten el riesgo** (protegidos por
+  unicidad estructural -- índice único de idempotencia por factura
+  individual, índice único `idx_invoice_charges_ft` por consolidada, y un
+  cargo de ORDEN nunca puede tener consolidada por construcción --
+  `invoice.service.ts:577`, `order.service.ts::findBlockingInvoiceLinkage()`,
+  `cancel-order-with-credit-note.service.ts:216`), **1 requiere una
+  consulta contra datos reales para descartarlo del todo**
+  (`accounts-receivable.service.ts:364`, protegido por construcción desde
+  el commit `9490ba1` pero con residuo de cargos adoptados ANTES de ese
+  fix, sin verificar), y **3 comparten una versión acotada del riesgo**
+  (`reservation.service.ts::findBlockingInvoiceLinkage()`,
+  `cancel-reservation-with-credit-note.service.ts:262`,
+  `accounts-receivable.service.ts:529`/`:611` -- su forma real requiere
+  DOS facturas `ISSUED` simultáneas sobre el mismo cargo, que es
+  exactamente el mecanismo que `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
+  arriba ya está diseñando cerrar -- no un hallazgo aislado). Tabla
+  completa con el razonamiento de cada sitio: §3.12 del ADR de arriba.
+  **Fuera de alcance de ese ADR y de `DUPLICATE-CAE-001`** -- ninguno de
+  los dos bloques de implementación en curso lo cierra; queda como
+  bloque de análisis propio, sin decisión de negocio tomada todavía sobre
+  si vale la pena cerrarlo dado el cruce con `DUPLICATE-CAE-001`.
+
+- **Verificación pendiente -- consulta de producción antes del bloque 2a
+  del ADR de arriba (23/09/2026, gate, ronda 2-3).** Antes de desplegar
+  la columna `pending_since` + backfill (§3.6/§6 del ADR), hace falta una
+  consulta de solo lectura por tenant: cuántas `invoices` están hoy
+  `PENDING`, y cuántas `FAILED_UNCERTAIN` con `afip_contacted = true` y
+  sin `uncertain_cleared_at`, separadas por `CHARGE` vs. NC. **No
+  verificado esta sesión -- sin acceso a producción desde este entorno.**
+  El backfill en sí es seguro sin este dato (argumento completo en §3.6
+  del ADR -- toda `PENDING` existente hoy nace del camino fresco, nunca
+  de un reintento, porque el reintento recién empieza a poner `PENDING`
+  con este mismo bloque), pero el volumen real evita sorpresas en el
+  deploy. Acción puntual que lo cierra: correr la consulta contra cada
+  tenant real, antes del deploy del bloque 2a.
 
 ---
 
