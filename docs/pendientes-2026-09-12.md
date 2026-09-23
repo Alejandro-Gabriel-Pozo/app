@@ -1690,6 +1690,44 @@ anteriores.
   intermitente sin que ningún test real haya fallado -- monitorear el
   job en `main` después del push y, si se repite, priorizar este ítem
   antes que agregar más suites de integración.
+- **`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001-PRE-DEPLOY-AUDIT-001`
+  (23/09/2026, condición C4 del gate `architecture-governor`, ronda 2,
+  sobre el diseño de `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
+  -- ver ese ítem más abajo en este archivo para el diseño y el código
+  completos).** Antes de desplegar el guard nuevo
+  (`InvoiceRepository.getOtherLiveInvoiceLinksForCharges()`), hace falta
+  una consulta de solo lectura por tenant: cargos (`financial_transaction_id`)
+  con 2+ facturas ligadas (por los DOS caminos de emisión -- individual,
+  `invoices.financial_transaction_id` directo; consolidado, vía
+  `invoice_charges`) donde al menos una de esas facturas NO está
+  `REJECTED`. Después del deploy, esos pares quedan BLOQUEADOS en un
+  reintento (antes del fix: el cargo podía terminar con un segundo CAE
+  real) -- la consulta es la evidencia de cuántos casos reales existen
+  hoy, para no sorprenderse en el deploy con soporte reclamando "no puedo
+  reintentar esta factura". Consulta de referencia (ajustar a "por
+  tenant" -- cada tenant tiene su propia BD, no hay un `WHERE business_id`
+  que filtrar):
+  ```sql
+  SELECT ft.id AS financial_transaction_id,
+         array_agg(DISTINCT linked.invoice_id) AS invoice_ids,
+         array_agg(DISTINCT inv.status) AS statuses
+  FROM financial_transactions ft
+  JOIN (
+    SELECT financial_transaction_id, invoice_id FROM invoice_charges
+    UNION
+    SELECT financial_transaction_id, id AS invoice_id FROM invoices
+     WHERE financial_transaction_id IS NOT NULL
+  ) linked ON linked.financial_transaction_id = ft.id
+  JOIN invoices inv ON inv.id = linked.invoice_id
+  GROUP BY ft.id
+  HAVING COUNT(DISTINCT linked.invoice_id) > 1
+     AND bool_or(inv.status <> 'REJECTED');
+  ```
+  **No verificado esta sesión -- sin acceso a producción desde este
+  entorno.** Acción puntual que lo cierra: correr esta consulta (o su
+  equivalente) contra cada tenant real, antes del deploy del bloque que
+  introduce `getOtherLiveInvoiceLinksForCharges()`, y registrar el
+  resultado acá antes de cortar este ítem a `docs/resuelto.md`.
 
 ---
 
@@ -3217,6 +3255,104 @@ futuros, cada uno con su propio alcance.
   (mismo criterio que el guard de double-billing fresco), o el negocio
   prefiere aceptar la ventana y resolverla con la Nota de Crédito
   existente? Requiere `AskUserQuestion` antes de diseñar el fix.
+
+  **Actualización 23/09/2026 -- diseño cerrado (2 rondas de gate,
+  APROBADO CON CONDICIONES en la ronda 2) y CÓDIGO IMPLEMENTADO esta
+  misma sesión.**
+
+  **C0 (decisión del dueño, YA RESUELTA, vía `AskUserQuestion`,
+  23/09/2026):** de las dos salidas que este ítem dejaba abiertas en (2)
+  de arriba, se eligió "re-chequea y bloquea" -- el reintento (individual
+  y consolidado) vuelve a evaluar, antes de reemitir, si algún OTRO
+  comprobante vivo (por el otro camino de emisión) ya cubre el mismo
+  cargo, y si lo hay, rechaza. No se eligió "aceptar la ventana y
+  resolver después con la Nota de Crédito existente".
+
+  **C2 -- diseño implementado (predicado, las dos ramas, dónde vive):**
+  `InvoiceRepository.getOtherLiveInvoiceLinksForCharges(financialTransactionIds,
+  excludeInvoiceId)` (`sql.invoice.repository.ts`, cita por nombre, no
+  línea -- SCHEMA-ANCHOR-DRIFT-001) -- `UNION` de DOS ramas (`invoice_charges`
+  para detectar una consolidada VIVA cubriendo el cargo, `invoices` para
+  detectar una individual VIVA), LAS DOS filtradas por
+  `INVOICE_STATUSES_CONSUMING_CHARGE` Y LAS DOS excluyendo
+  `excludeInvoiceId` (la propia fila que se está reintentando) -- a
+  diferencia de `getInvoicedFinancialTransactionIds()` (rama
+  `invoice_charges` status-agnóstica ahí, forzada por
+  `idx_invoice_charges_ft`, único SIN status; esa razón no aplica acá,
+  la pregunta es "¿hay OTRO comprobante VIVO ahora", no "¿puede este
+  cargo re-consolidarse alguna vez"). Sin la exclusión de self, un
+  reintento legítimo (PENDING/FAILED_UNCERTAIN) se rechazaría a sí
+  mismo -- verificado con Postgres real, ver más abajo.
+  `InvoiceService.retryExisting()` llama a este predicado, vía el
+  método nuevo `assertNoOtherLiveInvoiceForCharges()`, ANTES de
+  `assertChargesStillInvoiceable()` -- precedencia a propósito: si un
+  cargo tiene A LA VEZ un vínculo vivo en otro comprobante Y su AR está
+  `REVERTIDO`, tiene que ganar el guard nuevo (el error debe describir
+  la causa real del rechazo, no una casualidad de qué guard corrió
+  primero). Selección del error tipado:
+  `existing.financialTransactionId != null` -> camino individual, un
+  solo cargo, `InvoiceAlreadyLinkedByOtherPathError`; si no -> camino
+  consolidado, `AccountsReceivableAlreadyInvoicedError`
+  (`existing.customerId` es el `companyCustomerId` en ese camino --
+  `createWithClient()` lo carga desde `input.companyCustomerId`, campo
+  que no admite `null`).
+
+  **C3 -- residuo declarado (corrección obligatoria del gate: "el cargo
+  nunca queda sin salida" es FALSA en un caso acotado, no se puede
+  afirmar sin esta salvedad):** cuando la consolidada I_c está en un
+  estado que consume el cargo (`PENDING` o `FAILED_UNCERTAIN` sin
+  contactar) y su reintento queda bloqueado por una individual I_i viva
+  sobre UNO de sus cargos, los cargos HERMANOS de esa misma consolidada
+  (cubiertos por I_c, pero no por I_i) tampoco tienen salida: el
+  reintento de I_c está bloqueado (el guard nuevo rechaza el LOTE
+  completo, R15 -- no arma una factura parcial en silencio), el camino
+  individual FRESCO de esos hermanos está bloqueado porque I_c los
+  consume (guard existente de `requestInvoice()`), y la UI oculta el
+  botón individual porque `getFinancialTransactionIdsCoveredByConsolidated()`
+  los da por cubiertos. Variante peor: si I_c e I_i están las DOS en un
+  estado que consume el cargo, se bloquean mutuamente. Con el fix
+  aplicado, a este estado solo se llega por (a) la carrera concurrente
+  ya declarada como residual en `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
+  (siguiente ítem de este archivo), o (b) datos previos a este fix ya en
+  producción. Es de todos modos una mejora frente a hoy (bloqueo visible
+  > segundo CAE, que es daño fiscal) -- pero el texto de este ítem, y
+  cualquier resumen que se haga de él, NO puede decir "nunca queda sin
+  salida" sin esta salvedad.
+
+  **Implementación (23/09/2026, esta sesión) -- verificación completa:**
+  código en `src/facturacion/{invoice.service.ts,invoice.repository.ts,
+  sql.invoice.repository.ts,invoice.entities.ts}`. Tests nuevos:
+  unitarios en `invoice.service.test.ts` (dos `describe` --
+  "WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001", camino individual
+  y camino consolidado -- casos funcionales del plan del gate (cada vía
+  con su propia factura en PENDING/REJECTED/FAILED_UNCERTAIN sin
+  contactar/FAILED_UNCERTAIN limpiada sin otras facturas -> procede; otra
+  factura vinculada REJECTED -> procede; otra factura vinculada
+  ISSUED/PENDING/FAILED_UNCERTAIN contactada/sin contactar -> rechaza con
+  el error de esa vía), M5 con clase+`code` del error, M6 precedencia
+  sobre los atajos ISSUED/FAILED_UNCERTAIN, M7 precedencia sobre
+  `assertChargesStillInvoiceable()`) e integración real-Postgres nueva
+  en `src/tests/integration/invoice-retry-duplicate-cae-guard.integration.test.ts`
+  (S1 mata M1, S2 mata M2, M3 y M4 con sus propios tests dedicados --
+  self-exclusión de cada rama, más 2 tests funcionales de bloqueo con un
+  comprobante realmente vivo). Las 4 mutaciones del SQL (M1-M4) se
+  aplicaron a mano sobre `sql.invoice.repository.ts`, se confirmó que
+  el test correspondiente se ponía rojo, y se revirtieron -- `git diff`
+  del archivo volvió a su estado con el fix aplicado antes de seguir.
+  `npx tsc --noEmit -p .` limpio; suite unitaria completa (2529 tests,
+  183 archivos) y de integración completa (414 tests, 55 archivos)
+  ambas en verde contra Postgres 16 local; `npm run lint -- --max-warnings 0`
+  y `npm run lint:arch` limpios. Gate de pre-commit (`architecture-governor`,
+  ronda 3): APROBADO CON CONDICIONES sobre este mismo diff, condiciones
+  aplicadas en este commit.
+
+  **C4 -- ver `## 🔍 Verificaciones pendientes` más arriba en este mismo
+  archivo**, bullet
+  `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001-PRE-DEPLOY-AUDIT-001`:
+  consulta de solo lectura por tenant, a correr antes del deploy de este
+  bloque (no corrida todavía -- sin acceso a producción desde este
+  entorno).
+
 
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
   (22/09/2026, Wave 13 Zona 2, gate `architecture-governor`, ronda 3 de

@@ -1494,6 +1494,22 @@ export class InvoiceService {
    *   emitido, reintento seguro reusando la MISMA fila y el MISMO
    *   `afipRequest` ya persistido (no se recalcula nada del cobro de
    *   nuevo -- ver R12, una transacción confirmada no se edita).
+   *
+   * `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` (23/09/2026, gate
+   * `architecture-governor`, ronda 2, `docs/pendientes-2026-09-12.md`) --
+   * antes de re-chequear AR-REVERTIDO/orden-o-reserva-CANCELLED
+   * (`assertChargesStillInvoiceable()`, más abajo), este método TAMBIÉN
+   * re-chequea que ningún OTRO comprobante vivo (por el otro camino de
+   * emisión) haya empezado a cubrir el mismo cargo desde la primera vez --
+   * `assertNoOtherLiveInvoiceForCharges()`, corre PRIMERO (decisión del
+   * dueño, AskUserQuestion, 23/09/2026: "re-chequea y bloquea"). Cierra la
+   * cuarta dirección del agujero de doble comprobante: una consolidada
+   * `REJECTED` deja un cargo facturable individual (a propósito, ver
+   * `INVOICE_STATUSES_CONSUMING_CHARGE`); si mientras tanto ese cargo ya
+   * tiene una factura individual PENDING/ISSUED/FAILED_UNCERTAIN, un
+   * reintento de la consolidada (que recalcula el mismo hash y entra por
+   * acá) no puede seguir de largo y emitir un segundo CAE real sobre el
+   * mismo cargo -- y simétricamente para el camino individual.
    */
   private async retryExisting(existing: Invoice): Promise<Invoice> {
     if (existing.status === 'ISSUED') return existing;
@@ -1515,6 +1531,14 @@ export class InvoiceService {
       : await this.loadChargesForConsolidatedInvoice(existing.id);
     const chargeTxs = txs.filter((tx) => tx.type === 'CHARGE');
     if (chargeTxs.length > 0) {
+      // DUPLICATE-CAE-001 -- ANTES de assertChargesStillInvoiceable() a
+      // propósito (gate, ronda 2, condición de precedencia): si un cargo
+      // tiene A LA VEZ un vínculo vivo en otro comprobante Y su AR está
+      // REVERTIDO, el guard nuevo tiene que ganar -- el error correcto acá
+      // es "ya facturado por otra vía", no "AR revertida" (los dos son
+      // ciertos, pero solo uno describe la causa real de por qué este
+      // reintento no puede proceder).
+      await this.assertNoOtherLiveInvoiceForCharges(existing, chargeTxs);
       await this.transactionManager.run((client) => this.assertChargesStillInvoiceable(client, chargeTxs));
     }
 
@@ -1532,6 +1556,39 @@ export class InvoiceService {
       existing.environment,
       existing.ptoVta,
     );
+  }
+
+  /**
+   * `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` -- ver el docblock
+   * de `retryExisting()` de arriba para el porqué y la precedencia. Este
+   * helper solo decide QUÉ error tipado lanzar, con la selección exacta
+   * verificada por el gate: `existing.financialTransactionId != null`
+   * distingue el camino individual (siempre 1 `chargeTx`, id ===
+   * `existing.financialTransactionId`) del consolidado (`existing.customerId`
+   * es el `companyCustomerId` -- `createWithClient()` lo carga desde
+   * `input.companyCustomerId`, campo que no admite `null`). Nunca lanza
+   * para una NC (`REFUND`/`ADJUSTMENT`) -- `chargeTxs` ya viene filtrado a
+   * `CHARGE` por el caller, y una NC individual nunca entra a este bloque
+   * (su `existing.financialTransactionId` apunta al REFUND/ADJUSTMENT que
+   * revierte, no a un CHARGE -- `chargeTxs` queda vacío, el caller ni
+   * siquiera llama a este método).
+   */
+  private async assertNoOtherLiveInvoiceForCharges(existing: Invoice, chargeTxs: FinancialTransaction[]): Promise<void> {
+    const otherLinks = await this.invoiceRepo.getOtherLiveInvoiceLinksForCharges(
+      chargeTxs.map((tx) => tx.id),
+      existing.id,
+    );
+    if (otherLinks.size === 0) return;
+
+    if (existing.financialTransactionId != null) {
+      const otherInvoiceId = otherLinks.get(existing.financialTransactionId);
+      if (otherInvoiceId) {
+        throw new InvoiceAlreadyLinkedByOtherPathError(existing.financialTransactionId, otherInvoiceId);
+      }
+      return;
+    }
+
+    throw new AccountsReceivableAlreadyInvoicedError(existing.customerId, [...otherLinks.keys()]);
   }
 
   /**

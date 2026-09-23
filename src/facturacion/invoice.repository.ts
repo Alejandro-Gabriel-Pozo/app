@@ -130,6 +130,7 @@ export interface InvoiceRepository {
    * | `getFinancialTransactionIdsCoveredByConsolidated()` (abajo) | ¿tiene sentido ofrecer el botón en la UI? | `INVOICE_STATUSES_CONSUMING_CHARGE`, solo rama `invoice_charges` |
    * | `getInFlightCreditNoteTotalForUpdate()`/`ForPair`         | ¿queda cupo para otra NC?                 | `INVOICE_STATUSES_CONSUMING_CHARGE` |
    * | `sql.financial-transaction.repository.ts`                | ¿anulo este CHARGE?                       | (propio, ver ese archivo) |
+   * | `getOtherLiveInvoiceLinksForCharges()` (abajo)            | ¿puedo REEMITIR este comprobante sin duplicar un cargo que OTRO comprobante vivo ya consume? | `INVOICE_STATUSES_CONSUMING_CHARGE`, LAS DOS ramas (no solo `invoices`) |
    */
   getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>>;
   /**
@@ -283,6 +284,55 @@ export interface InvoiceRepository {
     client: SqlClient,
     financialTransactionId: string,
   ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>>;
+  /**
+   * `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` (23/09/2026, gate
+   * `architecture-governor`, ronda 2, `docs/pendientes-2026-09-12.md`) --
+   * ¿puedo reemitir ESTE comprobante existente (`excludeInvoiceId`) sin
+   * duplicar un cargo que OTRO comprobante vivo ya consume? Guard nuevo de
+   * `InvoiceService.retryExisting()` -- corre en las DOS vías (individual y
+   * consolidada) antes de re-pedir CAE a AFIP, cierra la cuarta dirección
+   * del agujero de doble comprobante (las otras 3 ya cerradas, ver
+   * `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` en `docs/resuelto.md`): un cargo
+   * terminando con DOS CAE reales, uno por una factura individual y otro
+   * por una consolidada que lo incluye.
+   *
+   * **DOS ramas, las DOS filtradas por `INVOICE_STATUSES_CONSUMING_CHARGE`
+   * Y las DOS excluyendo `excludeInvoiceId` -- a propósito, distinto de
+   * `getInvoicedFinancialTransactionIds()` (arriba):**
+   *
+   * 1. **`invoice_charges`** -- acá SÍ filtra por status (a diferencia de
+   *    la rama homónima de `getInvoicedFinancialTransactionIds()`, que es
+   *    status-agnóstica porque protege el índice único
+   *    `idx_invoice_charges_ft`, sin `WHERE` de status). Esa razón NO
+   *    aplica acá: la pregunta no es "¿puede este cargo re-consolidarse
+   *    en general?" sino "¿hay OTRO comprobante VIVO ahora mismo?" -- un
+   *    hermano `REJECTED` no cuenta, y bloquearía injustamente un
+   *    reintento legítimo si no se filtrara.
+   * 2. **`invoices` (individual)** -- mismo filtro, mismo criterio que la
+   *    rama 1-bis de `getInvoicedFinancialTransactionIds()`.
+   *
+   * **`excludeInvoiceId` es imprescindible en las DOS ramas** -- sin él, un
+   * reintento se rechazaría a sí mismo: `idx_invoice_charges_ft` es único
+   * SIN status (schema.sql), así que la propia fila de `invoice_charges`
+   * de una consolidada en PENDING/FAILED_UNCERTAIN matchearía su PROPIO
+   * predicado; `idx_invoices_idempotency_key` (también único) da la misma
+   * garantía del lado individual. Con la exclusión, ninguna de las dos
+   * ramas puede devolver una colisión salvo la propia fila que se está
+   * reintentando -- por eso las DOS ramas son necesarias (una por camino
+   * de emisión), no redundantes.
+   *
+   * Devuelve un `Map` `financialTransactionId -> invoiceId` del OTRO
+   * comprobante vivo que lo consume, solo para los `financialTransactionIds`
+   * dados que SÍ tienen conflicto (vacío si no hay ninguno). El caller
+   * decide qué error tipado lanzar según `existing.financialTransactionId`:
+   * `InvoiceAlreadyLinkedByOtherPathError` (camino individual) o
+   * `AccountsReceivableAlreadyInvoicedError` (camino consolidado) -- ver
+   * `InvoiceService.retryExisting()`.
+   */
+  getOtherLiveInvoiceLinksForCharges(
+    financialTransactionIds: string[],
+    excludeInvoiceId: string,
+  ): Promise<Map<string, string>>;
   /**
    * O2-F1 (03/09/2026, decisión del dueño: opción B, aplicación parcial
    * controlada) — saldo pendiente de UNA factura puntual, calculado con

@@ -1270,6 +1270,36 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return new Map(rows.map((r) => [r.financial_transaction_id, r.invoice_id]));
   }
 
+  async getOtherLiveInvoiceLinksForCharges(
+    financialTransactionIds: string[],
+    excludeInvoiceId: string,
+  ): Promise<Map<string, string>> {
+    // WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001 -- ver el docblock
+    // de la interfaz (invoice.repository.ts) para la doctrina completa. A
+    // diferencia de getInvoicedFinancialTransactionIds() (arriba), LAS DOS
+    // ramas filtran por INVOICE_STATUSES_CONSUMING_CHARGE Y LAS DOS
+    // excluyen excludeInvoiceId -- sin la exclusión, la propia fila que se
+    // está reintentando (PENDING/FAILED_UNCERTAIN) matchearía su propio
+    // predicado y el reintento se rechazaría a sí mismo.
+    if (financialTransactionIds.length === 0) return new Map();
+    const { rows } = await this.db.query<{ financial_transaction_id: string; invoice_id: string }>(
+      `SELECT ic.financial_transaction_id, ic.invoice_id
+         FROM invoice_charges ic
+         JOIN invoices i ON i.id = ic.invoice_id
+        WHERE ic.financial_transaction_id = ANY($1::VARCHAR[])
+          AND i.status = ANY($2::text[])
+          AND ic.invoice_id != $3
+       UNION
+       SELECT financial_transaction_id, id AS invoice_id
+         FROM invoices
+        WHERE financial_transaction_id = ANY($1::VARCHAR[])
+          AND status = ANY($2::text[])
+          AND id != $3`,
+      [financialTransactionIds, [...INVOICE_STATUSES_CONSUMING_CHARGE], excludeInvoiceId],
+    );
+    return new Map(rows.map((r) => [r.financial_transaction_id, r.invoice_id]));
+  }
+
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
     // Bloque 3.1 (ADR común cancelar-con-NC §6.1, `docs/pendientes-2026-09-08.md`
     // #5a, gate `architecture-governor` 08/09/2026) -- antes esto era un

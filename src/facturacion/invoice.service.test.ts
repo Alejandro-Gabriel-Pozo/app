@@ -107,6 +107,32 @@ class FakeInvoiceRepository implements InvoiceRepository {
     }
     return result;
   }
+  /**
+   * WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001 (23/09/2026, gate
+   * `architecture-governor`, ronda 2) -- espeja el predicado real de
+   * sql.invoice.repository.ts: LAS DOS ramas (invoice_charges/invoices)
+   * filtradas por INVOICE_STATUSES_CONSUMING_CHARGE Y excluyendo
+   * excludeInvoiceId. A diferencia de getFinancialTransactionIdsCoveredByConsolidated()
+   * de arriba (solo rama invoice_charges), este método cruza las DOS.
+   */
+  async getOtherLiveInvoiceLinksForCharges(ids: string[], excludeInvoiceId: string): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    for (const [chargeFtId, invoiceId] of this.charges) {
+      if (!ids.includes(chargeFtId) || invoiceId === excludeInvoiceId) continue;
+      const status = this.invoices.get(invoiceId)?.status;
+      if (status && (INVOICE_STATUSES_CONSUMING_CHARGE as readonly string[]).includes(status)) {
+        result.set(chargeFtId, invoiceId);
+      }
+    }
+    for (const inv of this.invoices.values()) {
+      if (inv.id === excludeInvoiceId) continue;
+      if (!inv.financialTransactionId || !ids.includes(inv.financialTransactionId)) continue;
+      if ((INVOICE_STATUSES_CONSUMING_CHARGE as readonly string[]).includes(inv.status)) {
+        result.set(inv.financialTransactionId, inv.id);
+      }
+    }
+    return result;
+  }
   async resolveInvoiceLinkage(ftId: string): Promise<InvoiceLinkage> {
     const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
     const invoice = individual ?? (() => {
@@ -2567,6 +2593,93 @@ describe('InvoiceService', () => {
       expect(invoice.status).toBe('ISSUED');
       expect(createNextVoucher).toHaveBeenCalledOnce();
     });
+
+    describe('WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001 (23/09/2026, gate `architecture-governor`, ronda 2, docs/pendientes-2026-09-12.md) -- retryExisting() re-chequea vínculos vivos por el OTRO camino de emisión (camino individual)', () => {
+      /** Otra factura CONSOLIDADA que cubre el mismo `ft-1` que `seedRetriableInvoice()` reintenta. */
+      function seedOtherConsolidated(id: string, ftId: string, status: InvoiceStatus): void {
+        invoiceRepo.invoices.set(id, {
+          id, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+          idempotencyKey: `invoice:consolidated:${id}`, environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+          cbteNro: status === 'ISSUED' ? 1 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+          impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: status === 'ISSUED' ? 'CAE-OTHER' : null,
+          caeVto: status === 'ISSUED' ? '2026-12-31' : null,
+          status, afipContacted: status !== 'PENDING', uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          paymentMethod: null, cardInstallments: null,
+          afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
+        });
+        invoiceRepo.charges.set(ftId, id);
+      }
+
+      it('otra consolidada REJECTED sobre el mismo cargo -- procede (REJECTED libera, no es "otro comprobante vivo")', async () => {
+        seedRetriableInvoice();
+        seedOtherConsolidated('inv-other-consol', 'ft-1', 'REJECTED');
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
+        const service = buildService({
+          tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+          client: fakeArcaClient({ createNextVoucher }),
+        });
+
+        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        expect(createNextVoucher).toHaveBeenCalledOnce();
+      });
+
+      it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+        'otra consolidada %s sobre el mismo cargo -- rechaza con InvoiceAlreadyLinkedByOtherPathError, nunca llega a AFIP',
+        async (status) => {
+          seedRetriableInvoice();
+          seedOtherConsolidated('inv-other-consol', 'ft-1', status);
+          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
+          const service = buildService({
+            tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+            client: fakeArcaClient({ createNextVoucher }),
+          });
+
+          // M5 -- clase exacta y `code` exacto (mutación: usar siempre
+          // AccountsReceivableAlreadyInvoicedError para los dos caminos).
+          await expect(
+            service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+          ).rejects.toBeInstanceOf(InvoiceAlreadyLinkedByOtherPathError);
+          await expect(
+            service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+          ).rejects.toMatchObject({ code: 'INVOICE_ALREADY_LINKED_BY_OTHER_PATH' });
+          expect(createNextVoucher).not.toHaveBeenCalled();
+        },
+      );
+
+      it('M6 -- factura propia ISSUED con otra consolidada viva sobre el mismo cargo -- devuelve la existente, NO lanza (ISSUED retorna antes de llegar al guard nuevo)', async () => {
+        seedRetriableInvoice({ status: 'ISSUED', cbteNro: 42, cae: 'CAE-OWN', caeVto: '2026-12-31', afipContacted: true, issuedAt: new Date() });
+        seedOtherConsolidated('inv-other-consol', 'ft-1', 'PENDING');
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
+        const service = buildService({
+          tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+          client: fakeArcaClient({ createNextVoucher }),
+        });
+
+        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(invoice.id).toBe('inv-retry');
+        expect(invoice.status).toBe('ISSUED');
+        expect(createNextVoucher).not.toHaveBeenCalled();
+      });
+
+      it('M7 -- precedencia: el cargo tiene A LA VEZ otra consolidada viva Y su AR está REVERTIDO -- gana el guard nuevo (InvoiceAlreadyLinkedByOtherPathError, no AccountsReceivableReversedCannotInvoiceError)', async () => {
+        seedRetriableInvoice();
+        seedOtherConsolidated('inv-other-consol', 'ft-1', 'PENDING');
+        arRepo.rows.set('ar-1', makeArRow({ status: 'REVERTIDO' }));
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
+        const service = buildService({
+          tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
+          client: fakeArcaClient({ createNextVoucher }),
+        });
+
+        await expect(
+          service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+        ).rejects.toBeInstanceOf(InvoiceAlreadyLinkedByOtherPathError);
+        expect(createNextVoucher).not.toHaveBeenCalled();
+      });
+    });
   });
 });
 
@@ -3135,6 +3248,117 @@ describe('InvoiceService — C1-Fase C', () => {
         await expect(
           service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
         ).rejects.toThrow(/invariante roto/);
+      });
+
+      describe('WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001 (23/09/2026, gate `architecture-governor`, ronda 2, docs/pendientes-2026-09-12.md) -- retryExisting() re-chequea vínculos vivos por el OTRO camino de emisión (camino consolidado)', () => {
+        /** Otra factura INDIVIDUAL que cubre uno de los cargos de la consolidada bajo reintento. */
+        function seedOtherIndividual(invoiceRepo: FakeInvoiceRepository, id: string, ftId: string, status: InvoiceStatus): void {
+          invoiceRepo.invoices.set(id, {
+            id, businessId: 'biz-1', financialTransactionId: ftId, customerId: 'cust-1',
+            idempotencyKey: `invoice:${ftId}`, environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+            cbteNro: status === 'ISSUED' ? 1 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+            impNeto: 49.59, impIva: 10.41, impTotal: 60, cae: status === 'ISSUED' ? 'CAE-OTHER-IND' : null,
+            caeVto: status === 'ISSUED' ? '2026-12-31' : null,
+            status, afipContacted: status !== 'PENDING', uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+            paymentMethod: null, cardInstallments: null,
+            afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
+          });
+        }
+
+        it('otra factura individual REJECTED sobre el cargo -- procede (REJECTED libera, no es "otro comprobante vivo")', async () => {
+          const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 })];
+          const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })]]);
+          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(21));
+          const { service, invoiceRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+          seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-dup', ['ft-1']);
+          seedOtherIndividual(invoiceRepo, 'inv-other-ind', 'ft-1', 'REJECTED');
+
+          const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+          expect(invoice.status).toBe('ISSUED');
+          expect(createNextVoucher).toHaveBeenCalledOnce();
+        });
+
+        it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+          'otra factura individual %s sobre el cargo -- rechaza con AccountsReceivableAlreadyInvoicedError, nunca llega a AFIP',
+          async (status) => {
+            const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 })];
+            const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })]]);
+            const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(21));
+            const { service, invoiceRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+            seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-dup', ['ft-1']);
+            seedOtherIndividual(invoiceRepo, 'inv-other-ind', 'ft-1', status);
+
+            // M5 -- clase exacta y `code` exacto (mutación: usar siempre
+            // AccountsReceivableAlreadyInvoicedError también para el camino
+            // individual -- acá SÍ es la clase correcta, así que además se
+            // fija el `code`, que un `InvoiceAlreadyLinkedByOtherPathError`
+            // mal seleccionado no tendría).
+            await expect(
+              service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+            ).rejects.toBeInstanceOf(AccountsReceivableAlreadyInvoicedError);
+            await expect(
+              service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+            ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED' });
+            expect(createNextVoucher).not.toHaveBeenCalled();
+          },
+        );
+
+        it('retry consolidado (2 cargos), 1 de 2 con otra factura individual viva -- rechaza el LOTE completo, ninguno se factura (R15)', async () => {
+          const pending = [
+            makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 }),
+            makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 40 }),
+          ];
+          const txs = new Map([
+            ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })],
+            ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 40 })],
+          ]);
+          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(21));
+          const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+          seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-dup2', ['ft-1', 'ft-2']);
+          seedOtherIndividual(invoiceRepo, 'inv-other-ind', 'ft-2', 'ISSUED');
+
+          await expect(
+            service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+          ).rejects.toMatchObject({ code: 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED' });
+
+          expect(createNextVoucher).not.toHaveBeenCalled();
+          expect(arRepo.rows.get('ar-1')!.status).toBe('PENDIENTE_FACTURAR'); // no tocada -- el lote entero se rechazó
+        });
+
+        it('M6 -- factura propia ISSUED con otra factura individual viva sobre el mismo cargo -- devuelve la existente, NO lanza (ISSUED retorna antes de llegar al guard nuevo)', async () => {
+          const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 })];
+          const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })]]);
+          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(21));
+          const { service, invoiceRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+          seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-dup', ['ft-1'], {
+            status: 'ISSUED', cbteNro: 5, cae: 'CAE-OWN-CONSOL', caeVto: '2026-12-31', afipContacted: true, issuedAt: new Date(),
+          });
+          seedOtherIndividual(invoiceRepo, 'inv-other-ind', 'ft-1', 'PENDING');
+
+          const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+          expect(invoice.id).toBe('inv-consol-retry-dup');
+          expect(invoice.status).toBe('ISSUED');
+          expect(createNextVoucher).not.toHaveBeenCalled();
+        });
+
+        it('M7 -- precedencia: el cargo tiene A LA VEZ otra factura individual viva Y su AR se revierte justo al re-lockear -- gana el guard nuevo (AccountsReceivableAlreadyInvoicedError, no AccountsReceivableReversedCannotInvoiceError), ni siquiera llega a lockear la AR', async () => {
+          const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 })];
+          const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60 })]]);
+          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(21));
+          const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+          arRepo.revertOnLock.add('ar-1'); // se revierte justo al re-lockear -- si el orden fuera al revés, este test lo detectaría
+          seedRetriableConsolidated(invoiceRepo, 'inv-consol-retry-dup', ['ft-1']);
+          seedOtherIndividual(invoiceRepo, 'inv-other-ind', 'ft-1', 'PENDING');
+
+          await expect(
+            service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }),
+          ).rejects.toBeInstanceOf(AccountsReceivableAlreadyInvoicedError);
+
+          expect(createNextVoucher).not.toHaveBeenCalled();
+          expect(arRepo.lockCalls).toHaveLength(0); // el guard nuevo corta ANTES de que assertChargesStillInvoiceable() llegue a lockear
+        });
       });
     });
   });

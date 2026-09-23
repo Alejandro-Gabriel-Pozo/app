@@ -37,6 +37,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByStatus() { return []; } // B3 bloque 2.1 (08/09/2026) -- sin caller en este test
   async resolveInvoiceLinkage() { return { kind: 'NONE' as const }; }
   async getAllLinkedInvoicesWithClient() { return []; } // Bloque 1 (23/09/2026) -- sin caller en este test
+  async getOtherLiveInvoiceLinksForCharges() { return new Map<string, string>(); } // DUPLICATE-CAE-001 (23/09/2026) -- sin caller en este test
   async create(_input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }
   async createWithClient(_client: SqlClient, _input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markIssued(_id: string, _data: MarkIssuedInput): Promise<Invoice> { throw new Error('no usado en este test'); }

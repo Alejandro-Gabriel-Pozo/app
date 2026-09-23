@@ -15,7 +15,9 @@ export type AfipEnvironment = 'homologacion' | 'produccion';
  * -- "¿este comprobante consume el recurso que protege, incluso sin estar
  * `ISSUED` todavía?". `REJECTED` queda afuera SIEMPRE con este predicado:
  * AFIP confirmó que el comprobante no existe, no consume nada (mismo
- * criterio en los 3 sitios que lo usan). Extraída 11/09/2026
+ * criterio en los 7 sitios que lo usan hoy -- 6 en `sql.invoice.repository.ts`
+ * más `invoice.service.ts`, conteo real, no estimado -- ver la corrección de
+ * ronda 3 más abajo, que sumó uno de esos 6). Extraída 11/09/2026
  * (`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`, gate `architecture-governor`)
  * de un literal duplicado en `getInFlightCreditNoteTotalForUpdate()`/
  * `ForPair` (`sql.invoice.repository.ts`) -- usada también por el guard
@@ -28,6 +30,18 @@ export type AfipEnvironment = 'homologacion' | 'produccion';
  * su propia idempotencia -- así que hay que ser conservador con cualquier
  * estado no resuelto (`PENDING`/`FAILED_UNCERTAIN`), no solo con `ISSUED`.
  * No unificar con el predicado de `retryExisting()` sin re-derivar por qué.
+ *
+ * Corrección (`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`,
+ * 23/09/2026, gate `architecture-governor`, ronda 2): desde ese bloque,
+ * `retryExisting()` SÍ usa esta constante -- pero nunca sobre la fila que
+ * se está reintentando (esa sigue con el predicado más fino de arriba,
+ * `ISSUED`/`FAILED_UNCERTAIN` con `afipContacted`), sino sobre los OTROS
+ * comprobantes vinculados al mismo cargo (`getOtherLiveInvoiceLinksForCharges()`,
+ * `invoice.repository.ts`) -- el guard nuevo que cierra la cuarta dirección
+ * del agujero de doble comprobante (dos CAE reales sobre el mismo cargo,
+ * uno por la vía individual y otro por la consolidada). Los dos usos
+ * conviven sin contradecirse: éste sigue siendo el predicado para "otro
+ * documento, con su propia idempotencia".
  *
  * `FAILED_UNCERTAIN` en esta lista es una decisión LOCAL de este repo, sin
  * análogo en ERPNext/Odoo -- ninguno de los dos modela "no se sabe si el
