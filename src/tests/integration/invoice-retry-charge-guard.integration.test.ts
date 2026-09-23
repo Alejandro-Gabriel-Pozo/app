@@ -161,8 +161,11 @@ class FakeProductVariantRepository implements Pick<IProductVariantRepository, 'g
  * `WAVE13-ZONA2-CONSOLIDATED-RETRY-RACE-ASSERTION-TIMING-DEPENDENT-001`.
  * Sin esto, forzar el orden α/β de la carrera consolidada deja abierta
  * una SEGUNDA carrera sin controlar (entre `markIssued()` del retry y la
- * lectura de `resolveInvoiceLinkage()` del guard 8-bis de
- * `reverseTransfer()`, ninguna de las dos bajo lock) -- `entered` se
+ * lectura del guard 8-bis de `reverseTransfer()`
+ * (`getAllLinkedInvoicesWithClient()` desde el 23/09/2026, bloque 1 de
+ * `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` --
+ * `resolveInvoiceLinkage()` antes de ese bloque), ninguna de las dos bajo
+ * lock) -- `entered` se
  * resuelve apenas el fake llega a `createNextVoucher()` (o sea, DESPUÉS
  * de que el guard de `assertChargesStillInvoiceable()` ya liberó el lock
  * de AR, porque corre en su propia transacción, commiteada antes de
@@ -453,7 +456,8 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
   // Forzar solo el orden de adquisición del lock de AR no alcanza --
   // dejaría abierta una SEGUNDA carrera sin controlar, entre
   // `markIssued()` del retry (después de que AFIP responde) y la lectura
-  // de `resolveInvoiceLinkage()` del guard 8-bis de `reverseTransfer()`
+  // del guard 8-bis de `reverseTransfer()` (`getAllLinkedInvoicesWithClient()`
+  // desde el bloque 1 del ADR de la ventana reintento-vs-reversa)
   // (ninguna de las dos bajo lock). `makeAfipRaceGate()` cierra esa
   // segunda ventana: pausa al fake de AFIP justo antes de resolver, así
   // el test puede garantizar que `reverseTransfer()` ya corrió su lectura

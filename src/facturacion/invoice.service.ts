@@ -638,9 +638,10 @@ export class InvoiceService {
       // orden corregido tras reproducir un DEADLOCK real contra Postgres,
       // ver el bloque gemelo en `requestConsolidatedInvoice()` para el
       // detalle completo del log real) -- guard-espejo de guard 8-bis de
-      // `reverseTransfer()` (`accounts-receivable.service.ts`
-      // ~`:872-886`, que rechaza revertir un cargo con comprobante
-      // vivo/pendiente). Ninguna otra línea de este método consulta
+      // `reverseTransfer()` (`accounts-receivable.service.ts`, sección
+      // "Guard 8-bis" de su propio docblock -- cita por nombre, no línea,
+      // desde SCHEMA-ANCHOR-DRIFT-001, que rechaza revertir un cargo con
+      // comprobante vivo/pendiente). Ninguna otra línea de este método consulta
       // `accounts_receivable` para EL cargo que se está facturando --
       // `resolveAccountsReceivableWarning()` (arriba, antes de esta tx)
       // mira la ESTADÍA del cargo, no el cargo mismo, y ni siquiera corre

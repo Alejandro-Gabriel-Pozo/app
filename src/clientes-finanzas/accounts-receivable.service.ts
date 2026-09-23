@@ -221,7 +221,7 @@ export class AccountsReceivableService {
      */
     private readonly invoiceRepo: Pick<
       InvoiceRepository,
-      'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
+      'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'getAllLinkedInvoicesWithClient' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
     >,
     /** Bloque 6, §9.1 -- lock de `reservations` como primera operación de
      * la transacción, serializa contra `InvoiceService.requestInvoice()`
@@ -781,17 +781,25 @@ export class AccountsReceivableService {
    * anclado.
    *
    * ## Guard 8-bis -- factura en vuelo
-   * Reusa el predicado ya establecido de `transferStayBalanceToReceivable()`
-   * (`resolveInvoiceLinkage()` + `classifyReservationLiveInvoice()`) contra
-   * el `CHARGE` original: si tiene una factura `ISSUED` no reconciliada, o
-   * `NOT_ISSUED` en vuelo, rechaza con `ArReversalRequiresCreditNoteError`
-   * y no escribe nada. **Corrección (gate de implementación, ronda de
-   * commit ii) -- no es el predicado completo, es ese MENOS la rama
-   * `orderId`.** El original de `transferStayBalanceToReceivable()` tiene
-   * 3 ramas (`reservationId` → `classifyReservationLiveInvoice`, si no
-   * `orderId` → `classifyOrderLiveInvoice`, si no `NOT_RECONCILED`); acá
-   * solo hacen falta 2 -- el `CHARGE` de `postStayTransfer()` SIEMPRE nace
-   * con `reservationId` y NUNCA con `orderId` (ver ese método), así que la
+   * **Reescrito (gate `architecture-governor`, ronda 3,
+   * `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.1,
+   * 23/09/2026, bloque 1 -- reemplaza la versión que citaba
+   * `resolveInvoiceLinkage()` acá abajo).** Ya no elige una sola factura
+   * ligada al `CHARGE` (`resolveInvoiceLinkage()` puede quedarse con la
+   * fila equivocada cuando hay más de una) -- evalúa TODAS
+   * (`getAllLinkedInvoicesWithClient()`) con la regla completa: cualquier
+   * `ISSUED` no reconciliada bloquea, cualquier `PENDING` bloquea,
+   * cualquier `FAILED_UNCERTAIN` con `afipContacted` bloquea;
+   * `FAILED_UNCERTAIN` sin contactar y `REJECTED` no bloquean. Si
+   * cualquier fila bloquea, rechaza con `ArReversalRequiresCreditNoteError`
+   * y no escribe nada. La reconciliación de la rama `ISSUED` sigue
+   * usando `classifyReservationLiveInvoice()`, sin cambios -- **no es el
+   * predicado completo de `transferStayBalanceToReceivable()`, es ese
+   * MENOS la rama `orderId`.** El original tiene 3 ramas (`reservationId`
+   * → `classifyReservationLiveInvoice`, si no `orderId` →
+   * `classifyOrderLiveInvoice`, si no `NOT_RECONCILED`); acá solo hacen
+   * falta 2 -- el `CHARGE` de `postStayTransfer()` SIEMPRE nace con
+   * `reservationId` y NUNCA con `orderId` (ver ese método), así que la
    * rama `orderId` es alcanzable en teoría (el tipo lo permite) pero
    * imposible en la práctica para este `CHARGE` puntual. `charge.reservationId`
    * se lee con guard explícito (nunca `!`) -- el CHECK de origen en BD
@@ -806,15 +814,19 @@ export class AccountsReceivableService {
    *   de los dos toma lock sobre la AR/CHARGE -- si commitea ENTRE la
    *   lectura de este método y el suyo, puede emitir CAE real contra un
    *   cargo ya revertido. Fuera de alcance (tocar el camino de emisión
-   *   AFIP merece su propio gate, ver §7.2(b) del ADR).
-   * - Cuatro lecturas de este método no reciben `client` -- corren en
+   *   AFIP merece su propio gate, ver §7.2(b) del ADR y
+   *   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
+   *   que lo cierra por el lado del reintento -- bloque 1 de ese ADR ya
+   *   implementado acá; bloques 2-6, en HOLD).
+   * - Tres lecturas de este método no reciben `client` -- corren en
    *   conexiones separadas del pool mientras esta transacción sigue
-   *   abierta (instancias 7-10 de `CITY-LEDGER-AR-NESTED-CONN-001`, ver
+   *   abierta (instancias de `CITY-LEDGER-AR-NESTED-CONN-001`, ver
    *   `docs/pendientes-2026-09-12.md`; ninguna toma `FOR UPDATE`, sin
-   *   riesgo de deadlock): `resolveInvoiceLinkage()` (guard 8-bis,
-   *   siempre), `financialRepo.getById()` del PAYMENT del huésped
-   *   (siempre), `stayRepo.findById()` y `businessProfileRepo.get()`
-   *   (solo en la rama `correctedBalance`).
+   *   riesgo de deadlock): `financialRepo.getById()` del PAYMENT del
+   *   huésped (siempre), `stayRepo.findById()` y `businessProfileRepo.get()`
+   *   (solo en la rama `correctedBalance`) -- **eran cuatro; el guard
+   *   8-bis dejó de ser una de ellas** (`getAllLinkedInvoicesWithClient()`
+   *   ya recibe `client`).
    */
   async reverseTransfer(input: {
     accountReceivableId: string;
@@ -868,20 +880,26 @@ export class AccountsReceivableService {
         throw new ArReversalChargeNotSettledError(lockedAr.id, charge.id, charge.status);
       }
 
-      // Guard 8-bis -- ver docblock del método.
-      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
-      if (linkage.kind === 'ISSUED') {
+      // Guard 8-bis -- ver docblock del método y el de
+      // getAllLinkedInvoicesWithClient() (invoice.repository.ts). Evalúa
+      // TODAS las facturas ligadas al cargo, no solo la que
+      // resolveInvoiceLinkage() elegiría -- un cargo puede tener más de
+      // una (consolidada + individual), y la fila "equivocada" podía
+      // dejar pasar una reversa que debía bloquearse.
+      const linkedInvoices = await this.invoiceRepo.getAllLinkedInvoicesWithClient(client, charge.id);
+      if (linkedInvoices.some((inv) => inv.status === 'ISSUED')) {
         const classification = charge.reservationId
           ? await this.invoiceRepo.classifyReservationLiveInvoice(client, charge.reservationId)
           : ('NOT_RECONCILED' as const);
         if (classification === 'NOT_RECONCILED') {
           throw new ArReversalRequiresCreditNoteError(lockedAr.id, 'ISSUED');
         }
-      } else if (
-        linkage.kind === 'NOT_ISSUED' &&
-        (linkage.status === 'PENDING' || (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted))
-      ) {
-        throw new ArReversalRequiresCreditNoteError(lockedAr.id, linkage.status);
+      }
+      const blockingNotIssued = linkedInvoices.find(
+        (inv) => inv.status === 'PENDING' || (inv.status === 'FAILED_UNCERTAIN' && inv.afipContacted),
+      );
+      if (blockingNotIssued) {
+        throw new ArReversalRequiresCreditNoteError(lockedAr.id, blockingNotIssued.status);
       }
 
       const guestPayment = await this.financialRepo.getById(lockedAr.guestPaymentTransactionId!);

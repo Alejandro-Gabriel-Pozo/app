@@ -25,6 +25,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
+import type { InvoiceStatus } from '../facturacion/invoice.entities.js';
 import type { Reservation } from '../reservas/Reservation.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
@@ -231,7 +232,7 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
  */
 class FakeInvoiceRepository implements Pick<
   InvoiceRepository,
-  'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
+  'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'getAllLinkedInvoicesWithClient' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
 > {
   public invoiceIdByFinancialTransactionId = new Map<string, string>();
   public outstandingByInvoiceId = new Map<string, number>();
@@ -246,6 +247,13 @@ class FakeInvoiceRepository implements Pick<
    * descartó el cargo (si no hay ningún ISSUED, el loop nunca debería
    * pedir la clasificación). */
   public classifyCalls = 0;
+  /** Bloque 1 (23/09/2026) -- override explícito para los tests del guard
+   * 8-bis fila-por-fila que necesitan MÁS de una fila no-ISSUED para el
+   * mismo ftId (`invoiceIdByFinancialTransactionId`/
+   * `notIssuedByFinancialTransactionId` solo modelan una cada uno). Si
+   * está seteado para un ftId, `getAllLinkedInvoicesWithClient()` lo usa
+   * tal cual y NO deriva de los otros dos mapas para ese ftId. */
+  public linkedInvoicesOverride = new Map<string, Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>>();
 
   async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
     const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
@@ -253,6 +261,29 @@ class FakeInvoiceRepository implements Pick<
     const notIssued = this.notIssuedByFinancialTransactionId.get(financialTransactionId);
     if (notIssued) return { kind: 'NOT_ISSUED', ...notIssued };
     return { kind: 'NONE' };
+  }
+
+  /**
+   * Bloque 1 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+   * §3.1) -- espeja resolveInvoiceLinkage() de arriba, pero devuelve las
+   * DOS filas posibles (una de `invoiceIdByFinancialTransactionId`, una de
+   * `notIssuedByFinancialTransactionId`) en vez de elegir una sola --
+   * los tests existentes solo configuran una de las dos por ftId, así
+   * que esto es compatible con ellos sin cambios; los tests dedicados al
+   * guard 8-bis fila-por-fila configuran ambas para el mismo ftId.
+   */
+  async getAllLinkedInvoicesWithClient(
+    _client: SqlClient,
+    financialTransactionId: string,
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>> {
+    const override = this.linkedInvoicesOverride.get(financialTransactionId);
+    if (override) return override;
+    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }> = [];
+    const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
+    if (issuedId) result.push({ id: issuedId, status: 'ISSUED', afipContacted: true });
+    const notIssued = this.notIssuedByFinancialTransactionId.get(financialTransactionId);
+    if (notIssued) result.push({ id: notIssued.invoiceId, status: notIssued.status, afipContacted: notIssued.afipContacted });
+    return result;
   }
 
   async getOutstandingForUpdate(_client: SqlClient, invoiceId: string): Promise<number> {
@@ -1082,6 +1113,18 @@ describe('AccountsReceivableService.reverseTransfer (Bloque 3c-ii, 14/09/2026, d
     expect(financialRepo.created).toHaveLength(0);
   });
 
+  it('guard 8-bis -- CHARGE con factura ISSUED RECONCILIADA, NO bloquea (condición C1(a) de la ronda de pre-commit del bloque 1 -- caso "sola" que faltaba)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge', 'inv-1');
+    invoiceRepo.reservationClassification.set('res-1', 'RECONCILED');
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+    expect(invoiceRepo.classifyCalls).toBe(1);
+  });
+
   it('guard 8-bis -- CHARGE con factura EN VUELO (NOT_ISSUED, PENDING), rechaza', async () => {
     seedAr();
     seedCharge();
@@ -1091,6 +1134,144 @@ describe('AccountsReceivableService.reverseTransfer (Bloque 3c-ii, 14/09/2026, d
     await expect(
       service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
     ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+  });
+
+  it('guard 8-bis -- CHARGE con factura FAILED_UNCERTAIN CON afipContacted, bloquea (condición C1(b) -- caso "sola" que faltaba específicamente para reverseTransfer(), ya cubierto para transferStayBalanceToReceivable() pero no acá)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis -- CHARGE con factura FAILED_UNCERTAIN sin afipContacted, NO bloquea (se sabe que no se emitió -- AFIP nunca llegó a contactarse)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: false });
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+  });
+
+  it('guard 8-bis -- CHARGE con factura REJECTED, NO bloquea (AFIP confirmó que no existe)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'REJECTED', afipContacted: true });
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+  });
+
+  it('guard 8-bis -- CHARGE con reservationId NULL y factura ISSUED (precisión de la ronda 3 del gate): bloquea NOT_RECONCILED sin llamar a classify*', async () => {
+    seedAr();
+    seedCharge({ reservationId: null });
+    seedGuestPayment();
+    invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge', 'inv-1');
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(invoiceRepo.classifyCalls).toBe(0);
+  });
+
+  it('guard 8-bis, bloque 1 (23/09/2026) -- DOS facturas ligadas al mismo cargo (consolidada REJECTED + individual PENDING): bloquea por la PENDING aunque resolveInvoiceLinkage() elegiría la REJECTED', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    // Antes del bloque 1, el guard solo veía UNA fila (la que resolveInvoiceLinkage()
+    // elige) -- acá simulamos el caso real que se perdía: el cargo tiene
+    // DOS facturas ligadas, una que no bloquea y otra que sí.
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-consolidada-rejected', status: 'REJECTED', afipContacted: true },
+      { id: 'inv-individual-pending', status: 'PENDING', afipContacted: false },
+    ]);
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis, bloque 1, condición C1(c) -- mismo caso que arriba, con el ORDEN del array invertido (PENDING primero, REJECTED después): sigue bloqueando, prueba que el guard no mira solo la última fila', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-individual-pending', status: 'PENDING', afipContacted: false },
+      { id: 'inv-consolidada-rejected', status: 'REJECTED', afipContacted: true },
+    ]);
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis, condición C1(d) -- DOS facturas REJECTED sobre el mismo cargo: ninguna bloquea, procede', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-rejected-1', status: 'REJECTED', afipContacted: true },
+      { id: 'inv-rejected-2', status: 'REJECTED', afipContacted: false },
+    ]);
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+  });
+
+  it('guard 8-bis, condición C1(e) -- FAILED_UNCERTAIN sin contactar + REJECTED sobre el mismo cargo: ninguna bloquea, procede', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-failed-uncertain', status: 'FAILED_UNCERTAIN', afipContacted: false },
+      { id: 'inv-rejected', status: 'REJECTED', afipContacted: true },
+    ]);
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+  });
+
+  it('guard 8-bis, bloque 1 -- ISSUED reconciliada + REJECTED sobre el mismo cargo: NO bloquea (la ISSUED está cubierta por NC, la REJECTED nunca bloquea)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.reservationClassification.set('res-1', 'RECONCILED');
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-issued-reconciliada', status: 'ISSUED', afipContacted: true },
+      { id: 'inv-rejected', status: 'REJECTED', afipContacted: true },
+    ]);
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+    // Condición C1(g) -- classifyReservationLiveInvoice() se llama UNA
+    // sola vez por lote, no una vez por fila ISSUED (acá solo hay una
+    // fila ISSUED, pero confirma que el guard no la llama de más).
+    expect(invoiceRepo.classifyCalls).toBe(1);
+  });
+
+  it('guard 8-bis, bloque 1 -- ISSUED reconciliada + PENDING sobre el mismo cargo: bloquea igual por la PENDING (la reconciliación de la ISSUED no excusa a las demás filas)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.reservationClassification.set('res-1', 'RECONCILED');
+    invoiceRepo.linkedInvoicesOverride.set('ft-charge', [
+      { id: 'inv-issued-reconciliada', status: 'ISSUED', afipContacted: true },
+      { id: 'inv-pending', status: 'PENDING', afipContacted: false },
+    ]);
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(invoiceRepo.classifyCalls).toBe(1);
+    expect(financialRepo.created).toHaveLength(0);
   });
 
   it('camino feliz -- crea las 2 ADJUSTMENT compensatorias (Finding 1: reservationId pineado en la pata empresa) y marca la AR REVERTIDO', async () => {

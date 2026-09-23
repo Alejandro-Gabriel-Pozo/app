@@ -421,6 +421,151 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.reverseTransfer() -- veri
   });
 
   // -------------------------------------------------------------------
+  // Bloque 1 de docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+  // (23/09/2026) -- guard 8-bis evaluado fila por fila, no una sola
+  // elegida por resolveInvoiceLinkage(). El caso real que se perdía antes
+  // de este bloque: un cargo con DOS facturas ligadas a la vez (una
+  // individual directa + una consolidada vía invoice_charges).
+  // -------------------------------------------------------------------
+  it('guard 8-bis, bloque 1: cargo con DOS facturas ligadas (individual REJECTED con id MENOR + consolidada PENDING con id MAYOR) -- bloquea por la PENDING, contra Postgres real (condición C2 -- ids fijados para que el guard VIEJO, que elige `ORDER BY (status=\'ISSUED\') DESC, id LIMIT 1`, hubiera elegido la REJECTED y dejado pasar la reversa)', async () => {
+    const { ar, chargeId, paymentId, company } = await seedTransferredScenario(1000);
+
+    // Individual, REJECTED, id MENOR a propósito -- por sí sola NO
+    // bloquearía (ver el test "espejo del guard 8-bis" de arriba), y con
+    // id menor es la que el guard viejo (ORDER BY id, sin evaluar todas
+    // las filas) habría elegido -- este test falla con el guard viejo.
+    const individualId = '00000000-0000-4000-8000-000000000001';
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'REJECTED')`,
+      [individualId, BUSINESS_ID, chargeId, company.id, `idem-individual-${individualId}`, cbteNroCounter++],
+    );
+
+    // Consolidada, PENDING, id MAYOR a propósito -- financial_transaction_id
+    // NULL (C1-Fase C), ligada al MISMO cargo vía invoice_charges
+    // (idx_invoice_charges_ft es único por financial_transaction_id, pero
+    // eso no impide que el mismo cargo tenga además una individual directa
+    // -- son 2 caminos distintos, ver el docblock de
+    // getInvoicedFinancialTransactionIds()).
+    const consolidatedId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+      [consolidatedId, BUSINESS_ID, company.id, `idem-consolidada-${consolidatedId}`, cbteNroCounter++],
+    );
+    await db.query(
+      `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+       VALUES ($1, $2, $3, 1000)`,
+      [randomUUID(), consolidatedId, chargeId],
+    );
+
+    const err = await makeArService().reverseTransfer({
+      accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'no debería pasar -- consolidada en vuelo',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ArReversalRequiresCreditNoteError);
+
+    const rows = await adjustmentRowsFor([chargeId, paymentId]);
+    expect(rows).toHaveLength(0);
+
+    const { rows: arRows } = await db.query<{ status: string }>(
+      `SELECT status FROM accounts_receivable WHERE id = $1`, [ar.id],
+    );
+    expect(arRows[0]!.status).toBe('PENDIENTE_FACTURAR');
+  });
+
+  it('guard 8-bis, bloque 1, condición C2 (orden inverso): cargo con individual REJECTED con id MAYOR + consolidada PENDING con id MENOR -- sigue bloqueando por la PENDING, sin importar el orden de id', async () => {
+    const { ar, chargeId, paymentId, company } = await seedTransferredScenario(1000);
+
+    const individualId = 'ffffffff-ffff-4fff-8fff-fffffffffffe';
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'REJECTED')`,
+      [individualId, BUSINESS_ID, chargeId, company.id, `idem-individual-${individualId}`, cbteNroCounter++],
+    );
+    const consolidatedId = '00000000-0000-4000-8000-000000000002';
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+      [consolidatedId, BUSINESS_ID, company.id, `idem-consolidada-${consolidatedId}`, cbteNroCounter++],
+    );
+    await db.query(
+      `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+       VALUES ($1, $2, $3, 1000)`,
+      [randomUUID(), consolidatedId, chargeId],
+    );
+
+    const err = await makeArService().reverseTransfer({
+      accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'no debería pasar -- consolidada en vuelo',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ArReversalRequiresCreditNoteError);
+
+    const rows = await adjustmentRowsFor([chargeId, paymentId]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('guard 8-bis, bloque 1: cargo con DOS facturas ligadas (individual REJECTED + consolidada REJECTED) -- ninguna bloquea, reverseTransfer() procede', async () => {
+    const { ar, chargeId, paymentId, company } = await seedTransferredScenario(1000);
+
+    const individualId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'REJECTED')`,
+      [individualId, BUSINESS_ID, chargeId, company.id, `idem-individual-${individualId}`, cbteNroCounter++],
+    );
+    const consolidatedId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'REJECTED')`,
+      [consolidatedId, BUSINESS_ID, company.id, `idem-consolidada-${consolidatedId}`, cbteNroCounter++],
+    );
+    await db.query(
+      `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+       VALUES ($1, $2, $3, 1000)`,
+      [randomUUID(), consolidatedId, chargeId],
+    );
+
+    const result = await makeArService().reverseTransfer({
+      accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'debería proceder -- las 2 REJECTED',
+    });
+    expect(result.reverted.status).toBe('REVERTIDO');
+
+    const rows = await adjustmentRowsFor([chargeId, paymentId]);
+    expect(rows).toHaveLength(2);
+  });
+
+  // -------------------------------------------------------------------
   // Punto 4 -- rama correctedBalance de punta a punta.
   // -------------------------------------------------------------------
   it('rama correctedBalance: reverseTransfer() crea la AR de reemplazo con replacesArId seteado, vía postStayTransfer() reusado', async () => {

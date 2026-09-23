@@ -236,16 +236,53 @@ export interface InvoiceRepository {
    * `markCollected()` caía al fallback legacy sobre una factura que
    * podía llegar a ISSUED después, habilitando doble cobro).
    *
-   * Prueba primero el camino individual (`invoices.financial_transaction_id`
-   * directo), si no matchea el consolidado (`invoice_charges.financial_transaction_id`).
-   * Sin filtro de `status` -- a diferencia del método que reemplaza, trae
-   * la fila exista en el estado que exista, ordenada
-   * `(status = 'ISSUED') DESC, created_at DESC` (si por algún motivo
-   * hubiera más de una, cosa que el índice único `idx_invoice_charges_ft`
-   * y la clave de idempotencia determinística no deberían permitir, prioriza
-   * la emitida).
+   * UNION ALL de los dos caminos (`invoices.financial_transaction_id`
+   * directo -- individual; `invoice_charges.financial_transaction_id` --
+   * consolidada), sin deduplicar. Sin filtro de `status` -- a diferencia
+   * del método que reemplaza, trae la fila exista en el estado que
+   * exista, ordenada `(status = 'ISSUED') DESC, id` y con `LIMIT 1`.
+   *
+   * **Corrección (gate `architecture-governor`, ronda 3,
+   * `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.1,
+   * 23/09/2026) -- este docblock afirmaba dos cosas falsas:** no "prueba
+   * primero" un camino y después el otro (es un solo `UNION ALL`, los dos
+   * caminos se leen juntos); y más de una fila SÍ es alcanzable -- el
+   * índice único `idx_invoice_charges_ft` y la idempotencia determinística
+   * impiden que un cargo tenga DOS facturas por el MISMO camino, pero no
+   * impiden que tenga una por cada camino a la vez (ej. una consolidada
+   * `REJECTED` + una individual `PENDING` sobre el mismo cargo -- ver
+   * `getInvoicedFinancialTransactionIds()` para la asimetría que lo
+   * permite). Con más de una fila, este método devuelve solo la
+   * priorizada por el `ORDER BY`/`LIMIT 1` -- las demás quedan invisibles
+   * para el caller. Eso es correcto para los callers que solo necesitan
+   * "la mejor" (ver el docblock de cada uno), pero es exactamente el
+   * hueco que `getAllLinkedInvoicesWithClient()` (abajo) existe para
+   * cerrar en el guard 8-bis de `reverseTransfer()`, que necesita evaluar
+   * CADA fila, no solo una.
    */
   resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage>;
+  /**
+   * Guard 8-bis de `AccountsReceivableService.reverseTransfer()`
+   * ÚNICAMENTE (gate `architecture-governor`, ronda 3,
+   * `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.1,
+   * 23/09/2026) -- a diferencia de `resolveInvoiceLinkage()` (que
+   * devuelve LA MEJOR fila, `LIMIT 1`, cuando hay más de una), esta
+   * devuelve TODAS las facturas ligadas al cargo. El guard 8-bis evalúa
+   * cada una con su propia regla (`ISSUED` bloquea salvo reconciliada;
+   * `PENDING` bloquea siempre; `FAILED_UNCERTAIN` con `afipContacted`
+   * bloquea; `FAILED_UNCERTAIN` sin contactar y `REJECTED` no bloquean) --
+   * elegir una sola fila puede dejar pasar una reversa que debía
+   * bloquearse si el cargo tiene más de una factura ligada. Mismo UNION
+   * ALL que `resolveInvoiceLinkage()` (no se repite acá el SQL, ver ese
+   * docblock), sin `ORDER BY .../LIMIT 1`. Recibe `client` -- corre
+   * DENTRO de la transacción de `reverseTransfer()`, no en una conexión
+   * separada del pool (a diferencia de `resolveInvoiceLinkage()`, que sí
+   * corre sobre `this.db` en sus demás callers).
+   */
+  getAllLinkedInvoicesWithClient(
+    client: SqlClient,
+    financialTransactionId: string,
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>>;
   /**
    * O2-F1 (03/09/2026, decisión del dueño: opción B, aplicación parcial
    * controlada) — saldo pendiente de UNA factura puntual, calculado con

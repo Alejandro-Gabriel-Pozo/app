@@ -701,6 +701,13 @@ cuando se pushea.
   ruidoso por timeout, no cuelga) -- las 4 son secuenciales dentro de la
   misma llamada, así que no multiplican la concurrencia POR REQUEST, solo
   el número de lecturas nested que este ítem tiene que seguir contando.
+  **Instancia 7 RESUELTA (23/09/2026, bloque 1 de
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, gate
+  `architecture-governor`):** el guard 8-bis dejó de llamar a
+  `resolveInvoiceLinkage()` (sin `client`) -- ahora llama a
+  `getAllLinkedInvoicesWithClient(client, charge.id)`, que sí recibe
+  `client` y corre dentro de la misma transacción. Quedan las
+  instancias 8-10 (3, no 4) sin resolver.
 
   **Instancia 11 -- shippeada (hallazgo M3, 14/09/2026, gate
   `architecture-governor`, ronda de gate de implementación) -- CUALITATIVAMENTE

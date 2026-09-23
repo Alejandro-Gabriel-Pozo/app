@@ -3,7 +3,9 @@
 **Fecha:** 23/09/2026. **Estado (ronda 3, gate `architecture-governor`): bloque 1 APROBADO CON
 CONDICIONES (alcance ampliado en §6, punto 1); bloques 2-6 en HOLD — 7 huecos nuevos (N1-N7,
 ver §3.1-§3.9 y §6) encontrados sobre el texto de la ronda 2, pendientes de una ronda 4 antes de
-gatear el diseño del bloque 2.** Sin código implementado todavía.
+gatear el diseño del bloque 2.** **Bloque 1 implementado** (pre-commit gate aprobado con las
+condiciones C1-C4 de esa ronda ya aplicadas): `getAllLinkedInvoicesWithClient()` + guard 8-bis de
+`reverseTransfer()` reescrito fila por fila. Bloques 2a en adelante: sin código, en HOLD.
 **Hallazgo que cierra:** `WAVE13-ZONA2-CONSOLIDATED-RETRY-ISSUE-BEFORE-REVERSE-WINDOW-001`
 (`docs/pendientes-2026-09-12.md`). **No se une con** `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
 (hallazgo hermano, mismo archivo, gate separado en curso) — comparten la raíz (un cargo con
@@ -123,6 +125,12 @@ getAllLinkedInvoicesWithClient(
   financialTransactionId: string,
 ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }>>;
 ```
+
+**Corrección al implementar el bloque 1 (pre-commit, no cambia el diseño):** la firma REAL del
+bloque 1 omite `uncertainClearedAt` — ese campo solo hace falta para el ajuste de §3.8
+(`uncertainClearedAt == null` en la condición de bloqueo), que es del bloque 2c, no de este. El
+bloque 1 devuelve `Array<{ id, status, afipContacted }>`, sin ese campo; se agrega recién cuando
+se implemente el bloque 2c.
 
 Guard 8-bis: por cada fila devuelta, aplica exactamente la tabla de arriba (más el ajuste de
 `uncertainClearedAt` de §3.8, que entra en el bloque 2, no en este). Si CUALQUIER fila bloquea,

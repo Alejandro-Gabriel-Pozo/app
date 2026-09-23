@@ -87,14 +87,15 @@ function rowToEntity(row: InvoiceRow): Invoice {
  * del mismo `UNION ALL` -- antes de esto, F4 llevaba un aviso de que
  * mantenerlas alineadas era manual; ahora el SQL en sí las ata.
  *
- * **Sigue habiendo un TERCER camino que se mantiene alineado a mano, no por
- * typecheck:** `resolveInvoiceLinkage()` (arriba en este archivo) tiene el
- * mismo UNION de "individual vs. consolidada" pero con columnas y predicado
- * DISTINTOS (`id, status, afip_contacted`, sin filtrar por `cbte_tipo` --
- * quiere CUALQUIER comprobante ligado, no solo NC), así que no comparte este
- * fragmento literal. Si `resolveInvoiceLinkage()` suma un tercer camino
- * (además de individual/consolidada), este fragmento también necesita esa
- * rama.
+ * **Sigue habiendo un TERCERO y un CUARTO camino que se mantienen
+ * alineados a mano, no por typecheck:** `resolveInvoiceLinkage()` (arriba
+ * en este archivo) y `getAllLinkedInvoicesWithClient()` (justo debajo de
+ * ese) tienen el mismo UNION de "individual vs. consolidada" pero con
+ * columnas y predicado DISTINTOS (`id, status, afip_contacted`, sin
+ * filtrar por `cbte_tipo` -- quieren CUALQUIER comprobante ligado, no
+ * solo NC), así que no comparten este fragmento literal. Si alguno de los
+ * dos suma un tercer camino (además de individual/consolidada), los otros
+ * tres también necesitan esa rama.
  */
 const NC_LINKAGE_UNION = `
   SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status, cbte_tipo
@@ -300,8 +301,9 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // status -- acá se quiere saber el estado real, no solo si es ISSUED.
     // UNION ALL de los dos caminos (individual: invoices.financial_transaction_id
     // directo; consolidado: invoice_charges), sin deduplicar por diseño --
-    // el ORDER BY prioriza ISSUED si por algún motivo hubiera más de una
-    // fila (no debería, ver el docblock de la interfaz).
+    // el ORDER BY prioriza ISSUED si hay más de una fila (SÍ es alcanzable,
+    // ver el docblock corregido de la interfaz -- getAllLinkedInvoicesWithClient()
+    // de abajo es el método que evalúa TODAS las filas cuando hace falta).
     const { rows } = await this.db.query<{ id: string; status: InvoiceStatus; afip_contacted: boolean }>(
       `SELECT id, status, afip_contacted FROM (
          SELECT id, status, afip_contacted FROM invoices WHERE financial_transaction_id = $1
@@ -318,6 +320,31 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     if (!row) return { kind: 'NONE' };
     if (row.status === 'ISSUED') return { kind: 'ISSUED', invoiceId: row.id };
     return { kind: 'NOT_ISSUED', invoiceId: row.id, status: row.status, afipContacted: row.afip_contacted };
+  }
+
+  async getAllLinkedInvoicesWithClient(
+    client: SqlClient,
+    financialTransactionId: string,
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>> {
+    // Guard 8-bis de reverseTransfer() -- ver el docblock de la interfaz.
+    // Mismo UNION ALL que resolveInvoiceLinkage() (arriba), sin el
+    // ORDER BY (status = 'ISSUED') DESC / LIMIT 1 que descarta filas --
+    // acá se necesitan TODAS. `ORDER BY id` para un orden determinístico,
+    // no semántico (el guard evalúa cada fila con su propia regla, no le
+    // importa el orden). Corre con `client` -- dentro de la transacción
+    // del caller, no sobre `this.db`.
+    const { rows } = await client.query<{ id: string; status: InvoiceStatus; afip_contacted: boolean }>(
+      `SELECT id, status, afip_contacted FROM (
+         SELECT id, status, afip_contacted FROM invoices WHERE financial_transaction_id = $1
+         UNION ALL
+         SELECT i.id, i.status, i.afip_contacted FROM invoice_charges ic
+         JOIN invoices i ON i.id = ic.invoice_id
+         WHERE ic.financial_transaction_id = $1
+       ) linked
+       ORDER BY id`,
+      [financialTransactionId],
+    );
+    return rows.map((r) => ({ id: r.id, status: r.status, afipContacted: r.afip_contacted }));
   }
 
   async getIssuedCreditNoteCompensationTotal(client: SqlClient, invoiceId: string): Promise<number> {

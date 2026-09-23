@@ -117,6 +117,28 @@ class FakeInvoiceRepository implements InvoiceRepository {
     if (invoice.status === 'ISSUED') return { kind: 'ISSUED', invoiceId: invoice.id };
     return { kind: 'NOT_ISSUED', invoiceId: invoice.id, status: invoice.status, afipContacted: invoice.afipContacted };
   }
+  /**
+   * Bloque 1 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+   * §3.1) -- espeja resolveInvoiceLinkage() de arriba, pero devuelve TODAS
+   * las facturas ligadas (individual directa + todas las consolidadas vía
+   * `charges`), no solo una. Sin caller en este archivo (guard 8-bis vive
+   * en accounts-receivable.service.ts) -- implementado para satisfacer la
+   * interfaz completa que este fake ya implementa.
+   */
+  async getAllLinkedInvoicesWithClient(
+    _client: SqlClient,
+    ftId: string,
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>> {
+    const result: Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }> = [];
+    const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
+    if (individual) result.push({ id: individual.id, status: individual.status, afipContacted: individual.afipContacted });
+    const consolidatedId = this.charges.get(ftId);
+    if (consolidatedId) {
+      const consolidated = this.invoices.get(consolidatedId);
+      if (consolidated) result.push({ id: consolidated.id, status: consolidated.status, afipContacted: consolidated.afipContacted });
+    }
+    return result;
+  }
   async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
     return this.createWithClient({} as SqlClient, input, afipRequest, items);
   }
