@@ -30,6 +30,7 @@ interface InvoiceRow {
   cae_vto: Date | null; // DATE llega como Date en pg, no como string
   status: InvoiceStatus;
   afip_contacted: boolean;
+  pending_since: Date | null;
   uncertain_cleared_at: Date | null;
   uncertain_cleared_by: string | null;
   emisor_cuit: string | null;
@@ -65,6 +66,7 @@ function rowToEntity(row: InvoiceRow): Invoice {
     caeVto: row.cae_vto ? row.cae_vto.toISOString().split('T')[0]! : null,
     status: row.status,
     afipContacted: row.afip_contacted,
+    pendingSince: row.pending_since,
     uncertainClearedAt: row.uncertain_cleared_at,
     uncertainClearedBy: row.uncertain_cleared_by,
     emisorCuit: row.emisor_cuit,
@@ -1360,12 +1362,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     items: CreateInvoiceItemInput[],
     charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice> {
+    // Bloque 2a (docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+    // §3.6) -- `pending_since = NOW()` junto con el INSERT, dentro de la
+    // MISMA sentencia que fija `status = 'PENDING'`: este camino (fresco)
+    // nace siempre PENDING, así que el marcador "en vuelo" se sella desde
+    // el primer instante, sin una segunda escritura separada que pudiera
+    // dejarlo desalineado.
     const { rows } = await client.query<InvoiceRow>(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
           pto_vta, cbte_tipo, emisor_cuit, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
-          imp_neto, imp_iva, imp_total, payment_method, card_installments, status, afip_request)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'PENDING', $20)
+          imp_neto, imp_iva, imp_total, payment_method, card_installments, status, pending_since, afip_request)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'PENDING', NOW(), $20)
        RETURNING *`,
       [
         input.id, input.businessId, input.financialTransactionId, input.customerId,
@@ -1461,10 +1469,15 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async markIssuedWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    // Bloque 2a (docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+    // §3.6) -- sale de PENDING hacia ISSUED, así que limpia pending_since
+    // acá mismo. Sin condición de status en el WHERE (mismo comportamiento
+    // de siempre, sin cambios de este bloque) -- la toma exclusiva
+    // condicionada es del Bloque 2c, no de este.
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET cbte_nro = $2, cae = $3, cae_vto = $4, afip_response = $5,
-           status = 'ISSUED', issued_at = NOW()
+           status = 'ISSUED', issued_at = NOW(), pending_since = NULL
        WHERE id = $1
        RETURNING *`,
       [id, data.cbteNro, data.cae, data.caeVto, JSON.stringify(data.afipResponse)],
@@ -1478,9 +1491,16 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async markFailedWithClient(client: SqlClient, id: string, data: MarkFailedInput): Promise<Invoice> {
+    // Bloque 2a (docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+    // §3.6) -- data.status es siempre 'REJECTED' | 'FAILED_UNCERTAIN'
+    // (MarkFailedInput), nunca 'PENDING': este UPDATE siempre saca la fila
+    // de PENDING, así que limpia pending_since incondicionalmente. El
+    // reset de uncertain_cleared_at (§3.5) es un fix distinto, asignado al
+    // Bloque 2c -- no se toca acá.
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
-       SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5
+       SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5,
+           pending_since = NULL
        WHERE id = $1
        RETURNING *`,
       [

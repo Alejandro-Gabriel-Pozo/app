@@ -179,6 +179,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
       ...input,
       cbteNro: null, cae: null, caeVto: null,
       status: 'PENDING', afipContacted: false, afipRequest, afipResponse: null, errorMessage: null,
+      // Bloque 2a -- espeja createWithClient() real: nace PENDING, así que
+      // pending_since se sella desde el INSERT.
+      pendingSince: new Date(),
       uncertainClearedAt: null, uncertainClearedBy: null,
       paymentMethod: input.paymentMethod ?? null, cardInstallments: input.cardInstallments ?? null,
       createdAt: new Date(), issuedAt: null,
@@ -224,6 +227,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
     const updated: Invoice = {
       ...existing, cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto,
       afipResponse: data.afipResponse, status: 'ISSUED', issuedAt: new Date(),
+      // Bloque 2a -- espeja markIssuedWithClient() real: sale de PENDING,
+      // limpia pending_since.
+      pendingSince: null,
     };
     this.invoices.set(id, updated);
     return updated;
@@ -239,6 +245,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
       ...existing, status: data.status, errorMessage: data.errorMessage,
       afipResponse: data.afipResponse ?? existing.afipResponse,
       afipContacted: data.afipContacted,
+      // Bloque 2a -- espeja markFailedWithClient() real: data.status
+      // siempre saca la fila de PENDING, limpia pending_since.
+      pendingSince: null,
     };
     this.invoices.set(id, updated);
     return updated;
@@ -1204,7 +1213,7 @@ describe('InvoiceService', () => {
         concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5,
         moneda: 'PES', impNeto: 82.64, impIva: 17.36, impTotal: 100,
         cae: 'CAE-ORIGINAL', caeVto: '2026-09-01',
-        status: 'ISSUED', afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        status: 'ISSUED', afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
         paymentMethod: null, cardInstallments: null,
         afipRequest: { Iva: [{ Id: 5, BaseImp: 82.64, Importe: 17.36 }] },
         afipResponse: {}, errorMessage: null,
@@ -1947,7 +1956,8 @@ describe('InvoiceService', () => {
         cbteNro: status === 'ISSUED' ? 7 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 826.45, impIva: 173.55, impTotal: 1000, cae: status === 'ISSUED' ? 'CAE-CONSOLIDADA' : null,
         caeVto: status === 'ISSUED' ? '2026-12-31' : null, status,
-        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, pendingSince: status === 'PENDING' ? new Date() : null,
+        uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: status === 'REJECTED' ? 'rechazado por AFIP' : null,
         createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
       });
@@ -1993,7 +2003,8 @@ describe('InvoiceService', () => {
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
         cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'PENDING',
-        afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: false, pendingSince: new Date(),
+        uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: null,
       };
       invoiceRepo.invoices.set(pendingNc.id, pendingNc);
@@ -2184,7 +2195,7 @@ describe('InvoiceService', () => {
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
-        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
         paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
         ...overrides,
@@ -2225,7 +2236,7 @@ describe('InvoiceService', () => {
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
         cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
-        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
         paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
       });
@@ -2505,7 +2516,7 @@ describe('InvoiceService', () => {
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
-        afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        afipContacted: false, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
         paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
         ...overrides,
@@ -2603,7 +2614,8 @@ describe('InvoiceService', () => {
           cbteNro: status === 'ISSUED' ? 1 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
           impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: status === 'ISSUED' ? 'CAE-OTHER' : null,
           caeVto: status === 'ISSUED' ? '2026-12-31' : null,
-          status, afipContacted: status !== 'PENDING', uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          status, afipContacted: status !== 'PENDING', pendingSince: status === 'PENDING' ? new Date() : null,
+          uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
           paymentMethod: null, cardInstallments: null,
           afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
         });
@@ -2928,7 +2940,7 @@ describe('InvoiceService — C1-Fase C', () => {
         idempotencyKey, environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: 5, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-PREVIA', caeVto: '2026-12-31', status: 'ISSUED',
-        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
       });
       invoiceRepo.charges.set('ft-1', priorInvoiceId);
@@ -2970,7 +2982,7 @@ describe('InvoiceService — C1-Fase C', () => {
         idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
         cbteNro: 1, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
         impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-X', caeVto: '2026-12-31', status: 'ISSUED',
-        afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
         afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
       });
       invoiceRepo.charges.set('ft-1', priorInvoiceId);
@@ -2999,7 +3011,7 @@ describe('InvoiceService — C1-Fase C', () => {
           idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
           cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
           impNeto: 100, impIva: 0, impTotal: 100, cae: null, caeVto: null, status: priorStatus,
-          afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+          afipContacted: true, pendingSince: priorStatus === 'PENDING' ? new Date() : null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
           afipRequest: {}, afipResponse: {}, errorMessage: priorStatus === 'REJECTED' ? 'rechazado por AFIP' : null,
           createdAt: new Date(), issuedAt: null,
         });
@@ -3178,7 +3190,7 @@ describe('InvoiceService — C1-Fase C', () => {
           environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
           cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
           impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
-          afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          afipContacted: false, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
           paymentMethod: null, cardInstallments: null,
           afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
           ...overrides,
@@ -3240,7 +3252,7 @@ describe('InvoiceService — C1-Fase C', () => {
           environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
           cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
           impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'REJECTED',
-          afipContacted: false, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+          afipContacted: false, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
           paymentMethod: null, cardInstallments: null,
           afipRequest: {}, afipResponse: {}, errorMessage: 'rechazado', createdAt: new Date(), issuedAt: null,
         });
@@ -3259,7 +3271,7 @@ describe('InvoiceService — C1-Fase C', () => {
             cbteNro: status === 'ISSUED' ? 1 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
             impNeto: 49.59, impIva: 10.41, impTotal: 60, cae: status === 'ISSUED' ? 'CAE-OTHER-IND' : null,
             caeVto: status === 'ISSUED' ? '2026-12-31' : null,
-            status, afipContacted: status !== 'PENDING', uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+            status, afipContacted: status !== 'PENDING', pendingSince: status === 'PENDING' ? new Date() : null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
             paymentMethod: null, cardInstallments: null,
             afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
           });

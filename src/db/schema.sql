@@ -4569,3 +4569,40 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_resources_name
   ON resources (upper(btrim(name)))
   WHERE active = TRUE AND deleted_at IS NULL;
 
+-- ===========================================================================
+-- BLOQUE 26 — invoices.pending_since, Bloque 2a ÚNICAMENTE (23/09/2026,
+-- schema v61, docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+-- §3.6/§6, hallazgo ISSUE-BEFORE-REVERSE-WINDOW-001) -- marcador único de
+-- "en vuelo": único indicador es `status = 'PENDING'`, este campo solo
+-- registra DESDE CUÁNDO. Cubre TAMBIÉN el camino fresco (createWithClient()),
+-- que hasta este bloque no registraba desde cuándo está PENDING.
+--
+-- Deliberadamente SIN CHECK todavía (`chk_invoices_pending_since`,
+-- `(status = 'PENDING') = (pending_since IS NOT NULL)`) y SIN el backfill
+-- inverso (`pending_since = NULL WHERE status <> 'PENDING'`) -- los dos son
+-- el Bloque 2b, en un deploy POSTERIOR, recién cuando esté confirmado que
+-- la instancia de código que sirve tráfico ya es la que mantiene esta
+-- columna en TODOS sus escritores. `schema.sql` se reaplica completo e
+-- idempotente a cada tenant en cada deploy (`npm run migrate:tenants`)
+-- mientras la instancia ANTERIOR a este commit sigue atendiendo tráfico
+-- durante toda la ventana de deploy (`render.yaml`) -- un CHECK puesto en
+-- el mismo deploy que agrega la columna rompería ese código viejo (INSERT
+-- de PENDING sin pending_since, markIssuedWithClient()/
+-- markFailedWithClient() que no la limpian) en el primer INSERT/UPDATE que
+-- lo viole, tumbando el build entero (R15). Ver el ADR para el detalle
+-- completo del split 2a/2b y el pre-flight requerido entre ambos deploys.
+--
+-- Backfill (solo la sentencia DIRECTA -- la inversa es 2b, ver arriba):
+-- toda PENDING existente hoy nace del camino fresco (este bloque es el
+-- primero que hace que retryExisting() también pueda pasar por PENDING,
+-- eso es 2c, sin implementar todavía) -- created_at es la aproximación
+-- correcta para las filas ya existentes, no una invención: es la fecha
+-- real en que esa fila entró en PENDING la única vez que pudo hacerlo
+-- hasta ahora. Idempotente (`WHERE ... pending_since IS NULL`) -- vuelve a
+-- correr en el deploy de 2b sin costo (fila 22 de
+-- docs/inventario-dml-schema-2026-09-16.md; hueco N1, ronda 4 del gate).
+-- ===========================================================================
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ;
+
+UPDATE invoices SET pending_since = created_at WHERE status = 'PENDING' AND pending_since IS NULL;
+

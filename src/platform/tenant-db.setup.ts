@@ -537,7 +537,17 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // sin aplicar. F10-16/F10-17 no se midieron contra Postgres real (severidad
 // Baja, sin decisión de negocio pendiente) -- residuo registrado en
 // docs/pendientes-2026-09-12.md.
-export const CURRENT_SCHEMA_VERSION = 60;
+// v61 (23/09/2026): Bloque 2a de
+// docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
+// (ISSUE-BEFORE-REVERSE-WINDOW-001, §3.6/§6) -- invoices gana
+// pending_since (BLOQUE 26, schema.sql), columna + backfill directo
+// ÚNICAMENTE. Deliberadamente SIN el CHECK chk_invoices_pending_since ni
+// el backfill inverso -- eso es el Bloque 2b, un deploy POSTERIOR (ver
+// razonamiento completo en el bloque de schema.sql y en el ADR). Acompaña
+// createWithClient() (sella pending_since = NOW() en el INSERT) y
+// markIssuedWithClient()/markFailedWithClient() (lo limpian a NULL al
+// salir de PENDING), mismo commit.
+export const CURRENT_SCHEMA_VERSION = 61;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

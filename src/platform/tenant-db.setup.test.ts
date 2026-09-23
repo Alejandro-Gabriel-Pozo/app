@@ -301,8 +301,12 @@ describe('applyTenantSchema', () => {
     // condición de disparo abierta (customer_rates fixed_price->%,
     // invoices.afip_contacted, reservation_lines), mismo número de versión
     // para los 3. Ver docs/inventario-dml-schema-2026-09-16.md.
+    // 60 -> 61 el 23/09/2026: Bloque 2a de docs/diseno-invoice-retry-reverse-
+    // window-guard-2026-09-23.md (ISSUE-BEFORE-REVERSE-WINDOW-001) --
+    // invoices gana pending_since + backfill directo, SIN el CHECK todavía
+    // (eso es el Bloque 2b, deploy posterior).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(60);
+    expect(CURRENT_SCHEMA_VERSION).toBe(61);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

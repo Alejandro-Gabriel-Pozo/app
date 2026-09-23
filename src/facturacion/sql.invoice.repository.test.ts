@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SqlInvoiceRepository } from './sql.invoice.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
+import { CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
+import type { CreateInvoiceInput } from './invoice.entities.js';
 
 // Regresión: cae_vto es DATE en Postgres -- el driver `pg` lo devuelve como
 // objeto Date en runtime, no como string, pese a que el tipo de la fila lo
@@ -216,5 +217,92 @@ describe('SqlInvoiceRepository — getIssuedCreditNoteCompensationTotal()', () =
     const repo = new SqlInvoiceRepository(mockSqlClient);
 
     expect(await repo.getIssuedCreditNoteCompensationTotal(mockSqlClient, 'inv-1')).toBe(0);
+  });
+});
+
+// Bloque 2a (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+// 2026-09-23.md §3.6, ISSUE-BEFORE-REVERSE-WINDOW-001) -- mismo criterio
+// que getIssuedCreditNoteCompensationTotal() arriba: los fakes (FakeInvoiceRepository,
+// invoice.service.test.ts) son ciegos al SQL real -- estos tests cubren la
+// FORMA de la query (columna en el INSERT/UPDATE, valor sellado o
+// limpiado) contra Postgres real es alcance de
+// invoice-mark-failed-transactional.integration.test.ts.
+describe('SqlInvoiceRepository — pending_since (Bloque 2a)', () => {
+  const baseInput: CreateInvoiceInput = {
+    id: 'inv-1', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+    idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 1, cbteTipo: CBTE_TIPO_FACTURA_B,
+    emisorCuit: '20111111112', concepto: 1, docTipo: 96, docNro: '0', condicionIvaReceptorId: 5,
+    moneda: 'PES', impNeto: 100, impIva: 21, impTotal: 121,
+  };
+
+  function pendingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'inv-1', business_id: 'biz-1', financial_transaction_id: 'ft-1', customer_id: 'cust-1',
+      idempotency_key: 'invoice:ft-1', environment: 'homologacion', pto_vta: 1, cbte_tipo: CBTE_TIPO_FACTURA_B,
+      cbte_nro: null, concepto: 1, doc_tipo: 96, doc_nro: '0', condicion_iva_receptor_id: 5,
+      moneda: 'PES', imp_neto: '100.00', imp_iva: '21.00', imp_total: '121.00',
+      cae: null, cae_vto: null, status: 'PENDING', afip_contacted: false,
+      pending_since: new Date('2026-09-23T00:00:00Z'),
+      uncertain_cleared_at: null, uncertain_cleared_by: null, emisor_cuit: '20111111112',
+      payment_method: null, card_installments: null, afip_request: {}, afip_response: null,
+      error_message: null, created_at: new Date('2026-09-23T00:00:00Z'), issued_at: null,
+      ...overrides,
+    };
+  }
+
+  it('createWithClient() incluye pending_since en el INSERT, sellado con NOW() (nunca un valor de aplicación)', async () => {
+    const mockSqlClient = mockClient([pendingRow()]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const invoice = await repo.createWithClient(mockSqlClient, baseInput, {}, []);
+
+    const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain('pending_since');
+    // NOW() está en el propio texto SQL, no en la lista de $-params -- así
+    // el sello lo pone Postgres, no el reloj del proceso Node.
+    expect(sql).toMatch(/status,\s*pending_since,\s*afip_request\)\s*\n?\s*VALUES.*'PENDING',\s*NOW\(\)/);
+    expect(params).not.toContain('PENDING'); // 'PENDING' es literal SQL, no bind param
+    expect(invoice.pendingSince).toEqual(new Date('2026-09-23T00:00:00Z')); // rowToEntity mapea pending_since
+  });
+
+  it('markIssuedWithClient() limpia pending_since = NULL al salir de PENDING', async () => {
+    const mockSqlClient = mockClient([pendingRow({
+      status: 'ISSUED', pending_since: null, cbte_nro: '5', cae: 'CAE-1',
+      cae_vto: new Date('2026-12-31'), issued_at: new Date(),
+    })]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const invoice = await repo.markIssuedWithClient(mockSqlClient, 'inv-1', {
+      cbteNro: 5, cae: 'CAE-1', caeVto: '2026-12-31', afipResponse: {},
+    });
+
+    const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain('pending_since = NULL');
+    expect(invoice.pendingSince).toBeNull();
+  });
+
+  it.each(['REJECTED', 'FAILED_UNCERTAIN'] as const)(
+    'markFailedWithClient() limpia pending_since = NULL al marcar %s (data.status siempre saca la fila de PENDING)',
+    async (status) => {
+      const mockSqlClient = mockClient([pendingRow({ status, pending_since: null, afip_contacted: true })]);
+      const repo = new SqlInvoiceRepository(mockSqlClient);
+
+      const invoice = await repo.markFailedWithClient(mockSqlClient, 'inv-1', {
+        status, errorMessage: 'test', afipContacted: true,
+      });
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain('pending_since = NULL');
+      expect(invoice.pendingSince).toBeNull();
+    },
+  );
+
+  it('getById() mapea pending_since desde la fila cruda (rowToEntity)', async () => {
+    const mockSqlClient = mockClient([pendingRow()]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const invoice = await repo.getById('inv-1');
+
+    expect(invoice!.pendingSince).toEqual(new Date('2026-09-23T00:00:00Z'));
   });
 });

@@ -88,6 +88,20 @@ export interface Invoice {
    * manual primero (A8.6). */
   afipContacted: boolean;
   /**
+   * Bloque 2a (23/09/2026, `docs/diseno-invoice-retry-reverse-window-guard-
+   * 2026-09-23.md` §3.6) — marcador único de "en vuelo": poblado con
+   * `NOW()` mientras `status === 'PENDING'`, `NULL` en cualquier otro
+   * status. Hoy (Bloque 2a) solo lo escribe el camino fresco
+   * (`createWithClient()`) y lo limpian `markIssuedWithClient()`/
+   * `markFailedWithClient()` — `retryExisting()` todavía no vuelve a poner
+   * `PENDING` (eso es el Bloque 2c, sin implementar). Sin CHECK todavía en
+   * `schema.sql` (eso es el Bloque 2b, deploy posterior) — la consistencia
+   * `(status = 'PENDING') = (pending_since IS NOT NULL)` depende solo de
+   * que estos escritores se mantengan disciplinados hasta que el CHECK
+   * exista.
+   */
+  pendingSince: Date | null;
+  /**
    * Bloque 5 del ADR común cancelar-con-NC (schema v58, §6.5 bis, pregunta
    * de negocio 1, opción (b)) — `NULL` hasta que un operador resuelve una
    * `credit_note_request` asociada con `outcome: 'NO_EMITIDA'`

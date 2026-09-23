@@ -1,4 +1,10 @@
-# Inventario de las 21 sentencias DML de `schema.sql` (D-07(c), 16/09/2026)
+# Inventario de las sentencias DML de `schema.sql` (D-07(c), 16/09/2026)
+
+**Conteo real: 22 (16/09/2026: 21; +1 fila 22, Bloque 2a de
+`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6,
+23/09/2026 — no re-titular a "21" ni a un número fijo nuevo, el título de
+arriba se dejó genérico a propósito para no repetir el mismo incidente de
+cita vieja que ya documentó el repo).**
 
 **Documento de referencia.** No se actualiza a mano en cada bloque nuevo —
 si `schema.sql` gana una sentencia DML top-level nueva (`INSERT`/`UPDATE`/
@@ -79,7 +85,7 @@ vigente; no se reescribe para no perder el registro de qué se decidió
 cuándo. `grep -n "COALESCE(MAX(version)" src/db/schema.sql` da los 5 gates
 reales hoy.
 
-## Tabla completa (21/21)
+## Tabla completa (22/22 tras el Bloque 2a del 23/09/2026 — fila 22 nueva, ver recuento al pie)
 
 | # | Tabla.columna | Línea (schema.sql, HEAD de este commit) | Guard antes | Clasificación | Guard después |
 |---|---|---|---|---|---|
@@ -104,9 +110,13 @@ reales hoy.
 | 19 | `resource_categories.is_exclusive` (backfill) | `:152` (ancla re-verificada 17/09/2026, se mueve con cada edición del archivo — no citar sin re-chequear) | `MAX(version) < 42` (forma vigente 17/09/2026; era `IF NOT EXISTS (... version = 42)` hasta ese fix) | Gateado (precedente para v60 arriba) | **Forma del gate corregida 17/09/2026, ver nota arriba** |
 | 20 | `reservations.is_exclusive_resource` (backfill) | `:3841` (misma nota de ancla que la fila 19) | `MAX(version) < 42` (forma vigente 17/09/2026; era `IF NOT EXISTS (... version = 42)` hasta ese fix) | Gateado (precedente para v60 arriba) | **Forma del gate corregida 17/09/2026, ver nota arriba** |
 | 21 | `inventory_levels` (backfill desde `products`/`product_variants`, bloque `DO $$` con 2 `INSERT`) | `:1331-1358` | `IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = ... AND column_name = 'stock_quantity')`, una vez por cada uno de los 2 `INSERT` (products/product_variants) | Auto-limitante — las columnas `stock_quantity` que la condición chequea se DROPEAN unas líneas más abajo (`:1366-1374`), en el mismo bloque de `schema.sql`, la primera vez que corre. A partir de ahí `information_schema.columns` nunca vuelve a encontrarlas — es la garantía más fuerte de las 18: no depende de que nadie toque nada después, la columna que activaría la condición literalmente deja de existir en la corrida que la usa | Sin cambio |
+| 22 | `invoices.pending_since` (backfill directo, Bloque 2a) | `:4607` | `WHERE status = 'PENDING' AND pending_since IS NULL` — **sin** garantía estructural todavía: sin el CHECK (Bloque 2b, deploy posterior) nada impide que una fila vuelva a matchear (no porque código viejo ponga `pending_since` en NULL — `markIssuedWithClient()`/`markFailedWithClient()` solo lo limpian al SALIR de PENDING — sino porque la instancia de código ANTERIOR a 2a, todavía sirviendo tráfico durante la ventana de deploy, puede INSERTAR una fila PENDING nueva sin `pending_since`, dejándolo NULL, después de que el backfill de este bloque ya corrió — ver §3.6 del ADR) | **Disparo abierto BENIGNO** (23/09/2026, `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6, ISSUE-BEFORE-REVERSE-WINDOW-001, hueco N1 ronda 4, clasificación corregida C3 ronda 5) — a propósito SIN gateo por versión, mismo argumento que ya justifica no gatearla: si vuelve a dispararse en un deploy posterior (2b incluido, donde se re-ejecuta a propósito), corrige (deja `pending_since` poblado donde corresponde), nunca daña un dato correcto | **Queda auto-limitante recién desde 2b**, cuando `chk_invoices_pending_since` exista (mismo precedente que la fila 8) — fila 23 (backfill inverso) se agrega en el commit que implemente 2b, no en este |
 
 **Recuento:** 18 auto-limitantes (sin tocar) + 2 ya gateadas (v42, sin
-tocar) + 3 gateadas en este bloque (v60) = **21/21**.
+tocar) + 3 gateadas en el bloque v60 + 1 nueva, disparo abierto benigno sin
+gatear (Bloque 2a, 23/09/2026, fila 22) = **22/22 tras este commit** (la
+fila 23 del backfill inverso de 2b se agrega en un commit posterior — ver
+fila 22, columna "Guard después").
 
 ## Por qué "auto-limitante" es una garantía real, no una suposición
 

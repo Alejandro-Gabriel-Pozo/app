@@ -176,7 +176,7 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
     concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5,
     moneda: 'PES', impNeto: 826.45, impIva: 173.55, impTotal: 1000,
     cae: 'CAE-1', caeVto: '2026-09-01',
-    status: 'ISSUED', afipContacted: true, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+    status: 'ISSUED', afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
     paymentMethod: null, cardInstallments: null,
     afipRequest: {}, afipResponse: {}, errorMessage: null,
     createdAt: now, issuedAt: now,
