@@ -42,6 +42,18 @@ export const RequestConsolidatedInvoiceSchema = z.object({
  * `caeVto` en formato `YYYY-MM-DD` — mismo formato que `Invoice.caeVto`
  * (`sql.invoice.repository.ts::rowToEntity()`, columna DATE de Postgres).
  */
+/**
+ * ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.14 (P-1) --
+ * body de `POST /api/invoices/:id/reconcile-with-afip`. `cbteNro` es un
+ * ÍNDICE que el sistema verifica contra AFIP (`getVoucherInfo()`), no el
+ * CAE en sí -- el operador lo aporta porque el sistema no tiene forma de
+ * identificar SOLO cuál comprobante de AFIP corresponde a esta factura
+ * puntual (ver el docblock de `InvoiceService.reconcileWithAfip()`).
+ */
+export const ReconcileInvoiceWithAfipSchema = z.object({
+  cbteNro: z.number().int().positive(),
+});
+
 export const CreditNoteRequestResolveSchema = z
   .object({
     outcome: z.enum(['EMITIDA', 'NO_EMITIDA']),

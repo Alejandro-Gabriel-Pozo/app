@@ -1332,3 +1332,288 @@ export class CreditNoteRequestNotFoundError extends DomainError {
     super(`Solicitud de Nota de Crédito "${id}" no encontrada`, 'CREDIT_NOTE_REQUEST_NOT_FOUND');
   }
 }
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9, "A-2"
+ * -- `markIssuedWithClient()` (`sql.invoice.repository.ts`) queda EXCLUSIVO
+ * del camino AUTOMÁTICO (`finalizeIssued()`) desde este bloque, con guard
+ * `status <> 'ISSUED'`. Cuando ese guard salta, se desambigua releyendo el
+ * status real: si ya es `ISSUED`, esta es la causa -- alguien más ya marcó
+ * la factura emitida entre la lectura y el UPDATE (ver P3,
+ * `InvoiceService.finalizeIssued()`, que la atrapa e idempotiza si el
+ * comprobante coincide).
+ */
+export class InvoiceAlreadyIssuedError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(`El comprobante "${invoiceId}" ya está ISSUED -- no se vuelve a marcar por el camino automático.`, 'INVOICE_ALREADY_ISSUED');
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "A-2" -- método
+ * nuevo `markIssuedFromManualResolutionWithClient()`, exclusivo del camino
+ * MANUAL (`resolveCreditNoteRequestManually()`, rama `EMITIDA`), predicado
+ * estricto (`status = 'FAILED_UNCERTAIN' AND afip_contacted AND
+ * uncertain_cleared_at IS NULL`). Nombre DISTINTO del guard automático
+ * (`InvoiceAlreadyIssuedError`) a propósito -- no perder de qué rama vino
+ * el guard al reclasificar bajo lock (ver el docblock de
+ * `resolveCreditNoteRequestManually()`).
+ */
+export class InvoiceManualResolutionPreconditionError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `El comprobante "${invoiceId}" no está en el estado ambiguo (FAILED_UNCERTAIN, contactado, sin limpiar) que la resolución manual espera -- alguien más ya decidió su desenlace real.`,
+      'INVOICE_MANUAL_RESOLUTION_PRECONDITION_FAILED',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "N6" --
+ * `markUncertainClearedWithClient()` gana el predicado
+ * `WHERE id = $1 AND status = 'FAILED_UNCERTAIN' AND afip_contacted AND
+ * uncertain_cleared_at IS NULL` (antes, sin condición). Se lanza cuando el
+ * `UPDATE` no matchea porque la factura ya se limpió, ya se resolvió sola,
+ * o nunca estuvo en ese estado -- en vez de escribir un estado
+ * inconsistente sobre una factura que ya tiene un desenlace real.
+ */
+export class InvoiceUncertainClearPreconditionError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `El comprobante "${invoiceId}" no está en el estado ambiguo (FAILED_UNCERTAIN, contactado, sin limpiar) que esta acción espera -- alguien más ya decidió su desenlace real.`,
+      'INVOICE_UNCERTAIN_CLEAR_PRECONDITION_FAILED',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "N-1"/"A-6" --
+ * guard de entrada compartido por `POST /api/invoices/:id/mark-not-issued`
+ * y `POST /api/invoices/:id/reconcile-with-afip` (§3.14): una factura con
+ * una `credit_note_request` propia que sigue ABIERTA
+ * (`PENDIENTE`/`EN_REVISION_MANUAL`) se resuelve por
+ * `POST /credit-note-requests/:id/resolve`, no por acá -- dos salidas para
+ * el mismo caso serían dos fuentes de verdad divergentes (hueco B7 del
+ * gate).
+ */
+export class InvoiceHasOpenCreditNoteRequestError extends DomainError {
+  constructor(
+    public readonly invoiceId: string,
+    public readonly creditNoteRequestId: string,
+  ) {
+    super(
+      `El comprobante "${invoiceId}" tiene una solicitud de Nota de Crédito ("${creditNoteRequestId}") todavía abierta -- resolvela por POST /api/credit-note-requests/:id/resolve, no por acá.`,
+      'INVOICE_HAS_OPEN_CREDIT_NOTE_REQUEST',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "P-2" (decisión
+ * del dueño, "Exigir EN_REVISION_MANUAL para resolver") -- guard nuevo
+ * dentro de la reclasificación bajo lock de
+ * `resolveCreditNoteRequestManually()`: una `credit_note_request` que
+ * SIGUE `PENDIENTE` en el instante en que esta reclasificación toma su
+ * propio lock se rechaza sin escribir nada, sin mirar el estado de la
+ * factura -- todavía no llegó a revisión manual, el camino automático ni
+ * siquiera falló una vez.
+ */
+export class CreditNoteRequestNotInManualReviewError extends DomainError {
+  constructor(
+    public readonly creditNoteRequestId: string,
+    public readonly currentState: string,
+  ) {
+    super(
+      `La solicitud de Nota de Crédito "${creditNoteRequestId}" está en estado "${currentState}" -- todavía no llegó a EN_REVISION_MANUAL, no se puede resolver manualmente.`,
+      'CREDIT_NOTE_REQUEST_NOT_IN_MANUAL_REVIEW',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, decisión 2 del
+ * dueño ("Discrepancia de CAE -- rechaza, queda para revisión fiscal"):
+ * el operador declaró `EMITIDA` con un `cbteNro`/`cae` que DIFIERE del que
+ * ya está registrado en la factura (`status === 'ISSUED'`). No se
+ * auto-cierra con una corrección silenciosa -- la solicitud queda
+ * `EN_REVISION_MANUAL`, visible en la bandeja y en el reporte de
+ * reconciliación (§3.10), para que un humano la revise.
+ */
+export class InvoiceResolutionCaeMismatchError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `El comprobante "${invoiceId}" ya está ISSUED con un CAE distinto al declarado -- discrepancia fiscal, queda para revisión, no se auto-cierra.`,
+      'INVOICE_RESOLUTION_CAE_MISMATCH',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, decisión 1 del
+ * dueño ("Conflicto de estado de NC -- rechaza y deja abierta"): el
+ * operador declara un desenlace (`EMITIDA`/`NO_EMITIDA`) que CONTRADICE el
+ * estado real de la factura (ej. declara `NO_EMITIDA` pero la factura ya
+ * está `ISSUED`, o `EMITIDA` sobre una factura ya limpiada `NO_EMITIDA`).
+ * El sistema devuelve el estado real al operador y la solicitud queda
+ * abierta para que la confirme de nuevo con el dato correcto -- nunca una
+ * corrección silenciosa.
+ */
+export class InvoiceResolutionStateConflictError extends DomainError {
+  constructor(
+    public readonly invoiceId: string,
+    public readonly realOutcome: string,
+  ) {
+    super(
+      `El comprobante "${invoiceId}" ya tiene un desenlace real ("${realOutcome}") que contradice lo declarado -- se rechaza, la solicitud queda abierta para confirmar con el dato correcto.`,
+      'INVOICE_RESOLUTION_STATE_CONFLICT',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9 -- invariante
+ * GENUINAMENTE no contemplado por este diseño dentro de la reclasificación
+ * bajo lock de `resolveCreditNoteRequestManually()` (ej. `PENDING`
+ * genuinamente en vuelo, `REJECTED`, `FAILED_UNCERTAIN` con
+ * `afipContacted = false`) -- no se adivina qué pasó, cae a 500
+ * (honest-degradation, sin mapeo amigable en `error.middleware.ts`).
+ * **Excepción documentada, no un caso nuevo:** el residuo de ronda 11
+ * ("carrera EN_REVISION_MANUAL", §3.9) reusa este MISMO tipo para un caso
+ * SÍ recuperable con un simple reintento de la misma llamada -- ver ese
+ * bullet para el detalle, no agrega un tipo nuevo.
+ */
+export class InvoiceReconciliationUnexpectedStateError extends DomainError {
+  constructor(
+    public readonly invoiceId: string,
+    public readonly status: string,
+  ) {
+    super(
+      `El comprobante "${invoiceId}" está en un estado inesperado ("${status}") para esta reclasificación -- invariante no contemplado, requiere revisión manual.`,
+      'INVOICE_RECONCILIATION_UNEXPECTED_STATE',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "P3" -- política
+ * de `finalizeIssued()` cuando atrapa `InvoiceAlreadyIssuedError` y el
+ * comprobante que esta llamada intentaba grabar NO coincide con el que ya
+ * está persistido (dos comprobantes reales distintos, o un dato corrupto).
+ * A diferencia de `InvoiceResolutionCaeMismatchError` (camino manual, con
+ * un operador esperando una respuesta HTTP a quien avisarle "pará y
+ * revisá"), acá no hay ningún operador del otro lado -- deliberadamente
+ * SIN mapeo amigable, cae al 500 genérico (honest-degradation): invariante
+ * roto real, revisión humana, no un 409 que el cliente pueda "corregir"
+ * reintentando.
+ */
+export class InvoiceIssuedComprobanteMismatchError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `El comprobante "${invoiceId}" ya está ISSUED con un CAE distinto al que esta llamada intentaba grabar -- dos comprobantes reales sobre la misma fila, invariante roto.`,
+      'INVOICE_ISSUED_COMPROBANTE_MISMATCH',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.14 (P-1) --
+ * `POST /api/invoices/:id/reconcile-with-afip`, Paso 1: la consulta a
+ * `getVoucherInfo()` explotó (timeout, fault SOAP, error de red). A
+ * diferencia de `reconcileAfterFailure()` (`.catch(() => null)`, camino
+ * automático de background), acá hay un operador esperando el resultado
+ * de un click -- tragar el error sería indistinguible de "AFIP confirma
+ * que no existe ese comprobante". 503, mismo grupo semántico que
+ * `AFIP_NOT_CONFIGURED`/`AFIP_PADRON_UNAVAILABLE`.
+ */
+export class AfipReconciliationUnavailableError extends DomainError {
+  constructor(invoiceId: string, cause: string) {
+    super(`No se pudo consultar AFIP para reconciliar el comprobante "${invoiceId}": ${cause}`, 'AFIP_RECONCILIATION_UNAVAILABLE');
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.14 (P-1), Paso 2:
+ * AFIP respondió pero sin comprobante real (`info === null` o
+ * `codAutorizacion` vacío). **Redacción deliberadamente conservadora
+ * (corrección de ronda 11) -- NUNCA "AFIP confirma que no se emitió":**
+ * `info === null` también puede salir de un error de AFIP sin
+ * `ResultGet` (ver `mapVoucherInfo()` del SDK), no solo de una ausencia
+ * real, y aun si el comprobante no existe bajo ESTE `cbteNro`, no dice
+ * nada sobre si la factura se emitió bajo OTRO número. 422, mismo grupo
+ * que `AFIP_REQUEST_REJECTED`.
+ */
+export class AfipVoucherNotFoundError extends DomainError {
+  constructor(
+    invoiceId: string,
+    public readonly cbteNro: number,
+    ptoVta: number,
+    cbteTipo: number,
+  ) {
+    super(
+      `No se pudo confirmar contra AFIP el comprobante ${cbteNro} (ptoVta ${ptoVta}, cbteTipo ${cbteTipo}) para el comprobante interno "${invoiceId}" -- no es una confirmación de que no se emitió, seguí investigando antes de declarar NO_EMITIDA.`,
+      'AFIP_VOUCHER_NOT_FOUND',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.14 (P-1), Paso 3:
+ * AFIP confirma un comprobante real bajo el `cbteNro` aportado, pero la
+ * validación cruzada (docTipo/docNro/impTotal/cbteFch/impNeto/impIVA/
+ * concepto/monId contra `invoice.afipRequest`) no coincide en algún campo
+ * -- el comprobante real no es consistente con esta factura. 422, mismo
+ * grupo.
+ */
+export class AfipVoucherMismatchError extends DomainError {
+  constructor(invoiceId: string, public readonly cbteNro: number) {
+    super(
+      `El comprobante ${cbteNro} que AFIP confirma no es consistente con el comprobante interno "${invoiceId}" (campos cruzados no coinciden) -- no se escribe.`,
+      'AFIP_VOUCHER_MISMATCH',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.14, gap 4(c) del
+ * veredicto de ronda 10 del gate: el `cbteNro` que AFIP confirma para esta
+ * factura coincide con el de OTRA factura ya persistida -- golpea
+ * `idx_invoices_talonario` (`business_id, pto_vta, cbte_tipo, cbte_nro`).
+ * Atrapado en el `UPDATE` de `markIssuedFromManualResolutionWithClient()`/
+ * `markIssuedFromAfipReconciliationWithClient()` (Postgres `23505`) y
+ * relanzado tipado en vez de caer al 500 genérico -- mismo grupo semántico
+ * que el resto de 409 de este bloque: precondición fiscal violada,
+ * accionable por el operador (revisar cuál de las dos facturas es la
+ * correcta).
+ */
+export class InvoiceVoucherNumberAlreadyRegisteredError extends DomainError {
+  constructor(
+    invoiceId: string,
+    public readonly cbteNro: number,
+    ptoVta: number,
+    cbteTipo: number,
+  ) {
+    super(
+      `El comprobante ${cbteNro} (ptoVta ${ptoVta}, cbteTipo ${cbteTipo}) ya está registrado en otra factura -- no se puede asignar también al comprobante interno "${invoiceId}".`,
+      'INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED',
+    );
+  }
+}
+
+/**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.14, sección "AFIP
+ * prevalece sobre una declaración manual previa" -- precondición del
+ * escritor `markIssuedFromAfipReconciliationWithClient()`
+ * (`WHERE status = 'FAILED_UNCERTAIN' AND afip_contacted`, sin mirar
+ * `uncertain_cleared_at`). Nombre DISTINTO al de A-2
+ * (`InvoiceManualResolutionPreconditionError`) a propósito -- no perder de
+ * qué escritor vino el guard al reclasificar (mismo criterio que A-2 usa
+ * para distinguirse de N6).
+ */
+export class AfipReconciliationPreconditionError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `El comprobante "${invoiceId}" no está en el estado ambiguo (FAILED_UNCERTAIN, contactado) que la reconciliación con AFIP espera -- alguien más ya decidió su desenlace real.`,
+      'AFIP_RECONCILIATION_PRECONDITION_FAILED',
+    );
+  }
+}

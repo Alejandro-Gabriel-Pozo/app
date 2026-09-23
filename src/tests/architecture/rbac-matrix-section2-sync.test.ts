@@ -94,7 +94,8 @@ const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docB
     docBullets: [],
   },
   'facturacion/invoices.routes.ts': {
-    hiddenCount: 9, // +1: GET /api/invoices/unreconciled (10/09/2026)
+    hiddenCount: 12, // 9->12: ADR ISSUE-BEFORE-REVERSE-WINDOW-001 Bloque 3 (23/09/2026) -- +3:
+    // GET /uncertain, POST /:id/mark-not-issued, POST /:id/reconcile-with-afip
     motivo: 'Prosa por router (2 factories del mismo archivo, createInvoicesRouter + createAfipCredentialsRouter), rutas listadas inline separadas por ";", no como bullets.',
     docBullets: [],
   },

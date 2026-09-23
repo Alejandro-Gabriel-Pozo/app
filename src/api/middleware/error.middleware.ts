@@ -196,9 +196,17 @@ function domainErrorStatus(error: DomainError): number {
     // órdenes (mismo hallazgo, mismo guard, mismo grupo semántico -- la NC
     // ya se emitió pero la orden no se pudo cancelar porque el conjunto de
     // facturas vivas cambió entre tx1 y tx2).
+    // ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.14
+    // (P-1) -- `AFIP_VOUCHER_NOT_FOUND`/`AFIP_VOUCHER_MISMATCH`: el request
+    // llegó bien formado (POST /api/invoices/:id/reconcile-with-afip con un
+    // cbteNro real), pero lo que afirma no está respaldado por AFIP (no se
+    // encontró, o no es consistente con esta factura) -- mismo grupo que
+    // AFIP_REQUEST_REJECTED.
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
+    case 'AFIP_VOUCHER_NOT_FOUND':
+    case 'AFIP_VOUCHER_MISMATCH':
     case 'UNSUPPORTED_IVA_RATE':
     case 'CREDIT_NOTE_CANCELLATION_PENDING':
     case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
@@ -303,6 +311,23 @@ function domainErrorStatus(error: DomainError): number {
     // inválida de la máquina de estados propia del workflow (A6.3). Mismo
     // grupo semántico que INVALID_TRANSITION de más arriba: request bien
     // formado, el estado actual del recurso no admite la operación.
+    //
+    // ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9/§3.14
+    // -- precondición de estado que ya cambió (no regla de negocio violada),
+    // mismo grupo semántico que `CREDIT_NOTE_REQUEST_INVALID_TRANSITION` de
+    // acá abajo: `INVOICE_ALREADY_ISSUED`/`INVOICE_MANUAL_RESOLUTION_PRECONDITION_FAILED`
+    // (A-2), `INVOICE_UNCERTAIN_CLEAR_PRECONDITION_FAILED` (N6),
+    // `INVOICE_HAS_OPEN_CREDIT_NOTE_REQUEST` (N-1),
+    // `CREDIT_NOTE_REQUEST_NOT_IN_MANUAL_REVIEW` (P-2),
+    // `INVOICE_RESOLUTION_CAE_MISMATCH`/`INVOICE_RESOLUTION_STATE_CONFLICT`
+    // (decisiones 1/2 del dueño), `INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED`
+    // (gap 4(c)), `AFIP_RECONCILIATION_PRECONDITION_FAILED` ("AFIP prevalece").
+    // Deliberadamente SIN mapeo (caen al 500 genérico, honest-degradation):
+    // `INVOICE_RECONCILIATION_UNEXPECTED_STATE`/`INVOICE_ISSUED_COMPROBANTE_MISMATCH`
+    // -- invariante roto real, ningún 4xx describe algo que el cliente pueda
+    // "corregir" reintentando (ver sus propios docblocks en domain/errors.ts).
+    // El comentario va acá arriba, no entre los case (no-fallthrough, ver
+    // bloque 402 de este archivo).
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -369,6 +394,15 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL':
     case 'CREDIT_NOTE_AMBIGUOUS_SUBJECT':
     case 'CREDIT_NOTE_REQUEST_INVALID_TRANSITION':
+    case 'INVOICE_ALREADY_ISSUED':
+    case 'INVOICE_MANUAL_RESOLUTION_PRECONDITION_FAILED':
+    case 'INVOICE_UNCERTAIN_CLEAR_PRECONDITION_FAILED':
+    case 'INVOICE_HAS_OPEN_CREDIT_NOTE_REQUEST':
+    case 'CREDIT_NOTE_REQUEST_NOT_IN_MANUAL_REVIEW':
+    case 'INVOICE_RESOLUTION_CAE_MISMATCH':
+    case 'INVOICE_RESOLUTION_STATE_CONFLICT':
+    case 'INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED':
+    case 'AFIP_RECONCILIATION_PRECONDITION_FAILED':
       return 409;
 
     // --- 503 Service Unavailable ---
@@ -376,9 +410,12 @@ function domainErrorStatus(error: DomainError): number {
     // AFIP_NOT_CONFIGURED: mismo criterio que BUSINESS_NOT_READY -- la
     // funcionalidad depende de un recurso externo (certificado AFIP) que
     // todavía no está disponible para este negocio, no es un error del
-    // request en sí.
+    // request en sí. AFIP_RECONCILIATION_UNAVAILABLE (Bloque 3, §3.14, P-1) --
+    // mismo grupo: no se pudo consultar AFIP para reconciliar, reintentable
+    // por el operador con solo volver a apretar el botón.
     case 'AFIP_NOT_CONFIGURED':
     case 'AFIP_PADRON_UNAVAILABLE':
+    case 'AFIP_RECONCILIATION_UNAVAILABLE':
     case 'PLATFORM_UNAVAILABLE':
     case 'BUSINESS_NOT_READY':
       return 503;

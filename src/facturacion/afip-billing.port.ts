@@ -42,9 +42,30 @@ export interface CreateVoucherResult {
   raw: unknown;
 }
 
+/**
+ * Campos `docTipo`/`docNro`/`impTotal`/`cbteFch`/`impNeto`/`impIVA`/
+ * `concepto`/`monId` agregados por el ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`
+ * (23/09/2026), Bloque 3, §3.14 (P-1), gap 4(b) del veredicto de ronda 10
+ * del gate -- la reconciliación contra AFIP (`POST
+ * /api/invoices/:id/reconcile-with-afip`) necesita cruzar estos campos
+ * contra `invoice.afipRequest` (`DocTipo`/`DocNro`/`ImpTotal`/`CbteFch`/
+ * `ImpNeto`/`ImpIVA`/`Concepto`/`MonId`) antes de escribir, para no pisar
+ * esta factura con el CAE de un comprobante real AJENO. Verificados contra
+ * el DTO real del SDK (`VoucherInfo`, `electronic-billing.types.d.ts`,
+ * `@arcasdk/core`) -- ya vienen en camelCase desde `mapVoucherInfo()`, este
+ * puerto solo los reenvía, sin transformarlos.
+ */
 export interface VoucherInfoResult {
   codAutorizacion: string | null;
   fchVto: string | null;
+  docTipo: number | null;
+  docNro: number | null;
+  impTotal: number | null;
+  cbteFch: string | null;
+  impNeto: number | null;
+  impIVA: number | null;
+  concepto: number | null;
+  monId: string | null;
   raw: unknown;
 }
 

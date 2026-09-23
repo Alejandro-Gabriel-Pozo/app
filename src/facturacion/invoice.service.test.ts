@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { InvoiceService, hashIds } from './invoice.service.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage, ReconciliationSnapshot } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
@@ -22,7 +22,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError, InvoiceAlreadyIssuedError, InvoiceManualResolutionPreconditionError, InvoiceUncertainClearPreconditionError, AfipReconciliationPreconditionError, CreditNoteRequestNotInManualReviewError, InvoiceResolutionCaeMismatchError, InvoiceResolutionStateConflictError, InvoiceReconciliationUnexpectedStateError, InvoiceHasOpenCreditNoteRequestError, AfipReconciliationUnavailableError, AfipVoucherNotFoundError, AfipVoucherMismatchError, InvoiceNotFoundError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO, DOC_TIPO_CONSUMIDOR_FINAL } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -222,8 +222,12 @@ class FakeInvoiceRepository implements InvoiceRepository {
   }
   // Bloque 5 (15/09/2026) -- mismo criterio que markFailedWithClient(): el
   // fake ignora `client` (sin transacción real en memoria).
+  //
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9, "A-2"
+  // -- espeja el guard real `<> 'ISSUED'`, exclusivo del camino automático.
   async markIssuedWithClient(_client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
+    if (existing.status === 'ISSUED') throw new InvoiceAlreadyIssuedError(id);
     const updated: Invoice = {
       ...existing, cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto,
       afipResponse: data.afipResponse, status: 'ISSUED', issuedAt: new Date(),
@@ -233,6 +237,56 @@ class FakeInvoiceRepository implements InvoiceRepository {
     };
     this.invoices.set(id, updated);
     return updated;
+  }
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "A-2" -- espeja el
+   * predicado ESTRICTO real (exclusivo del camino manual).
+   */
+  async markIssuedFromManualResolutionWithClient(_client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    const existing = this.invoices.get(id)!;
+    const matches = existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted && existing.uncertainClearedAt === null;
+    if (!matches) throw new InvoiceManualResolutionPreconditionError(id);
+    const updated: Invoice = {
+      ...existing, cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto,
+      afipResponse: data.afipResponse, status: 'ISSUED', issuedAt: new Date(),
+      pendingSince: null,
+    };
+    this.invoices.set(id, updated);
+    return updated;
+  }
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.14 (P-1), "AFIP
+   * prevalece" -- espeja el predicado MÁS ANCHO real (sin mirar
+   * uncertainClearedAt), y NO lo toca en el `SET` (preserva el rastro de
+   * una declaración manual previa).
+   */
+  async markIssuedFromAfipReconciliationWithClient(_client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    const existing = this.invoices.get(id)!;
+    const matches = existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted;
+    if (!matches) throw new AfipReconciliationPreconditionError(id);
+    const updated: Invoice = {
+      ...existing, cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto,
+      afipResponse: data.afipResponse, status: 'ISSUED', issuedAt: new Date(),
+      pendingSince: null,
+    };
+    this.invoices.set(id, updated);
+    return updated;
+  }
+  /** ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "A-4". */
+  async getReconciliationSnapshotForUpdate(_client: SqlClient, invoiceId: string): Promise<ReconciliationSnapshot | null> {
+    const inv = this.invoices.get(invoiceId);
+    if (!inv) return null;
+    return { status: inv.status, afipContacted: inv.afipContacted, uncertainClearedAt: inv.uncertainClearedAt, cbteNro: inv.cbteNro, cae: inv.cae };
+  }
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 -- sin caller en
+   * InvoiceService (la ruta GET /api/invoices/uncertain llama al repo
+   * directo, mismo criterio que /unreconciled). El fake NO modela el JOIN
+   * de exclusión por credit_note_request abierta (A-6) -- sin caller acá,
+   * mismo criterio que otros métodos "sin caller todavía" de este fake.
+   */
+  async listUncertainInvoices(): Promise<Invoice[]> {
+    return [...this.invoices.values()].filter((i) => i.status === 'FAILED_UNCERTAIN' && i.afipContacted && i.uncertainClearedAt === null);
   }
   async markFailed(id: string, data: MarkFailedInput): Promise<Invoice> {
     return this.markFailedWithClient({} as SqlClient, id, data);
@@ -254,8 +308,13 @@ class FakeInvoiceRepository implements InvoiceRepository {
   }
   // Bloque 5 (15/09/2026, §6.5 bis, pregunta de negocio 1) -- mismo criterio
   // que markFailedWithClient(): el fake ignora `client`.
+  //
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "N6" -- espeja el
+  // guard estricto real.
   async markUncertainClearedWithClient(_client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
+    const matches = existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted && existing.uncertainClearedAt === null;
+    if (!matches) throw new InvoiceUncertainClearPreconditionError(id);
     const updated: Invoice = { ...existing, uncertainClearedAt: new Date(), uncertainClearedBy: data.clearedBy };
     this.invoices.set(id, updated);
     return updated;
@@ -353,7 +412,7 @@ class FakeServiceItemRepository implements Pick<ServiceItemRepository, 'findById
  * Bloque 3 ya hace de verdad en `buildCreditNote()`, fuera del alcance de
  * este Fake).
  */
-class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'> {
+class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'findByIdForUpdate' | 'transitionWithClient'> {
   public calls: CreateCreditNoteRequestInput[] = [];
   public transitionCalls: { id: string; transition: TransitionCreditNoteRequestInput }[] = [];
   private readonly requests = new Map<string, CreditNoteRequest>();
@@ -387,6 +446,12 @@ class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepositor
   // Bloque 5 (15/09/2026, §6.5 bis) -- R2, sin filtro de estado (mismo
   // criterio que SqlCreditNoteRequestRepository.findById()).
   async findById(id: string): Promise<CreditNoteRequest | null> {
+    return this.requests.get(id) ?? null;
+  }
+
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "A-4" -- sin
+  // transacción in-memory real, mismo criterio que InMemoryCreditNoteRequestRepository.
+  async findByIdForUpdate(_client: SqlClient, id: string): Promise<CreditNoteRequest | null> {
     return this.requests.get(id) ?? null;
   }
 
@@ -2317,6 +2382,333 @@ describe('InvoiceService', () => {
       await expect(service.resolveCreditNoteRequestManually({
         creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
       })).rejects.toThrow(CreditNoteRequestInvalidTransitionError);
+    });
+  });
+
+  describe('ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 -- reclasificación bajo lock de resolveCreditNoteRequestManually()', () => {
+    function seedScenario(
+      invoiceOverrides: Partial<Invoice>,
+      requestState: 'PENDIENTE' | 'EN_REVISION_MANUAL' | 'CERRADA',
+      requestOverrides: Partial<CreditNoteRequest> = {},
+    ): { creditNoteRequestRepo: FakeCreditNoteRequestRepository; requestId: string; invoiceId: string } {
+      const invoiceId = 'inv-reclass';
+      invoiceRepo.invoices.set(invoiceId, {
+        id: invoiceId, businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
+        ...invoiceOverrides,
+      });
+
+      const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+      const requestId = 'cnr-reclass-1';
+      creditNoteRequestRepo.seed({
+        id: requestId, businessId: 'biz-1', invoiceId, reversedInvoiceId: 'inv-original',
+        orderId: 'ord-1', reservationId: null, state: requestState,
+        resolutionOutcome: null, resolvedBy: null, resolvedAt: null, resolutionNote: null,
+        slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+        ...requestOverrides,
+      });
+
+      return { creditNoteRequestRepo, requestId, invoiceId };
+    }
+
+    it('P-2: solicitud todavía PENDIENTE -- rechaza con CreditNoteRequestNotInManualReviewError (409), sin escribir nada', async () => {
+      // status PENDING no matchea el guard estricto de markUncertainClearedWithClient()
+      // (exige FAILED_UNCERTAIN) -- fuerza la reclasificación.
+      const { creditNoteRequestRepo, requestId, invoiceId } = seedScenario({ status: 'PENDING', afipContacted: false }, 'PENDIENTE');
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
+      })).rejects.toThrow(CreditNoteRequestNotInManualReviewError);
+
+      // Ninguna escritura -- ni la factura ni la solicitud cambiaron.
+      expect(invoiceRepo.invoices.get(invoiceId)!.status).toBe('PENDING');
+    });
+
+    it('N-2: solicitud ya CERRADA con el MISMO desenlace declarado -- idempotente, devuelve la fila tal cual', async () => {
+      // status ISSUED no matchea el guard de markIssuedFromManualResolutionWithClient()
+      // (exige FAILED_UNCERTAIN) -- fuerza la reclasificación.
+      const { creditNoteRequestRepo, requestId } = seedScenario(
+        { status: 'ISSUED', cbteNro: 77, cae: 'CAE-REAL' },
+        'CERRADA',
+        { resolutionOutcome: 'EMITIDA', resolvedBy: 'identity-otro', resolvedAt: new Date() },
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      const updated = await service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'EMITIDA', resolvedBy: 'identity-manager',
+        note: 'doble-submit', cbteNro: 77, cae: 'CAE-REAL', caeVto: '2026-12-31',
+      });
+
+      expect(updated.state).toBe('CERRADA');
+      expect(updated.resolutionOutcome).toBe('EMITIDA');
+      // No se reescribió -- sigue el resolvedBy original, no el de esta llamada.
+      expect(updated.resolvedBy).toBe('identity-otro');
+    });
+
+    it('N-2: solicitud ya CERRADA con un desenlace DISTINTO al declarado -- rechaza con InvoiceResolutionStateConflictError (409)', async () => {
+      const { creditNoteRequestRepo, requestId } = seedScenario(
+        { status: 'REJECTED', afipContacted: true },
+        'CERRADA',
+        { resolutionOutcome: null }, // auto-cerrada por el camino automático (REJECTED)
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'EMITIDA', resolvedBy: 'identity-manager',
+        note: null, cbteNro: 1, cae: 'CAE-X', caeVto: '2026-12-31',
+      })).rejects.toThrow(InvoiceResolutionStateConflictError);
+    });
+
+    it('decisión 2 del dueño (discrepancia de CAE): status ISSUED + EMITIDA con CAE que NO coincide -- rechaza, no auto-cierra', async () => {
+      const { creditNoteRequestRepo, requestId, invoiceId } = seedScenario(
+        { status: 'ISSUED', cbteNro: 999, cae: 'CAE-REAL' },
+        'EN_REVISION_MANUAL',
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'EMITIDA', resolvedBy: 'identity-manager',
+        note: 'CAE tipeado a mano, distinto', cbteNro: 1, cae: 'CAE-EQUIVOCADO', caeVto: '2026-12-31',
+      })).rejects.toThrow(InvoiceResolutionCaeMismatchError);
+
+      // La solicitud queda EN_REVISION_MANUAL -- visible en la bandeja, sin cerrar.
+      expect((await creditNoteRequestRepo.findById(requestId))!.state).toBe('EN_REVISION_MANUAL');
+      expect(invoiceRepo.invoices.get(invoiceId)!.cae).toBe('CAE-REAL'); // sin sobrescribir
+    });
+
+    it('decisión 1 del dueño (conflicto de estado): status ISSUED + NO_EMITIDA declarado -- rechaza y deja abierta', async () => {
+      const { creditNoteRequestRepo, requestId } = seedScenario(
+        { status: 'ISSUED', cbteNro: 999, cae: 'CAE-REAL' },
+        'EN_REVISION_MANUAL',
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
+      })).rejects.toThrow(InvoiceResolutionStateConflictError);
+
+      expect((await creditNoteRequestRepo.findById(requestId))!.state).toBe('EN_REVISION_MANUAL');
+    });
+
+    it('decisión 1 del dueño, espejo: ya limpiada NO_EMITIDA + EMITIDA declarado -- rechaza', async () => {
+      const { creditNoteRequestRepo, requestId } = seedScenario(
+        { status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: new Date() },
+        'EN_REVISION_MANUAL',
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'EMITIDA', resolvedBy: 'identity-manager',
+        note: null, cbteNro: 1, cae: 'CAE-X', caeVto: '2026-12-31',
+      })).rejects.toThrow(InvoiceResolutionStateConflictError);
+    });
+
+    it('idempotente: ya limpiada NO_EMITIDA + NO_EMITIDA declarado de nuevo -- cierra sin volver a escribir la factura', async () => {
+      const clearedAt = new Date('2026-09-20T00:00:00Z');
+      const { creditNoteRequestRepo, requestId, invoiceId } = seedScenario(
+        { status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: clearedAt },
+        'EN_REVISION_MANUAL',
+      );
+      const service = buildService({ creditNoteRequestRepo });
+
+      const updated = await service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: 'confirmado de nuevo',
+      });
+
+      expect(updated.state).toBe('CERRADA');
+      expect(updated.resolutionOutcome).toBe('NO_EMITIDA');
+      // uncertainClearedAt NO cambia -- no se reescribió la factura.
+      expect(invoiceRepo.invoices.get(invoiceId)!.uncertainClearedAt).toEqual(clearedAt);
+    });
+
+    it('invariante no contemplado (ej. PENDING genuinamente en vuelo) -- InvoiceReconciliationUnexpectedStateError, sin mapeo amigable', async () => {
+      const { creditNoteRequestRepo, requestId } = seedScenario({ status: 'PENDING', afipContacted: false }, 'EN_REVISION_MANUAL');
+      const service = buildService({ creditNoteRequestRepo });
+
+      await expect(service.resolveCreditNoteRequestManually({
+        creditNoteRequestId: requestId, outcome: 'NO_EMITIDA', resolvedBy: 'identity-manager', note: null,
+      })).rejects.toThrow(InvoiceReconciliationUnexpectedStateError);
+    });
+  });
+
+  describe('ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 -- markInvoiceNotIssued()', () => {
+    function seedUncertainNoRequest(overrides: Partial<Invoice> = {}): string {
+      const invoiceId = 'inv-uncertain-no-nc';
+      invoiceRepo.invoices.set(invoiceId, {
+        id: invoiceId, businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
+        ...overrides,
+      });
+      return invoiceId;
+    }
+
+    it('CHARGE sin credit_note_request -- limpia la factura (NO_EMITIDA)', async () => {
+      const invoiceId = seedUncertainNoRequest();
+      const service = buildService();
+
+      const invoice = await service.markInvoiceNotIssued({ invoiceId, resolvedBy: 'identity-manager' });
+
+      expect(invoice.uncertainClearedAt).not.toBeNull();
+      expect(invoice.uncertainClearedBy).toBe('identity-manager');
+    });
+
+    it('factura con credit_note_request ya CERRADA -- N-1/A-6, PASA el guard (esa combinación SÍ tiene salida acá)', async () => {
+      const invoiceId = seedUncertainNoRequest();
+      const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+      creditNoteRequestRepo.seed({
+        id: 'cnr-cerrada', businessId: 'biz-1', invoiceId, reversedInvoiceId: 'inv-original',
+        orderId: 'ord-1', reservationId: null, state: 'CERRADA',
+        resolutionOutcome: null, resolvedBy: null, resolvedAt: new Date(), resolutionNote: null,
+        slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const service = buildService({ creditNoteRequestRepo });
+
+      const invoice = await service.markInvoiceNotIssued({ invoiceId, resolvedBy: 'identity-manager' });
+
+      expect(invoice.uncertainClearedAt).not.toBeNull();
+    });
+
+    it.each(['PENDIENTE', 'EN_REVISION_MANUAL'] as const)(
+      'factura con credit_note_request propia todavía %s -- InvoiceHasOpenCreditNoteRequestError (409), sin tocar la factura',
+      async (state) => {
+        const invoiceId = seedUncertainNoRequest();
+        const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+        creditNoteRequestRepo.seed({
+          id: 'cnr-abierta', businessId: 'biz-1', invoiceId, reversedInvoiceId: 'inv-original',
+          orderId: 'ord-1', reservationId: null, state,
+          resolutionOutcome: null, resolvedBy: null, resolvedAt: null, resolutionNote: null,
+          slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+        });
+        const service = buildService({ creditNoteRequestRepo });
+
+        await expect(service.markInvoiceNotIssued({ invoiceId, resolvedBy: 'identity-manager' }))
+          .rejects.toThrow(InvoiceHasOpenCreditNoteRequestError);
+
+        expect(invoiceRepo.invoices.get(invoiceId)!.uncertainClearedAt).toBeNull();
+      },
+    );
+  });
+
+  describe('ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.14 (P-1) -- reconcileWithAfip()', () => {
+    /** DocTipo=99/DocNro=0 (Consumidor Final) -- mismo afipRequest que buildIvaBreakdown() arma. */
+    function seedUncertainForReconciliation(overrides: Partial<Invoice> = {}): string {
+      const invoiceId = 'inv-reconcile';
+      invoiceRepo.invoices.set(invoiceId, {
+        id: invoiceId, businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'FAILED_UNCERTAIN',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {
+          DocTipo: 99, DocNro: 0, ImpTotal: 100, CbteFch: '20260920', ImpNeto: 82.64, ImpIVA: 17.36,
+          Concepto: 2, MonId: 'PES',
+        },
+        afipResponse: {}, errorMessage: 'ambiguo', createdAt: new Date(), issuedAt: null,
+        ...overrides,
+      });
+      return invoiceId;
+    }
+
+    function voucherInfoMatching(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        codAutorizacion: 'CAE-REAL', fchVto: '20261231',
+        docTipo: 99, docNro: 0, impTotal: 100, cbteFch: '20260920', impNeto: 82.64, impIVA: 17.36,
+        concepto: 2, monId: 'PES',
+        ...overrides,
+      };
+    }
+
+    it('rama 1 (nunca limpiada): comprobante real coincide -- factura ISSUED con el CAE real, afip_response marca reconciledWithAfip', async () => {
+      const invoiceId = seedUncertainForReconciliation();
+      const getVoucherInfo = vi.fn().mockResolvedValue(voucherInfoMatching());
+      const service = buildService({ client: fakeArcaClient({ getVoucherInfo }) });
+
+      const invoice = await service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' });
+
+      expect(getVoucherInfo).toHaveBeenCalledWith(88, 3, CBTE_TIPO_FACTURA_B);
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.cae).toBe('CAE-REAL');
+      expect(invoice.cbteNro).toBe(88);
+      expect((invoice.afipResponse as { reconciledWithAfip?: boolean }).reconciledWithAfip).toBe(true);
+    });
+
+    it('rama 2 ("AFIP prevalece"): ya limpiada NO_EMITIDA a mano, AFIP confirma un comprobante real -- prevalece igual, factura ISSUED', async () => {
+      const invoiceId = seedUncertainForReconciliation({ uncertainClearedAt: new Date('2026-09-21T00:00:00Z'), uncertainClearedBy: 'identity-otro' });
+      const getVoucherInfo = vi.fn().mockResolvedValue(voucherInfoMatching());
+      const service = buildService({ client: fakeArcaClient({ getVoucherInfo }) });
+
+      const invoice = await service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.cae).toBe('CAE-REAL');
+      // No limpia uncertainClearedAt/By -- preserva el rastro de la declaración manual previa.
+      expect(invoice.uncertainClearedAt).not.toBeNull();
+      expect(invoice.uncertainClearedBy).toBe('identity-otro');
+    });
+
+    it('AFIP no responde (timeout/error de red) -- AfipReconciliationUnavailableError (503), sin escribir nada', async () => {
+      const invoiceId = seedUncertainForReconciliation();
+      const getVoucherInfo = vi.fn().mockRejectedValue(new Error('timeout'));
+      const service = buildService({ client: fakeArcaClient({ getVoucherInfo }) });
+
+      await expect(service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' }))
+        .rejects.toThrow(AfipReconciliationUnavailableError);
+      expect(invoiceRepo.invoices.get(invoiceId)!.status).toBe('FAILED_UNCERTAIN');
+    });
+
+    it('AFIP responde sin comprobante real (null) -- AfipVoucherNotFoundError (422), nunca "no se emitió"', async () => {
+      const invoiceId = seedUncertainForReconciliation();
+      const getVoucherInfo = vi.fn().mockResolvedValue(null);
+      const service = buildService({ client: fakeArcaClient({ getVoucherInfo }) });
+
+      await expect(service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' }))
+        .rejects.toThrow(AfipVoucherNotFoundError);
+    });
+
+    it('AFIP responde con comprobante real pero los campos cruzados NO coinciden -- AfipVoucherMismatchError (422), sin escribir', async () => {
+      const invoiceId = seedUncertainForReconciliation();
+      const getVoucherInfo = vi.fn().mockResolvedValue(voucherInfoMatching({ impTotal: 999999 }));
+      const service = buildService({ client: fakeArcaClient({ getVoucherInfo }) });
+
+      await expect(service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' }))
+        .rejects.toThrow(AfipVoucherMismatchError);
+      expect(invoiceRepo.invoices.get(invoiceId)!.status).toBe('FAILED_UNCERTAIN');
+    });
+
+    it('factura con credit_note_request propia todavía ABIERTA -- InvoiceHasOpenCreditNoteRequestError (409), no llama a AFIP', async () => {
+      const invoiceId = seedUncertainForReconciliation();
+      const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+      creditNoteRequestRepo.seed({
+        id: 'cnr-abierta', businessId: 'biz-1', invoiceId, reversedInvoiceId: 'inv-original',
+        orderId: 'ord-1', reservationId: null, state: 'EN_REVISION_MANUAL',
+        resolutionOutcome: null, resolvedBy: null, resolvedAt: null, resolutionNote: null,
+        slaAlertSentAt: null, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const getVoucherInfo = vi.fn();
+      const service = buildService({ creditNoteRequestRepo, client: fakeArcaClient({ getVoucherInfo }) });
+
+      await expect(service.reconcileWithAfip({ invoiceId, cbteNro: 88, resolvedBy: 'identity-manager' }))
+        .rejects.toThrow(InvoiceHasOpenCreditNoteRequestError);
+      expect(getVoucherInfo).not.toHaveBeenCalled();
+    });
+
+    it('factura inexistente -- InvoiceNotFoundError', async () => {
+      const service = buildService();
+
+      await expect(service.reconcileWithAfip({ invoiceId: 'no-existe', cbteNro: 88, resolvedBy: 'identity-manager' }))
+        .rejects.toThrow(InvoiceNotFoundError);
     });
   });
 

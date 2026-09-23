@@ -61,4 +61,19 @@ export interface CreditNoteRequestRepository {
    * de "trabado hace 3 días").
    */
   listByState(state: CreditNoteRequestState, options?: ListCreditNoteRequestsByStateOptions): Promise<CreditNoteRequest[]>;
+  /**
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9,
+   * "A-4" -- lockea la fila (`SELECT ... FOR UPDATE`) SIN validar contra
+   * `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS` (a diferencia de
+   * `transitionWithClient()`, que sí valida): `resolveCreditNoteRequestManually()`
+   * la usa dentro de su reclasificación para LEER el estado actual bajo
+   * lock (incluido `PENDIENTE`, que `transitionWithClient()` rechazaría de
+   * entrada para `toState: 'CERRADA'` sin pasar por `EN_REVISION_MANUAL` --
+   * ver P-2, `CreditNoteRequestNotInManualReviewError`), no para
+   * transicionar todavía. Mismo orden de lock que el resto del método
+   * (factura primero, solicitud después). `null` si el id no existe --
+   * invariante roto real (mismo criterio que `getReconciliationSnapshotForUpdate()`
+   * de `InvoiceRepository`).
+   */
+  findByIdForUpdate(client: SqlClient, id: string): Promise<CreditNoteRequest | null>;
 }

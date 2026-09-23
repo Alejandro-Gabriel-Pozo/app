@@ -18,7 +18,7 @@
  */
 
 import { randomUUID, createHash } from 'node:crypto';
-import type { InvoiceRepository, MarkIssuedInput } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, ReconciliationSnapshot } from './invoice.repository.js';
 import type { Invoice, AfipEnvironment, CreateInvoiceItemInput } from './invoice.entities.js';
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
@@ -36,7 +36,7 @@ import { ReservationStatus } from '../types/enums.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
-import type { AfipBillingPort } from './afip-billing.port.js';
+import type { AfipBillingPort, VoucherInfoResult } from './afip-billing.port.js';
 import {
   CBTE_TIPO_FACTURA_B,
   CBTE_TIPO_NOTA_CREDITO_B,
@@ -66,6 +66,20 @@ import {
   ServiceItemNotFoundError,
   CreditNoteRequestInvalidTransitionError,
   CreditNoteRequestNotFoundError,
+  InvoiceManualResolutionPreconditionError,
+  InvoiceUncertainClearPreconditionError,
+  CreditNoteRequestNotInManualReviewError,
+  InvoiceResolutionStateConflictError,
+  InvoiceResolutionCaeMismatchError,
+  InvoiceReconciliationUnexpectedStateError,
+  InvoiceAlreadyIssuedError,
+  InvoiceIssuedComprobanteMismatchError,
+  InvoiceHasOpenCreditNoteRequestError,
+  AfipReconciliationUnavailableError,
+  AfipVoucherNotFoundError,
+  AfipVoucherMismatchError,
+  AfipReconciliationPreconditionError,
+  InvoiceNotFoundError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
@@ -149,6 +163,20 @@ export interface ResolveCreditNoteRequestManuallyInput {
   cbteNro?: number;
   cae?: string;
   caeVto?: string;
+}
+
+/**
+ * ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.14 (P-1) --
+ * body de `POST /api/invoices/:id/reconcile-with-afip` ya validado por Zod
+ * (`ReconcileInvoiceWithAfipSchema`). `cbteNro` es un ÍNDICE que el sistema
+ * verifica contra AFIP, no el CAE en sí -- ver el docblock de
+ * `InvoiceService.reconcileWithAfip()`.
+ */
+export interface ReconcileInvoiceWithAfipInput {
+  invoiceId: string;
+  cbteNro: number;
+  /** identity id (JWT sub) del operador que disparó la reconciliación -- `req.user!.id`. */
+  resolvedBy: string;
 }
 
 /** yyyymmdd, el formato que exige WSFEv1 (nunca ISO) — ver referencia-afip-wsfev1.md. Exportada: la reusa InvoicePdfService. */
@@ -284,8 +312,13 @@ export class InvoiceService {
      * repo completo (`listByState` no hace falta acá — es de la ruta GET de
      * listado, que instancia `SqlCreditNoteRequestRepository` directo, ver
      * `credit-note-requests.routes.ts`).
+     *
+     * ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9,
+     * "A-4" -- suma `'findByIdForUpdate'`: la reclasificación bajo lock de
+     * `resolveCreditNoteRequestManually()` (más abajo) la usa para lockear
+     * la solicitud DESPUÉS de la factura, sin re-validar transición.
      */
-    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'>,
+    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'findByIdForUpdate' | 'transitionWithClient'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -1717,8 +1750,43 @@ export class InvoiceService {
    * `requestConsolidatedInvoice()`. Best-effort: si esto falla, la factura
    * YA es real (CAE ya emitido) -- no debe parecer que issue() falló.
    */
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "P3" -- desde que
+   * `markIssued()`/`markIssuedWithClient()` ganan el guard `<> 'ISSUED'`
+   * (A-2), este método puede ver la fila ya `ISSUED` (4 caminos alcanzables,
+   * ver el ADR: dos reintentos concurrentes, la ventana entre el deploy de
+   * 3 y el de 4, una respuesta tardía de AFIP después de una resolución
+   * manual, o la resolución manual ganándole la carrera al automático).
+   * Política: éxito idempotente si el comprobante coincide con el ya
+   * persistido (mismo CAE real llegó por dos caminos, nada que
+   * reconciliar); si NO coincide, `InvoiceIssuedComprobanteMismatchError`
+   * SIN mapeo amigable (500, honest-degradation) -- acá no hay ningún
+   * operador esperando la respuesta HTTP a quien avisarle "pará y revisá".
+   */
   private async finalizeIssued(invoiceId: string, data: MarkIssuedInput): Promise<Invoice> {
-    const issued = await this.invoiceRepo.markIssued(invoiceId, data);
+    let issued: Invoice;
+    try {
+      issued = await this.invoiceRepo.markIssued(invoiceId, data);
+    } catch (err) {
+      if (!(err instanceof InvoiceAlreadyIssuedError)) throw err;
+      const current = await this.invoiceRepo.getById(invoiceId);
+      if (!current) throw err;
+      if (current.cbteNro === data.cbteNro && current.cae === data.cae) {
+        // Éxito idempotente -- el mismo comprobante real ya está persistido,
+        // no hace falta reintentar la escritura.
+        await this.closeAccountsReceivableGapBestEffort(current);
+        return current;
+      }
+      logger.error(
+        {
+          invoiceId,
+          attempted: { cbteNro: data.cbteNro, cae: data.cae, caeVto: data.caeVto },
+          persisted: { cbteNro: current.cbteNro, cae: current.cae, caeVto: current.caeVto },
+        },
+        '[InvoiceService] finalizeIssued(): la factura ya está ISSUED con un comprobante distinto al que esta llamada intentaba grabar -- invariante roto, revisión humana.',
+      );
+      throw new InvoiceIssuedComprobanteMismatchError(invoiceId);
+    }
     await this.closeAccountsReceivableGapBestEffort(issued);
     return issued;
   }
@@ -1995,6 +2063,18 @@ export class InvoiceService {
    * misma tx) ya valida contra `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS` y
    * tira `CreditNoteRequestInvalidTransitionError` si la fila no está en
    * `EN_REVISION_MANUAL` -- no se duplica esa validación acá (A6.2/A6.3).
+   *
+   * **ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 --
+   * "Resolución de ubicación A":** el camino feliz de arriba (dos escrituras,
+   * un commit) sigue igual, pero ahora:
+   *  - la rama `EMITIDA` usa `markIssuedFromManualResolutionWithClient()`
+   *    (A-2, predicado ESTRICTO) en vez de `markIssuedWithClient()` (que
+   *    desde este bloque queda exclusivo del camino automático);
+   *  - si CUALQUIERA de las dos escrituras (`markIssuedFromManualResolutionWithClient()`/
+   *    `markUncertainClearedWithClient()`) lanza su error de precondición
+   *    (la factura ya no está en la ambigüedad esperada -- alguien más ya
+   *    decidió su desenlace real), esta transacción reclasifica bajo lock
+   *    en vez de propagar el error crudo -- ver `reclassifyManualResolution()`.
    */
   async resolveCreditNoteRequestManually(input: ResolveCreditNoteRequestManuallyInput): Promise<CreditNoteRequest> {
     const request = await this.creditNoteRequestRepo.findById(input.creditNoteRequestId);
@@ -2004,33 +2084,41 @@ export class InvoiceService {
     let updatedRequest!: CreditNoteRequest;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      if (input.outcome === 'EMITIDA') {
-        // Validado por Zod antes de llegar acá (CreditNoteRequestResolveSchema
-        // .superRefine()) -- cbteNro/cae/caeVto son obligatorios cuando
-        // outcome === 'EMITIDA'. El `!` documenta esa garantía externa, no
-        // la re-valida (la ruta es la única caller de este método).
-        issuedInvoice = await this.invoiceRepo.markIssuedWithClient(client, request.invoiceId, {
-          cbteNro: input.cbteNro!,
-          cae: input.cae!,
-          caeVto: input.caeVto!,
-          // Sin respuesta cruda de AFIP -- esto es una confirmación manual,
-          // no una respuesta de `createNextVoucher()`/`getVoucherInfo()`.
-          // `manualResolution: true` deja rastro de que este ISSUED nació
-          // de la bandeja de reconciliación, no del flujo automático.
-          afipResponse: { manualResolution: true, resolvedBy: input.resolvedBy, note: input.note },
-        });
-      } else {
-        await this.invoiceRepo.markUncertainClearedWithClient(client, request.invoiceId, {
-          clearedBy: input.resolvedBy,
-        });
-      }
+      try {
+        if (input.outcome === 'EMITIDA') {
+          // Validado por Zod antes de llegar acá (CreditNoteRequestResolveSchema
+          // .superRefine()) -- cbteNro/cae/caeVto son obligatorios cuando
+          // outcome === 'EMITIDA'. El `!` documenta esa garantía externa, no
+          // la re-valida (la ruta es la única caller de este método).
+          issuedInvoice = await this.invoiceRepo.markIssuedFromManualResolutionWithClient(client, request.invoiceId, {
+            cbteNro: input.cbteNro!,
+            cae: input.cae!,
+            caeVto: input.caeVto!,
+            // Sin respuesta cruda de AFIP -- esto es una confirmación manual,
+            // no una respuesta de `createNextVoucher()`/`getVoucherInfo()`.
+            // `manualResolution: true` deja rastro de que este ISSUED nació
+            // de la bandeja de reconciliación, no del flujo automático.
+            afipResponse: { manualResolution: true, resolvedBy: input.resolvedBy, note: input.note },
+          });
+        } else {
+          await this.invoiceRepo.markUncertainClearedWithClient(client, request.invoiceId, {
+            clearedBy: input.resolvedBy,
+          });
+        }
 
-      updatedRequest = await this.creditNoteRequestRepo.transitionWithClient(client, request.id, {
-        toState: 'CERRADA',
-        resolutionOutcome: input.outcome,
-        resolvedBy: input.resolvedBy,
-        resolutionNote: input.note,
-      });
+        updatedRequest = await this.creditNoteRequestRepo.transitionWithClient(client, request.id, {
+          toState: 'CERRADA',
+          resolutionOutcome: input.outcome,
+          resolvedBy: input.resolvedBy,
+          resolutionNote: input.note,
+        });
+      } catch (err) {
+        if (err instanceof InvoiceManualResolutionPreconditionError || err instanceof InvoiceUncertainClearPreconditionError) {
+          updatedRequest = await this.reclassifyManualResolution(client, request.invoiceId, request.id, input);
+          return;
+        }
+        throw err;
+      }
     });
 
     if (issuedInvoice) {
@@ -2038,6 +2126,300 @@ export class InvoiceService {
     }
 
     return updatedRequest;
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9, "A-4"/"N-2"/"P-2"
+   * -- corre DENTRO de la MISMA transacción que `resolveCreditNoteRequestManually()`
+   * (el guard estricto de A-2/N6 ya falló, RETURNING vacío). Lockea la
+   * factura PRIMERO, la solicitud DESPUÉS (mismo orden que el resto del
+   * método -- ver "Por qué P-2 no necesita invertir el orden de locks" en
+   * el ADR).
+   */
+  private async reclassifyManualResolution(
+    client: SqlClient,
+    invoiceId: string,
+    creditNoteRequestId: string,
+    input: ResolveCreditNoteRequestManuallyInput,
+  ): Promise<CreditNoteRequest> {
+    const snapshot = await this.invoiceRepo.getReconciliationSnapshotForUpdate(client, invoiceId);
+    if (!snapshot) {
+      throw new Error(`resolveCreditNoteRequestManually(): factura "${invoiceId}" no encontrada al reclasificar -- invariante roto.`);
+    }
+
+    const lockedRequest = await this.creditNoteRequestRepo.findByIdForUpdate(client, creditNoteRequestId);
+    if (!lockedRequest) {
+      throw new Error(`resolveCreditNoteRequestManually(): solicitud "${creditNoteRequestId}" no encontrada al reclasificar -- invariante roto.`);
+    }
+
+    // P-2 (decisión del dueño, "Exigir EN_REVISION_MANUAL para resolver")
+    // -- todavía no llegó a revisión manual, el camino automático ni
+    // siquiera falló una vez.
+    if (lockedRequest.state === 'PENDIENTE') {
+      throw new CreditNoteRequestNotInManualReviewError(lockedRequest.id, lockedRequest.state);
+    }
+
+    if (lockedRequest.state === 'CERRADA') {
+      // N-2 -- idempotente SOLO si el desenlace grabado coincide con lo
+      // declarado (y, para EMITIDA, también el CAE real coincide con el
+      // declarado contra la factura ya lockeada arriba).
+      const outcomeMatches = lockedRequest.resolutionOutcome === input.outcome;
+      const caeMatches = input.outcome !== 'EMITIDA' || (input.cbteNro === snapshot.cbteNro && input.cae === snapshot.cae);
+      if (outcomeMatches && caeMatches) return lockedRequest;
+
+      logger.warn(
+        {
+          creditNoteRequestId: lockedRequest.id,
+          invoiceId,
+          declaredOutcome: input.outcome,
+          recordedOutcome: lockedRequest.resolutionOutcome,
+          resolvedBy: input.resolvedBy,
+        },
+        '[InvoiceService] resolveCreditNoteRequestManually(): la solicitud ya está CERRADA con un desenlace distinto al declarado -- rechaza, no se auto-cierra.',
+      );
+      throw new InvoiceResolutionStateConflictError(invoiceId, lockedRequest.resolutionOutcome ?? 'CERRADA_SIN_DESENLACE');
+    }
+
+    // lockedRequest.state === 'EN_REVISION_MANUAL' -- camino feliz de la
+    // reclasificación: clasifica por el estado REAL de la factura contra
+    // lo que el operador DECLARÓ.
+    return this.classifyManualResolutionOutcome(client, invoiceId, lockedRequest, snapshot, input);
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 -- clasificación de
+   * la rama `EN_REVISION_MANUAL` de `reclassifyManualResolution()`. Las dos
+   * decisiones de negocio del dueño (encabezado del ADR): conflicto de
+   * estado -> rechaza y deja abierta (decisión 1); discrepancia de CAE ->
+   * rechaza, queda para revisión fiscal (decisión 2).
+   */
+  private async classifyManualResolutionOutcome(
+    client: SqlClient,
+    invoiceId: string,
+    lockedRequest: CreditNoteRequest,
+    snapshot: ReconciliationSnapshot,
+    input: ResolveCreditNoteRequestManuallyInput,
+  ): Promise<CreditNoteRequest> {
+    if (snapshot.status === 'ISSUED' && input.outcome === 'EMITIDA') {
+      if (input.cbteNro === snapshot.cbteNro && input.cae === snapshot.cae) {
+        // Idempotente -- mismo CAE real, doble-submit o ya cerrado por otro
+        // operador con el mismo dato. Sin volver a escribir la factura.
+        return this.creditNoteRequestRepo.transitionWithClient(client, lockedRequest.id, {
+          toState: 'CERRADA',
+          resolutionOutcome: 'EMITIDA',
+          resolvedBy: input.resolvedBy,
+          resolutionNote: input.note,
+        });
+      }
+      logger.error(
+        {
+          creditNoteRequestId: lockedRequest.id,
+          invoiceId,
+          declared: { cbteNro: input.cbteNro, cae: input.cae },
+          real: { cbteNro: snapshot.cbteNro, cae: snapshot.cae },
+          resolvedBy: input.resolvedBy,
+        },
+        '[InvoiceService] resolveCreditNoteRequestManually(): discrepancia de CAE -- el declarado no coincide con el ya emitido, rechaza, queda para revisión fiscal.',
+      );
+      throw new InvoiceResolutionCaeMismatchError(invoiceId);
+    }
+
+    if (snapshot.status === 'ISSUED' && input.outcome === 'NO_EMITIDA') {
+      logger.warn(
+        { creditNoteRequestId: lockedRequest.id, invoiceId, declaredOutcome: 'NO_EMITIDA', realStatus: 'ISSUED', resolvedBy: input.resolvedBy },
+        '[InvoiceService] resolveCreditNoteRequestManually(): conflicto de estado -- la factura ya está ISSUED, rechaza NO_EMITIDA declarado.',
+      );
+      throw new InvoiceResolutionStateConflictError(invoiceId, 'ISSUED');
+    }
+
+    if (snapshot.status === 'FAILED_UNCERTAIN' && snapshot.uncertainClearedAt != null) {
+      if (input.outcome === 'NO_EMITIDA') {
+        // Idempotente -- mismo desenlace que ya declaró (esta llamada u otra).
+        return this.creditNoteRequestRepo.transitionWithClient(client, lockedRequest.id, {
+          toState: 'CERRADA',
+          resolutionOutcome: 'NO_EMITIDA',
+          resolvedBy: input.resolvedBy,
+          resolutionNote: input.note,
+        });
+      }
+      logger.warn(
+        { creditNoteRequestId: lockedRequest.id, invoiceId, declaredOutcome: 'EMITIDA', realStatus: 'NO_EMITIDA', resolvedBy: input.resolvedBy },
+        '[InvoiceService] resolveCreditNoteRequestManually(): conflicto de estado, espejo -- la factura ya se limpió NO_EMITIDA, rechaza EMITIDA declarado.',
+      );
+      throw new InvoiceResolutionStateConflictError(invoiceId, 'NO_EMITIDA');
+    }
+
+    // NUEVO (ronda 11, residuo #2 del veredicto de ronda 10 del gate) --
+    // `FAILED_UNCERTAIN && afipContacted && uncertainClearedAt == null` es
+    // EXACTAMENTE la ambigüedad que el guard estricto de A-2/N6 esperaba --
+    // apareció DESPUÉS de que el UPDATE optimista de ESTA llamada ya falló.
+    // Carrera recuperable con un simple reintento de la MISMA llamada, no
+    // un invariante roto -- reusa el mismo tipo que el catch-all de abajo
+    // (documentado como transitorio/retryable, sin error nuevo).
+    //
+    // Cualquier otro status (PENDING en vuelo, REJECTED, FAILED_UNCERTAIN
+    // con afipContacted=false) -- invariante GENUINAMENTE no contemplado,
+    // no se adivina qué pasó -- 500 sin mapear (honest-degradation).
+    throw new InvoiceReconciliationUnexpectedStateError(invoiceId, snapshot.status);
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 --
+   * bandeja nueva `mark-not-issued`, mismo efecto que
+   * `resolveCreditNoteRequestManually()` con `outcome: 'NO_EMITIDA'` pero
+   * SIN `credit_note_request` involucrada (CHARGE, o NC con solicitud ya
+   * CERRADA -- N-1/A-6). Guard de entrada: rechaza si la factura tiene una
+   * `credit_note_request` propia que sigue ABIERTA (esa combinación va por
+   * `POST /credit-note-requests/:id/resolve`, no por acá -- hueco B7 del
+   * gate, dos salidas para el mismo caso serían dos fuentes de verdad
+   * divergentes).
+   */
+  async markInvoiceNotIssued(input: { invoiceId: string; resolvedBy: string }): Promise<Invoice> {
+    const openRequest = await this.creditNoteRequestRepo.findByInvoiceId(input.invoiceId);
+    if (openRequest && (openRequest.state === 'PENDIENTE' || openRequest.state === 'EN_REVISION_MANUAL')) {
+      throw new InvoiceHasOpenCreditNoteRequestError(input.invoiceId, openRequest.id);
+    }
+
+    let invoice!: Invoice;
+    await this.transactionManager.run(async (client: SqlClient) => {
+      invoice = await this.invoiceRepo.markUncertainClearedWithClient(client, input.invoiceId, {
+        clearedBy: input.resolvedBy,
+      });
+    });
+    return invoice;
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.14
+   * (P-1, decisión del dueño "Reconciliar contra AFIP") --
+   * `POST /api/invoices/:id/reconcile-with-afip`. Consulta el comprobante
+   * real contra AFIP (`getVoucherInfo()`) en vez de que el operador tipee
+   * un CAE a mano -- el `cbteNro` que aporta es un ÍNDICE que el sistema
+   * verifica, no el CAE en sí.
+   *
+   * Cubre DOS poblaciones con el mismo mecanismo (ver el ADR, "Población
+   * objetivo"): nunca limpiada, y ya limpiada `NO_EMITIDA` a mano ("AFIP
+   * prevalece" -- ronda 11, decisión del dueño "Prevalece igual, registrar
+   * el residuo"). Las dos escriben con `markIssuedFromAfipReconciliationWithClient()`,
+   * nunca con el escritor exclusivo del camino puramente manual
+   * (`markIssuedFromManualResolutionWithClient()`, A-2) -- corrección de
+   * ronda 13 (H2 del veredicto de ronda 12 del gate).
+   */
+  async reconcileWithAfip(input: ReconcileInvoiceWithAfipInput): Promise<Invoice> {
+    const invoice = await this.invoiceRepo.getById(input.invoiceId);
+    if (!invoice) throw new InvoiceNotFoundError(input.invoiceId);
+
+    // Guard de entrada -- mismo criterio narrowed que N-1/A-6
+    // (mark-not-issued). Corre ANTES de tocar AFIP (barato, sin llamada de
+    // red).
+    const openRequest = await this.creditNoteRequestRepo.findByInvoiceId(input.invoiceId);
+    if (openRequest && (openRequest.state === 'PENDIENTE' || openRequest.state === 'EN_REVISION_MANUAL')) {
+      throw new InvoiceHasOpenCreditNoteRequestError(input.invoiceId, openRequest.id);
+    }
+
+    const credentials = await this.afipCredentialsRepo.getDecrypted();
+    if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
+    const profile = await this.businessProfileRepo.get();
+    const authCuit = profile.afipCuit ?? profile.taxId;
+    if (!authCuit) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
+
+    const port = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
+
+    // Paso 1 -- consulta contra AFIP. A diferencia de reconcileAfterFailure()
+    // (`.catch(() => null)`, intento AUTOMÁTICO de background), acá hay un
+    // OPERADOR esperando el resultado de un click -- tragar el error en
+    // silencio sería indistinguible de "AFIP confirma que no existe ese
+    // comprobante".
+    let info: VoucherInfoResult | null;
+    try {
+      info = await port.getVoucherInfo(input.cbteNro, invoice.ptoVta, invoice.cbteTipo);
+    } catch (err) {
+      throw new AfipReconciliationUnavailableError(input.invoiceId, errMessage(err));
+    }
+
+    // Paso 2 -- AFIP responde, pero sin comprobante real. Redacción
+    // deliberadamente conservadora (ronda 11) -- NUNCA "no se emitió", solo
+    // "no se pudo confirmar" (ver el docblock de AfipVoucherNotFoundError).
+    if (!info || !info.codAutorizacion) {
+      throw new AfipVoucherNotFoundError(input.invoiceId, input.cbteNro, invoice.ptoVta, invoice.cbteTipo);
+    }
+
+    // Paso 3 -- validación cruzada de los 8 campos contra invoice.afipRequest
+    // (persistido en PascalCase por createWithClient()/buildCreditNote()).
+    // Residuo declarado a propósito (gap 4(a)): dos facturas reales
+    // distintas a Consumidor Final, mismo monto/fecha/desglose/concepto/
+    // moneda, seguirían pasando esta validación indistinguibles entre sí --
+    // es lo máximo que este mecanismo puede dar sin más información.
+    const afipRequest = invoice.afipRequest as Record<string, unknown>;
+    const crossFieldsMismatch =
+      info.docTipo !== afipRequest['DocTipo'] ||
+      info.docNro !== afipRequest['DocNro'] ||
+      info.impTotal !== afipRequest['ImpTotal'] ||
+      info.cbteFch !== afipRequest['CbteFch'] ||
+      info.impNeto !== afipRequest['ImpNeto'] ||
+      info.impIVA !== afipRequest['ImpIVA'] ||
+      info.concepto !== afipRequest['Concepto'] ||
+      info.monId !== afipRequest['MonId'];
+    if (crossFieldsMismatch) {
+      throw new AfipVoucherMismatchError(input.invoiceId, input.cbteNro);
+    }
+
+    // Paso 4 -- validación cruzada pasa: escribe SIEMPRE por el escritor
+    // exclusivo de este mecanismo, para las DOS ramas de población (ver
+    // "AFIP prevalece", corrección de ronda 13).
+    const afipResponse = {
+      reconciledWithAfip: true,
+      requestedCbteNro: input.cbteNro,
+      resolvedBy: input.resolvedBy,
+      raw: info.raw,
+    };
+    const caeVto = info.fchVto ? afipDateToIso(info.fchVto) : afipDateToIso(toAfipDate(new Date()));
+
+    let issued!: Invoice;
+    await this.transactionManager.run(async (client: SqlClient) => {
+      try {
+        issued = await this.invoiceRepo.markIssuedFromAfipReconciliationWithClient(client, input.invoiceId, {
+          cbteNro: input.cbteNro,
+          cae: info!.codAutorizacion!,
+          caeVto,
+          afipResponse,
+        });
+      } catch (err) {
+        if (!(err instanceof AfipReconciliationPreconditionError)) throw err;
+        issued = await this.reclassifyAfipReconciliation(client, input.invoiceId, input.cbteNro, info!.codAutorizacion!);
+      }
+    });
+
+    await this.closeAccountsReceivableGapBestEffort(issued);
+    return issued;
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.14 -- reclasificación
+   * de `reconcileWithAfip()` cuando el guard estricto de
+   * `markIssuedFromAfipReconciliationWithClient()` no matchea. A diferencia
+   * de `reclassifyManualResolution()`, esta población NUNCA tiene una
+   * `credit_note_request` abierta (el guard de entrada ya lo garantiza) --
+   * no lockea ni transiciona ninguna. Mismo criterio de idempotencia que P3
+   * (`finalizeIssued()`): si el comprobante ya persistido coincide con el
+   * que esta llamada intentaba grabar, éxito idempotente; si no, error sin
+   * mapeo amigable (invariante roto, revisión humana).
+   */
+  private async reclassifyAfipReconciliation(
+    client: SqlClient,
+    invoiceId: string,
+    cbteNro: number,
+    cae: string,
+  ): Promise<Invoice> {
+    const snapshot = await this.invoiceRepo.getReconciliationSnapshotForUpdate(client, invoiceId);
+    if (!snapshot) {
+      throw new Error(`reconcileWithAfip(): factura "${invoiceId}" no encontrada al reclasificar -- invariante roto.`);
+    }
+    if (snapshot.status === 'ISSUED' && snapshot.cbteNro === cbteNro && snapshot.cae === cae) {
+      const current = await this.invoiceRepo.getById(invoiceId);
+      if (current) return current;
+    }
+    throw new InvoiceIssuedComprobanteMismatchError(invoiceId);
   }
 }
 

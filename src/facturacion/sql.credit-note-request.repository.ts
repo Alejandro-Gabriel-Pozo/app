@@ -136,6 +136,17 @@ export class SqlCreditNoteRequestRepository implements CreditNoteRequestReposito
     return rowToEntity(rows[0]!);
   }
 
+  async findByIdForUpdate(client: SqlClient, id: string): Promise<CreditNoteRequest | null> {
+    // ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9, "A-4" -- SIN
+    // validar transición (a diferencia de transitionWithClient()), solo
+    // lockea y devuelve el estado actual para que el caller reclasifique.
+    const { rows } = await client.query<CreditNoteRequestRow>(
+      `SELECT * FROM credit_note_request WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    return rows[0] ? rowToEntity(rows[0]) : null;
+  }
+
   async listByState(
     state: CreditNoteRequestState,
     options: ListCreditNoteRequestsByStateOptions = {},

@@ -24,6 +24,24 @@ export interface MarkUncertainClearedInput {
 }
 
 /**
+ * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9, "A-4"
+ * — foto de la factura, leída bajo `FOR UPDATE`, que
+ * `resolveCreditNoteRequestManually()` usa para reclasificar cuando el
+ * guard estricto de `markIssuedFromManualResolutionWithClient()`/
+ * `markUncertainClearedWithClient()` (N6) no matchea. `afipContacted` hace
+ * falta para poder repetir el predicado estricto en código (no solo en
+ * SQL); `cbteNro`/`cae` para comparar el CAE declarado por el operador
+ * contra el real (decisión 2 del dueño, discrepancia de CAE).
+ */
+export interface ReconciliationSnapshot {
+  status: InvoiceStatus;
+  afipContacted: boolean;
+  uncertainClearedAt: Date | null;
+  cbteNro: number | null;
+  cae: string | null;
+}
+
+/**
  * AR-FACT-NO-ISSUED-01 (05/09/2026) -- resultado de resolver qué factura
  * interna cubre un `financial_transaction_id`, distinguiendo los TRES
  * estados que antes colapsaban en `string | null`. Ver
@@ -615,6 +633,26 @@ export interface InvoiceRepository {
    * sigue siendo 3.3-e, bloque aparte con backup durable.
    */
   listUnreconciledLiveInvoices(client: SqlClient): Promise<UnreconciledLiveInvoice[]>;
+  /**
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9 --
+   * `GET /api/invoices/uncertain`. Facturas `FAILED_UNCERTAIN` con
+   * `afip_contacted = true` y `uncertain_cleared_at IS NULL` -- la
+   * población que `POST /:id/mark-not-issued` y
+   * `POST /:id/reconcile-with-afip` (rama 1, §3.14) pueden resolver.
+   *
+   * **Criterio de exclusión (A-6, corregido en ronda 7 del ADR):** excluye
+   * las que tienen una `credit_note_request` propia que siga ABIERTA
+   * (`PENDIENTE`/`EN_REVISION_MANUAL` -- esas siguen su propio camino, `POST
+   * /credit-note-requests/:id/resolve`). **NO excluye** las que tienen una
+   * `credit_note_request` propia ya `CERRADA` -- esa factura no tiene
+   * ningún otro lugar donde aparecer (secuencia real: solicitud `CERRADA`,
+   * reintento posterior, la factura vuelve a `FAILED_UNCERTAIN` con
+   * `afip_contacted`, la solicitud sigue `CERRADA` -- ver el docblock de
+   * `InvoiceService.transitionCreditNoteRequestAfterFailure()`).
+   *
+   * Orden `created_at ASC` -- mismo criterio que `getByStatus()`.
+   */
+  listUncertainInvoices(): Promise<Invoice[]>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**
@@ -638,16 +676,76 @@ export interface InvoiceRepository {
   ): Promise<Invoice>;
   markIssued(id: string, data: MarkIssuedInput): Promise<Invoice>;
   /**
-   * Bloque 5 (15/09/2026, §6.5 bis) — versión transaccional de `markIssued()`,
-   * mismo criterio que `markFailedWithClient()` (Bloque 2): corre contra el
-   * `client` recibido para que `InvoiceService.resolveCreditNoteRequestManually()`
-   * pueda envolver este UPDATE y la transición `EN_REVISION_MANUAL -> CERRADA`
-   * de `credit_note_request` en la MISMA transacción (atomic-state-mutation,
-   * un solo commit). `markIssued()` sigue siendo el atajo sin transacción
-   * explícita que ya usan `issue()`/`reconcileAfterFailure()` vía
-   * `finalizeIssued()` — no se tocan esos call-sites.
+   * Bloque 5 (15/09/2026, §6.5 bis) — versión transaccional de `markIssued()`.
+   *
+   * **Corrección del ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026),
+   * Bloque 3, §3.9, "A-2" — desde este bloque, EXCLUSIVO del camino
+   * AUTOMÁTICO (`finalizeIssued()`, vía `issue()`/`reconcileAfterFailure()`).**
+   * Gana un guard `WHERE ... AND status <> 'ISSUED'` — antes, sin condición
+   * de status. `resolveCreditNoteRequestManually()` (rama `EMITIDA`) YA NO
+   * llama a este método — usa `markIssuedFromManualResolutionWithClient()`
+   * (abajo), con un predicado ESTRICTO propio del camino manual. Si el
+   * `RETURNING` sale vacío, el caller (`InvoiceService.finalizeIssued()`)
+   * relee el status: si ya es `'ISSUED'`, lanza `InvoiceAlreadyIssuedError`
+   * (409, `domain/errors.ts`) — ver P3 en el ADR para la política completa
+   * (idempotente si el comprobante coincide, error sin mapear si no).
    */
   markIssuedWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice>;
+  /**
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9,
+   * "A-2" — método nuevo, EXCLUSIVO del camino MANUAL
+   * (`InvoiceService.resolveCreditNoteRequestManually()`, rama `EMITIDA`).
+   * Mismo predicado ESTRICTO que N6 ya le dio a
+   * `markUncertainClearedWithClient()` — la factura tiene que estar
+   * genuinamente en la ambigüedad que la bandeja de reconciliación manual
+   * existe para resolver, ni más ni menos:
+   * `WHERE id = $1 AND status = 'FAILED_UNCERTAIN' AND afip_contacted AND
+   * uncertain_cleared_at IS NULL`. Si el `RETURNING` sale vacío, lanza
+   * `InvoiceManualResolutionPreconditionError` (409) — nombre DISTINTO del
+   * guard automático (`InvoiceAlreadyIssuedError`) a propósito, para no
+   * perder de qué rama vino el guard al reclasificar bajo lock.
+   *
+   * También atrapa el `23505` de `idx_invoices_talonario` (gap 4(c) del
+   * ADR, colisión de `cbteNro` con otra factura ya registrada) y relanza
+   * `InvoiceVoucherNumberAlreadyRegisteredError` (409) en vez de dejarlo
+   * caer al 500 genérico.
+   */
+  markIssuedFromManualResolutionWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice>;
+  /**
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.14
+   * (P-1), sección "AFIP prevalece sobre una declaración manual previa" —
+   * escritor nuevo, EXCLUSIVO de `POST /api/invoices/:id/reconcile-with-afip`.
+   * Predicado MÁS ANCHO que `markIssuedFromManualResolutionWithClient()` a
+   * propósito — cubre las DOS ramas de población de ese mecanismo con un
+   * solo `WHERE` (nunca limpiada, y ya limpiada `NO_EMITIDA` — "AFIP
+   * prevalece"): `WHERE id = $1 AND status = 'FAILED_UNCERTAIN' AND
+   * afip_contacted` — SIN condición sobre `uncertain_cleared_at`, porque
+   * AFIP (fuente verificada) es más fuerte que cualquier declaración
+   * manual previa, limpia o no.
+   *
+   * **NO limpia `uncertain_cleared_at`/`uncertain_cleared_by`** (corrección
+   * de ronda 13, H3 del veredicto de ronda 12 del gate) — para la rama "ya
+   * limpiada", esas dos columnas preservan la evidencia de que hubo una
+   * declaración manual `NO_EMITIDA` previa que AFIP terminó contradiciendo;
+   * ningún guard de este mecanismo las vuelve a leer una vez que `status`
+   * ya es `'ISSUED'`, así que dejarlas pobladas no reabre ninguna carrera.
+   *
+   * Si el `RETURNING` sale vacío, lanza `AfipReconciliationPreconditionError`
+   * (409) — nombre DISTINTO de A-2/N6 a propósito, mismo criterio. También
+   * atrapa el `23505` de `idx_invoices_talonario` igual que el método de
+   * arriba.
+   */
+  markIssuedFromAfipReconciliationWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice>;
+  /**
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.9,
+   * "A-4" — lee la factura bajo `FOR UPDATE` (ver `ReconciliationSnapshot`)
+   * para que `resolveCreditNoteRequestManually()` pueda reclasificar
+   * cuando el guard estricto de A-2/N6 no matchea. `null` si el id no
+   * existe — invariante roto real (`request.invoiceId` siempre apunta a
+   * una factura viva, R2), no un caso esperado; el caller decide qué hacer
+   * (hoy, ninguno lo trata como caso normal).
+   */
+  getReconciliationSnapshotForUpdate(client: SqlClient, invoiceId: string): Promise<ReconciliationSnapshot | null>;
   /** Atajo sin transacción explícita — delega en `markFailedWithClient(this.db, ...)`. */
   markFailed(id: string, data: MarkFailedInput): Promise<Invoice>;
   /**
@@ -670,10 +768,21 @@ export interface InvoiceRepository {
    * transaccional (mismo criterio que `markFailedWithClient()`): corre
    * DENTRO de la misma transacción que la transición
    * `EN_REVISION_MANUAL -> CERRADA` de `credit_note_request`
-   * (`resolveCreditNoteRequestManually()`, rama `NO_EMITIDA`) — no hay un
-   * atajo `markUncertainCleared()` sin `client` porque este método SIEMPRE
-   * se llama junto a esa otra escritura, a diferencia de `markFailed()` que
-   * sí tiene call-sites sueltos.
+   * (`resolveCreditNoteRequestManually()`, rama `NO_EMITIDA`) o de la
+   * transición `EN_REVISION_MANUAL`... (`POST /api/invoices/:id/mark-not-issued`,
+   * Bloque 3) — no hay un atajo `markUncertainCleared()` sin `client` porque
+   * este método SIEMPRE se llama junto a otra escritura o dentro de una
+   * transacción explícita, a diferencia de `markFailed()` que sí tiene
+   * call-sites sueltos.
+   *
+   * **Corrección del ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026),
+   * Bloque 3, §3.9, "N6" (hueco #6, ronda 3 del gate) — gana un guard**:
+   * `WHERE id = $1 AND status = 'FAILED_UNCERTAIN' AND afip_contacted AND
+   * uncertain_cleared_at IS NULL` — antes, sin condición de status (`WHERE
+   * id = $1` solo). El caller (`POST /api/invoices/:id/mark-not-issued`)
+   * relee el status si el `RETURNING` sale vacío y lanza
+   * `InvoiceUncertainClearPreconditionError` (409, `domain/errors.ts`) en
+   * vez del `throw new Error(...)` genérico anterior.
    */
   markUncertainClearedWithClient(client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice>;
   /** Solo para reconciliar un FAILED_UNCERTAIN ya resuelto a mano (A8.6) — no un "editar" genérico. */

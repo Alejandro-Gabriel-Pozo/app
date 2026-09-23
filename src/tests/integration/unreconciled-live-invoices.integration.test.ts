@@ -104,7 +104,16 @@ async function seedNcForReversal(opts: {
   revertingTransactionId: string; customerId: string; status: 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN';
 }) {
   const ncId = randomUUID();
+  // Para el caso ISSUED, el INSERT nace PENDING (mismo lifecycle real que
+  // createWithClient() + markIssued()) -- ADR ISSUE-BEFORE-REVERSE-WINDOW-001,
+  // Bloque 3, §3.9 "A-2": `markIssuedWithClient()` (que `markIssued()`
+  // delega) gana el guard `status <> 'ISSUED'`, exclusivo del camino
+  // automático, desde ese bloque. Insertar la fila YA en 'ISSUED' y
+  // DESPUÉS llamar a markIssued() sobre ella (como hacía este helper antes
+  // de ese bloque) ahora choca con ese guard -- InvoiceAlreadyIssuedError,
+  // correctamente: nadie en producción "emite dos veces" la misma fila.
   // pending_since: solo PENDING lo lleva poblado (chk_invoices_pending_since, Bloque 2b).
+  const insertStatus = opts.status === 'ISSUED' ? 'PENDING' : opts.status;
   await db.query(
     `INSERT INTO invoices
        (id, business_id, financial_transaction_id, customer_id, idempotency_key,
@@ -113,8 +122,8 @@ async function seedNcForReversal(opts: {
      VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 8, 1, 96, '0',
              5, 'PES', 826.45, 173.55, 1000, $6, TRUE, $7)`,
     [
-      ncId, BUSINESS_ID, opts.revertingTransactionId, opts.customerId, `idem-${ncId}`, opts.status,
-      opts.status === 'PENDING' ? new Date() : null,
+      ncId, BUSINESS_ID, opts.revertingTransactionId, opts.customerId, `idem-${ncId}`, insertStatus,
+      insertStatus === 'PENDING' ? new Date() : null,
     ],
   );
   if (opts.status === 'ISSUED') {

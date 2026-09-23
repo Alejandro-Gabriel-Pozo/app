@@ -69,7 +69,11 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // `authorizeAny()` en `security/auth.middleware.ts` y el de `AUTHZ_RE` en
 // `route-enumeration.fixture.ts` (que SÍ la reconoce, para la cerca
 // `rbac-route-coverage.test.ts`, un mecanismo distinto de éste).
-const EXPECTED_AUTHORIZE_CALL_SITES = 215;
+// ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.15 -- 218,
+// no 215: invoices.routes.ts suma 3 authorize() nuevos --
+// GET /uncertain (Roles.MANAGEMENT), POST /:id/mark-not-issued y
+// POST /:id/reconcile-with-afip (los dos, Roles.EMISOR_NOTA_CREDITO).
+const EXPECTED_AUTHORIZE_CALL_SITES = 218;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

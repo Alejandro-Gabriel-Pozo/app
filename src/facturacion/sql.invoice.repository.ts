@@ -1,12 +1,19 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
 import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, InvoiceLinkage, ReconciliationSnapshot } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { isInvoiceFullyCompensatedByIssuedCreditNotes, isReservationPortionFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { resolveRefundableForPair, type ResolveRefundableForPairResult, type FrozenInvoiceItemShare, type FrozenIvaEntry } from './refund-attribution.js';
 import { randomUUID } from 'node:crypto';
+import {
+  InvoiceAlreadyIssuedError,
+  InvoiceManualResolutionPreconditionError,
+  InvoiceUncertainClearPreconditionError,
+  InvoiceVoucherNumberAlreadyRegisteredError,
+  AfipReconciliationPreconditionError,
+} from '../domain/errors.js';
 
 interface InvoiceRow {
   id: string;
@@ -291,6 +298,22 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     const { rows } = await this.db.query<InvoiceRow>(
       `SELECT * FROM invoices WHERE status = $1 ORDER BY created_at ASC`,
       [status],
+    );
+    return rows.map(rowToEntity);
+  }
+
+  async listUncertainInvoices(): Promise<Invoice[]> {
+    // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 -- ver el
+    // docblock de la interfaz para el criterio de exclusión (A-6).
+    const { rows } = await this.db.query<InvoiceRow>(
+      `SELECT i.* FROM invoices i
+        WHERE i.status = 'FAILED_UNCERTAIN' AND i.afip_contacted AND i.uncertain_cleared_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM credit_note_request cnr
+             WHERE cnr.invoice_id = i.id AND cnr.state IN ('PENDIENTE', 'EN_REVISION_MANUAL')
+          )
+        ORDER BY i.created_at ASC`,
+      [],
     );
     return rows.map(rowToEntity);
   }
@@ -1471,19 +1494,146 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   async markIssuedWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
     // Bloque 2a (docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
     // §3.6) -- sale de PENDING hacia ISSUED, así que limpia pending_since
-    // acá mismo. Sin condición de status en el WHERE (mismo comportamiento
-    // de siempre, sin cambios de este bloque) -- la toma exclusiva
-    // condicionada es del Bloque 2c, no de este.
+    // acá mismo.
+    //
+    // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 "A-2" -- gana
+    // `AND status <> 'ISSUED'`: desde este bloque, este método es EXCLUSIVO
+    // del camino AUTOMÁTICO (`finalizeIssued()`). El camino MANUAL
+    // (`resolveCreditNoteRequestManually()`, rama EMITIDA) usa
+    // `markIssuedFromManualResolutionWithClient()`, más abajo, con su
+    // propio predicado estricto -- no comparten guard (P2(a)/A-2 del ADR:
+    // los dos callers necesitan predicados DISTINTOS).
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET cbte_nro = $2, cae = $3, cae_vto = $4, afip_response = $5,
            status = 'ISSUED', issued_at = NOW(), pending_since = NULL
-       WHERE id = $1
+       WHERE id = $1 AND status <> 'ISSUED'
        RETURNING *`,
       [id, data.cbteNro, data.cae, data.caeVto, JSON.stringify(data.afipResponse)],
     );
-    if (!rows[0]) throw new Error(`Invoice ${id} no encontrada al marcar ISSUED`);
-    return rowToEntity(rows[0]);
+    if (rows[0]) return rowToEntity(rows[0]);
+
+    // RETURNING vacío -- desambiguar entre "ya está ISSUED" (guard nuevo
+    // saltó) e "id inexistente" (invariante roto real, sin cambios de este
+    // bloque).
+    const { rows: statusRows } = await client.query<{ status: InvoiceStatus }>(
+      `SELECT status FROM invoices WHERE id = $1`,
+      [id],
+    );
+    const current = statusRows[0];
+    if (current && current.status === 'ISSUED') throw new InvoiceAlreadyIssuedError(id);
+    throw new Error(`Invoice ${id} no encontrada al marcar ISSUED`);
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 "A-2" -- ver el
+   * docblock de la interfaz (`invoice.repository.ts`) para el mecanismo
+   * completo. Predicado estricto compartido con `markUncertainClearedWithClient()`
+   * (N6): la factura tiene que seguir genuinamente en la ambigüedad que la
+   * bandeja de reconciliación manual existe para resolver.
+   */
+  async markIssuedFromManualResolutionWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    const { rows } = await this.updateIssuedFromReconciliation(
+      client,
+      id,
+      data,
+      `status = 'FAILED_UNCERTAIN' AND afip_contacted AND uncertain_cleared_at IS NULL`,
+    );
+    if (rows[0]) return rowToEntity(rows[0]);
+    throw new InvoiceManualResolutionPreconditionError(id);
+  }
+
+  /**
+   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.14 (P-1), sección
+   * "AFIP prevalece sobre una declaración manual previa" -- ver el docblock
+   * de la interfaz para el mecanismo completo. Predicado MÁS ANCHO que
+   * `markIssuedFromManualResolutionWithClient()` a propósito -- no mira
+   * `uncertain_cleared_at`, y NO limpia esa columna ni `uncertain_cleared_by`
+   * en el SET (preserva el rastro de una declaración manual previa que AFIP
+   * terminó contradiciendo).
+   */
+  async markIssuedFromAfipReconciliationWithClient(client: SqlClient, id: string, data: MarkIssuedInput): Promise<Invoice> {
+    const { rows } = await this.updateIssuedFromReconciliation(
+      client,
+      id,
+      data,
+      `status = 'FAILED_UNCERTAIN' AND afip_contacted`,
+    );
+    if (rows[0]) return rowToEntity(rows[0]);
+    throw new AfipReconciliationPreconditionError(id);
+  }
+
+  /**
+   * Fragmento compartido entre `markIssuedFromManualResolutionWithClient()`
+   * y `markIssuedFromAfipReconciliationWithClient()` -- mismo UPDATE, mismo
+   * catch de colisión de `cbteNro` (gap 4(c) del ADR, `idx_invoices_talonario`),
+   * solo difieren en el predicado estricto de reintentabilidad (recibido
+   * como `extraWhere`, ya armado por el caller -- nunca interpolación de
+   * datos externos, solo SQL literal fijo de cada caller).
+   *
+   * **`pto_vta`/`cbte_tipo` se leen ANTES del `UPDATE` que puede fallar, no
+   * después (corrección de implementación, no del diseño del ADR) --**
+   * este método corre casi siempre DENTRO de una transacción explícita
+   * (`transactionManager.run()`, ver `InvoiceService.resolveCreditNoteRequestManually()`/
+   * `reconcileWithAfip()`): una violación real de constraint (`23505`) dentro
+   * de esa transacción la deja abortada del lado de Postgres (`25P02`) hasta
+   * el `ROLLBACK` -- cualquier query POSTERIOR sobre el mismo `client`,
+   * incluida una de solo lectura para armar el mensaje del error, fallaría
+   * con "current transaction is aborted" en vez de dar el contexto que el
+   * error tipado necesita. Leer antes evita depender de que la conexión
+   * siga sirviendo queries después del fallo.
+   */
+  private async updateIssuedFromReconciliation(
+    client: SqlClient,
+    id: string,
+    data: MarkIssuedInput,
+    extraWhere: string,
+  ): Promise<{ rows: InvoiceRow[] }> {
+    // Leído ANTES del UPDATE que puede fallar (ver docblock del método) --
+    // seguro aunque la transacción quede abortada por el 23505 de más abajo.
+    const { rows: invRows } = await client.query<{ pto_vta: number; cbte_tipo: number }>(
+      `SELECT pto_vta, cbte_tipo FROM invoices WHERE id = $1`,
+      [id],
+    );
+    const inv = invRows[0];
+    try {
+      return await client.query<InvoiceRow>(
+        `UPDATE invoices
+         SET cbte_nro = $2, cae = $3, cae_vto = $4, afip_response = $5,
+             status = 'ISSUED', issued_at = NOW(), pending_since = NULL
+         WHERE id = $1 AND ${extraWhere}
+         RETURNING *`,
+        [id, data.cbteNro, data.cae, data.caeVto, JSON.stringify(data.afipResponse)],
+      );
+    } catch (err) {
+      const e = err as { code?: string; constraint?: string };
+      if (e?.code === '23505' && e?.constraint === 'idx_invoices_talonario') {
+        throw new InvoiceVoucherNumberAlreadyRegisteredError(id, data.cbteNro, inv?.pto_vta ?? 0, inv?.cbte_tipo ?? 0);
+      }
+      throw err;
+    }
+  }
+
+  async getReconciliationSnapshotForUpdate(client: SqlClient, invoiceId: string): Promise<ReconciliationSnapshot | null> {
+    const { rows } = await client.query<{
+      status: InvoiceStatus;
+      afip_contacted: boolean;
+      uncertain_cleared_at: Date | null;
+      cbte_nro: string | null;
+      cae: string | null;
+    }>(
+      `SELECT status, afip_contacted, uncertain_cleared_at, cbte_nro, cae FROM invoices WHERE id = $1 FOR UPDATE`,
+      [invoiceId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      status: row.status,
+      afipContacted: row.afip_contacted,
+      uncertainClearedAt: row.uncertain_cleared_at,
+      cbteNro: row.cbte_nro !== null ? Number(row.cbte_nro) : null,
+      cae: row.cae,
+    };
   }
 
   async markFailed(id: string, data: MarkFailedInput): Promise<Invoice> {
@@ -1514,15 +1664,28 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async markUncertainClearedWithClient(client: SqlClient, id: string, data: MarkUncertainClearedInput): Promise<Invoice> {
+    // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 3, §3.9 "N6" (hueco #6,
+    // ronda 3 del gate) -- gana el guard estricto: la factura tiene que
+    // seguir genuinamente en la ambigüedad que esta acción existe para
+    // resolver. Antes: `WHERE id = $1` sin condición.
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET uncertain_cleared_at = NOW(), uncertain_cleared_by = $2
        WHERE id = $1
+         AND status = 'FAILED_UNCERTAIN' AND afip_contacted AND uncertain_cleared_at IS NULL
        RETURNING *`,
       [id, data.clearedBy],
     );
-    if (!rows[0]) throw new Error(`Invoice ${id} no encontrada al limpiar uncertain_cleared`);
-    return rowToEntity(rows[0]);
+    if (rows[0]) return rowToEntity(rows[0]);
+
+    // RETURNING vacío -- desambiguar "ya se limpió/resolvió" (invariante
+    // de precondición) de "id inexistente" (invariante roto real).
+    const { rows: statusRows } = await client.query<{ status: InvoiceStatus }>(
+      `SELECT status FROM invoices WHERE id = $1`,
+      [id],
+    );
+    if (statusRows[0]) throw new InvoiceUncertainClearPreconditionError(id);
+    throw new Error(`Invoice ${id} no encontrada al limpiar uncertain_cleared`);
   }
 
   async getStatus(id: string): Promise<InvoiceStatus | null> {

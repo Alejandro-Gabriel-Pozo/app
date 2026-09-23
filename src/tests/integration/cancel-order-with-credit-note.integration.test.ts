@@ -294,7 +294,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
     // aunque este test solo ejercita createWithClient() (atomicidad del
     // INSERT de Bloque 3). Los otros dos no deberían llamarse nunca acá --
     // fallan ruidoso si algo los invoca por error.
-    const failingRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'> = {
+    const failingRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'findByIdForUpdate' | 'transitionWithClient'> = {
       async createWithClient(): Promise<never> {
         throw new Error('simulado -- violación de constraint en credit_note_request');
       },
@@ -306,6 +306,12 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       // caller en este test.
       async findById(): Promise<never> {
         throw new Error('buildInvoiceServiceWithFailingCreditNoteRequestRepo: findById() no debería llamarse en este test');
+      },
+      // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9,
+      // "A-4" -- el Pick de InvoiceService ahora también exige
+      // findByIdForUpdate() (reclasificación bajo lock), sin caller en este test.
+      async findByIdForUpdate(): Promise<never> {
+        throw new Error('buildInvoiceServiceWithFailingCreditNoteRequestRepo: findByIdForUpdate() no debería llamarse en este test');
       },
       async transitionWithClient(): Promise<never> {
         throw new Error('buildInvoiceServiceWithFailingCreditNoteRequestRepo: transitionWithClient() no debería llamarse en este test');
@@ -332,12 +338,14 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
    */
   function buildInvoiceServiceWithFailingTransition(arcaFactory: () => Arca): InvoiceService {
     const real = new SqlCreditNoteRequestRepository(db);
-    const failingTransitionRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'transitionWithClient'> = {
+    const failingTransitionRepo: Pick<CreditNoteRequestRepository, 'createWithClient' | 'findByInvoiceId' | 'findById' | 'findByIdForUpdate' | 'transitionWithClient'> = {
       createWithClient: (client, input) => real.createWithClient(client, input),
       findByInvoiceId: (invoiceId) => real.findByInvoiceId(invoiceId),
       // Bloque 5 (15/09/2026, §6.5 bis) -- delega al repo real, mismo
       // criterio que createWithClient/findByInvoiceId de arriba.
       findById: (id) => real.findById(id),
+      // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3 -- ídem, delega al repo real.
+      findByIdForUpdate: (client, id) => real.findByIdForUpdate(client, id),
       async transitionWithClient(): Promise<never> {
         throw new Error('simulado -- fallo NO tolerado al transicionar credit_note_request (Bloque 4, test de atomicidad)');
       },

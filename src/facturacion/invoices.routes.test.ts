@@ -101,32 +101,53 @@ const INVOICE_ROW = {
 };
 
 describe('gating de FACTURACION en el router', () => {
-  it('los 4 GET de /api/invoices NO llevan el gate: stack [authorize, handler]', () => {
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9/§3.14
+  // -- suma GET /uncertain (5to GET, sin gate) y los 2 POST nuevos
+  // (mark-not-issued, reconcile-with-afip), TAMBIÉN sin gate de módulo --
+  // mismo criterio que `POST /api/credit-note-requests/:id/resolve`
+  // (`credit-note-requests.routes.ts`, sin requireModule en absoluto):
+  // resolver el estado ambiguo de una factura ya existente no puede
+  // quedar detrás de un entitlement revocable, mismo espíritu que el
+  // resto de los GET de este archivo. Por eso el router ahora tiene DOS
+  // grupos de POST con stack.length distinto -- separados en dos tests.
+  it('los 5 GET de /api/invoices NO llevan el gate: stack [authorize, handler]', () => {
     const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
       stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
     };
     const gets = router.stack.filter((l) => l.route && l.route.methods['get']);
     // /unreconciled (10/09/2026, bandeja) -- sin gate de módulo, mismo
     // criterio que el resto de los GET de este router.
-    expect(gets.map((l) => l.route!.path).sort()).toEqual(['/', '/:id', '/:id/pdf', '/unreconciled']);
+    expect(gets.map((l) => l.route!.path).sort()).toEqual(['/', '/:id', '/:id/pdf', '/uncertain', '/unreconciled']);
     for (const l of gets) expect(l.route!.stack.length).toBe(2);
   });
 
-  it('/unreconciled está registrada ANTES de /:id -- si no, Express la sombrea y nunca se alcanza', () => {
+  it('/unreconciled y /uncertain están registradas ANTES de /:id -- si no, Express las sombrea y nunca se alcanzan', () => {
     const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
       stack: Array<{ route?: { path: string; methods: Record<string, boolean> } }>;
     };
     const paths = router.stack.filter((l) => l.route).map((l) => l.route!.path);
     expect(paths.indexOf('/unreconciled')).toBeLessThan(paths.indexOf('/:id'));
+    expect(paths.indexOf('/uncertain')).toBeLessThan(paths.indexOf('/:id'));
   });
 
-  it('las mutaciones de /api/invoices SÍ llevan el gate: stack [gate, authorize, handler]', () => {
+  it('las mutaciones DE CREACIÓN de /api/invoices SÍ llevan el gate: stack [gate, authorize, handler]', () => {
     const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
       stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
     };
     const posts = router.stack.filter((l) => l.route && l.route.methods['post']);
-    expect(posts.map((l) => l.route!.path).sort()).toEqual(['/', '/consolidated']);
-    for (const l of posts) expect(l.route!.stack.length).toBe(3);
+    const gated = posts.filter((l) => ['/', '/consolidated'].includes(l.route!.path));
+    expect(gated.map((l) => l.route!.path).sort()).toEqual(['/', '/consolidated']);
+    for (const l of gated) expect(l.route!.stack.length).toBe(3);
+  });
+
+  it('las rutas de resolución de ambigüedad (mark-not-issued, reconcile-with-afip) NO llevan el gate: stack [authorize, handler]', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
+      stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
+    };
+    const posts = router.stack.filter((l) => l.route && l.route.methods['post']);
+    const ungated = posts.filter((l) => !['/', '/consolidated'].includes(l.route!.path));
+    expect(ungated.map((l) => l.route!.path).sort()).toEqual(['/:id/mark-not-issued', '/:id/reconcile-with-afip']);
+    for (const l of ungated) expect(l.route!.stack.length).toBe(2);
   });
 });
 
@@ -398,6 +419,73 @@ describe('POST /api/invoices/consolidated -- validación de body (Zod)', () => {
     const handler = getHandler(router, 'post', '/consolidated');
     const req = {
       body: {}, user: { id: 'identity-1', businessId: 'biz-1' },
+      db: { query: vi.fn(async () => { throw new Error('no debería tocar la DB'); }) },
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+// ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 -- ver el
+// docblock del archivo para por qué priorizar Zod/404/mapeo de status acá y
+// dejar el camino feliz completo (AFIP real, credit_note_request) a
+// invoice.service.test.ts + integración contra Postgres real (§7 del ADR).
+describe('GET /api/invoices/uncertain', () => {
+  it('devuelve las facturas FAILED_UNCERTAIN sin resolver', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'get', '/uncertain');
+    const uncertainRow = { ...INVOICE_ROW, status: 'FAILED_UNCERTAIN', afip_contacted: true, cbte_nro: null, cae: null, cae_vto: null };
+    const req = { db: fakeDb(async () => ({ rows: [uncertainRow] })) } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ id: 'inv-1', status: 'FAILED_UNCERTAIN' })]);
+  });
+});
+
+describe('POST /api/invoices/:id/mark-not-issued', () => {
+  it('propaga el error del service vía next() (ej. InvoiceHasOpenCreditNoteRequestError, InvoiceUncertainClearPreconditionError)', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'post', '/:id/mark-not-issued');
+    const req = {
+      params: { id: 'inv-1' }, body: {}, user: { id: 'identity-manager', businessId: 'biz-1' },
+      db: { query: vi.fn(async () => { throw new Error('boom -- error inesperado del repo'); }) },
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+describe('POST /api/invoices/:id/reconcile-with-afip -- validación de body (Zod)', () => {
+  it('400 si falta cbteNro', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'post', '/:id/reconcile-with-afip');
+    const req = {
+      params: { id: 'inv-1' }, body: {}, user: { id: 'identity-manager', businessId: 'biz-1' },
+      db: { query: vi.fn(async () => { throw new Error('no debería tocar la DB'); }) },
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('400 si cbteNro no es un entero positivo', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'post', '/:id/reconcile-with-afip');
+    const req = {
+      params: { id: 'inv-1' }, body: { cbteNro: -1 }, user: { id: 'identity-manager', businessId: 'biz-1' },
       db: { query: vi.fn(async () => { throw new Error('no debería tocar la DB'); }) },
     } as unknown as Request;
     const res = fakeRes();

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InvoicePdfService } from './invoice-pdf.service.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, MarkUncertainClearedInput, ReconciliationSnapshot } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, CreateInvoiceItemInput, InvoiceItem, InvoiceStatus } from './invoice.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
@@ -45,6 +45,11 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async markFailed(_id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markFailedWithClient(_client: SqlClient, _id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markUncertainClearedWithClient(_client: SqlClient, _id: string, _data: MarkUncertainClearedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3 -- sin caller en este test.
+  async markIssuedFromManualResolutionWithClient(_client: SqlClient, _id: string, _data: MarkIssuedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
+  async markIssuedFromAfipReconciliationWithClient(_client: SqlClient, _id: string, _data: MarkIssuedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
+  async getReconciliationSnapshotForUpdate(): Promise<ReconciliationSnapshot | null> { return null; }
+  async listUncertainInvoices(): Promise<Invoice[]> { return []; }
   async getStatus(): Promise<InvoiceStatus | null> { return this.invoice?.status ?? null; }
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> { return this.invoice?.id === invoiceId ? this.items : []; }
   async getOrderIdsByInvoiceItemId() { return new Map<string, string>(); } // 1c-ii-a (11/09/2026) -- sin caller en este test

@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 15/09/2026 (F2-06, `invoices.routes.ts::createAfipCredentialsRouter` PUT/DELETE `MANAGEMENT` → `OWNER_ONLY`, `docs/decisiones-auditoria-fase2-2026-09-15.md` #1 -- conteo de `authorize()` sin cambios, solo el argumento).
+**Última actualización:** 23/09/2026 (ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 3, §3.9/§3.14 -- `invoices.routes.ts` suma 3 rutas nuevas: `GET /uncertain` (`MANAGEMENT`), `POST /:id/mark-not-issued` y `POST /:id/reconcile-with-afip` (las dos, `EMISOR_NOTA_CREDITO`) -- 215 → 218 call-sites de `authorize()`).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (215 call-sites, 39 archivos)
+## 2. Matriz de endpoints por archivo (218 call-sites, 39 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -188,7 +188,7 @@ ver sección 4.
 - POST `/:id/resolve` — `EMISOR_NOTA_CREDITO` (simple, NO `authorizeAny` — la transición de estado no se amplía a MANAGEMENT, solo la lectura)
 
 **`invoices.routes.ts`** — `requireModule(FACTURACION)` en las MUTACIONES y en `createAfipCredentialsRouter`. Los GET de `/api/invoices` van **sin** gate de módulo: leer un comprobante fiscal ya emitido es obligación legal de exhibición (`criterios-datos.md` línea 24; ver `diseno-cascada-enforcement-2026-08-30.md` §3d — 30/08/2026). Dos routers:
-- `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`; si el cargo pertenece a un cliente `kind='COMPANY'` exige **además** `MANAGEMENT`, chequeo inline en el handler, no un `authorize()` de más — 13/09/2026, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3, ver `requireManagementForCompanyCharge()` en `invoices.routes.ts`; NO aplica si el cargo es `REFUND`/`ADJUSTMENT` — la Nota de Crédito del escape de cancelación sigue alcanzando con `EMISOR_NOTA_CREDITO`, decisión separada del dueño); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/unreconciled` — `FRONT_DESK` (sin gate de módulo, 10/09/2026 — bandeja "factura viva no conciliada", registrada ANTES de `/:id` para no quedar sombreada por ese patrón); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)
+- `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`; si el cargo pertenece a un cliente `kind='COMPANY'` exige **además** `MANAGEMENT`, chequeo inline en el handler, no un `authorize()` de más — 13/09/2026, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3, ver `requireManagementForCompanyCharge()` en `invoices.routes.ts`; NO aplica si el cargo es `REFUND`/`ADJUSTMENT` — la Nota de Crédito del escape de cancelación sigue alcanzando con `EMISOR_NOTA_CREDITO`, decisión separada del dueño); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/unreconciled` — `FRONT_DESK` (sin gate de módulo, 10/09/2026 — bandeja "factura viva no conciliada", registrada ANTES de `/:id` para no quedar sombreada por ese patrón); GET `/uncertain` — `MANAGEMENT` (sin gate de módulo, 23/09/2026, ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` Bloque 3, §3.9 — bandeja de facturas `FAILED_UNCERTAIN` sin resolver, registrada ANTES de `/:id`, mismo motivo que `/unreconciled`); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo); POST `/:id/mark-not-issued` — `EMISOR_NOTA_CREDITO` (sin gate de módulo, mismo criterio que `POST /api/credit-note-requests/:id/resolve` — resolver el estado ambiguo de una factura ya existente no puede quedar detrás de un entitlement revocable — 23/09/2026, ADR Bloque 3, §3.9); POST `/:id/reconcile-with-afip` — `EMISOR_NOTA_CREDITO` (ídem, sin gate de módulo — 23/09/2026, ADR Bloque 3, §3.14, P-1)
 - `createAfipCredentialsRouter` (todo `requireModule(FACTURACION)`): GET `/status` — `MANAGEMENT` (solo devuelve `{configured, environment}`, nunca el secreto -- no escaló); PUT `/` — `OWNER_ONLY` (15/09/2026, F2-06, antes `MANAGEMENT` -- mismo nivel que el candado de campo fiscal de `business-profile.routes.ts`, ver punto 6 de la sección 5); DELETE `/` — `OWNER_ONLY` (ídem PUT)
 
 ### `src/platform/`

@@ -22,6 +22,11 @@
  * GET  /api/invoices/unreconciled — FRONT_DESK (10/09/2026, bandeja "factura
  *      viva no conciliada" -- ver InvoiceRepository.listUnreconciledLiveInvoices().
  *      Registrada ANTES de /:id, no la muevas después)
+ * GET  /api/invoices/uncertain — MANAGEMENT (23/09/2026, ADR
+ *      `ISSUE-BEFORE-REVERSE-WINDOW-001` Bloque 3, §3.9 -- bandeja nueva de
+ *      facturas `FAILED_UNCERTAIN` sin resolver, ver
+ *      InvoiceRepository.listUncertainInvoices(). Registrada ANTES de
+ *      /:id, mismo motivo que /unreconciled)
  * GET  /api/invoices/:id      — FRONT_DESK
  * GET  /api/invoices?financialTransactionId=... — FRONT_DESK
  * GET  /api/invoices?customerId=...              — FRONT_DESK (O2-F2, F2.2 --
@@ -31,6 +36,19 @@
  *      08/09/2026 -- localizar un caso trabado sin conocer de antemano su
  *      financialTransactionId/customerId; NO es la bandeja completa de B3,
  *      ver docblock de InvoiceRepository.getByStatus())
+ * POST /api/invoices/:id/mark-not-issued — EMISOR_NOTA_CREDITO (23/09/2026,
+ *      ADR Bloque 3, §3.9 -- mismo efecto que
+ *      resolveCreditNoteRequestManually() con outcome NO_EMITIDA, pero SIN
+ *      credit_note_request involucrada (CHARGE, o NC con solicitud ya
+ *      CERRADA). Rechaza con InvoiceHasOpenCreditNoteRequestError (409) si
+ *      la factura tiene una credit_note_request propia todavía ABIERTA --
+ *      esa combinación va por POST /credit-note-requests/:id/resolve)
+ * POST /api/invoices/:id/reconcile-with-afip — EMISOR_NOTA_CREDITO
+ *      (23/09/2026, ADR Bloque 3, §3.14, P-1 -- decisión del dueño
+ *      "Reconciliar contra AFIP": consulta el comprobante real contra AFIP
+ *      mismo en vez de que el operador tipee un CAE a mano. Mismo grupo que
+ *      el resto de esta bandeja, por consistencia operativa -- decisión del
+ *      dueño, ver el encabezado del ADR)
  *
  * `requireModule(ModuleKey.FACTURACION)` gatea las MUTACIONES (POST /,
  * POST /consolidated) y el router de credenciales AFIP. Los GET de
@@ -64,7 +82,7 @@ import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlServiceItemRepository } from '../pos-menu/sql.service-item.repository.js';
 import { SqlCreditNoteRequestRepository } from './sql.credit-note-request.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
+import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema, ReconcileInvoiceWithAfipSchema } from '../api/schemas/facturacion.schemas.js';
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { InvoiceStatus } from './invoice.entities.js';
@@ -260,6 +278,23 @@ export function createInvoicesRouter(container: AppContainer): Router {
     },
   );
 
+  // ── GET /api/invoices/uncertain ──────────────────────────────────────────
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 --
+  // bandeja nueva, ver InvoiceRepository.listUncertainInvoices(). RBAC
+  // MANAGEMENT (decisión del dueño, mismo criterio que el reporte (d) de
+  // §3.10 -- ambos exponen estado de facturación sin reconciliar).
+  // Registrada ANTES de /:id, mismo motivo que /unreconciled.
+  router.get(
+    '/uncertain',
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const list = await new SqlInvoiceRepository(req.db!).listUncertainInvoices();
+        res.json(list);
+      } catch (err) { next(err); }
+    },
+  );
+
   // ── GET /api/invoices/:id ─────────────────────────────────────────────────
   router.get(
     '/:id',
@@ -295,6 +330,42 @@ export function createInvoicesRouter(container: AppContainer): Router {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="comprobante-${id}.pdf"`);
         res.send(pdf);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /api/invoices/:id/mark-not-issued ──────────────────────────────
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9 -- ver
+  // docblock del archivo y de InvoiceService.markInvoiceNotIssued().
+  router.post(
+    '/:id/mark-not-issued',
+    authorize(Roles.EMISOR_NOTA_CREDITO),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const invoice = await buildInvoiceService(req).markInvoiceNotIssued({
+          invoiceId: String(req.params['id']),
+          resolvedBy: req.user!.id,
+        });
+        res.json(invoice);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /api/invoices/:id/reconcile-with-afip ──────────────────────────
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.14 (P-1)
+  // -- ver docblock del archivo y de InvoiceService.reconcileWithAfip().
+  router.post(
+    '/:id/reconcile-with-afip',
+    authorize(Roles.EMISOR_NOTA_CREDITO),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = ReconcileInvoiceWithAfipSchema.parse(req.body);
+        const invoice = await buildInvoiceService(req).reconcileWithAfip({
+          invoiceId: String(req.params['id']),
+          cbteNro: body.cbteNro,
+          resolvedBy: req.user!.id,
+        });
+        res.json(invoice);
       } catch (err) { next(err); }
     },
   );

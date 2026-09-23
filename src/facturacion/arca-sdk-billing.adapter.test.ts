@@ -118,7 +118,53 @@ describe('ArcaSdkBillingAdapter.getVoucherInfo', () => {
 
     const result = await adapter.getVoucherInfo(1, 3, 6);
 
-    expect(result).toEqual({ codAutorizacion: 'CAE-999', fchVto: '20261231', raw: { codAutorizacion: 'CAE-999', fchVto: '20261231', resultado: 'A' } });
+    expect(result).toEqual({
+      codAutorizacion: 'CAE-999',
+      fchVto: '20261231',
+      docTipo: null,
+      docNro: null,
+      impTotal: null,
+      cbteFch: null,
+      impNeto: null,
+      impIVA: null,
+      concepto: null,
+      monId: null,
+      raw: { codAutorizacion: 'CAE-999', fchVto: '20261231', resultado: 'A' },
+    });
+  });
+
+  // ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.14,
+  // gap 4(b) -- los 8 campos que la validación cruzada de
+  // `reconcile-with-afip` necesita se reenvían tal cual del DTO del SDK,
+  // sin transformarlos.
+  it('reenvía docTipo/docNro/impTotal/cbteFch/impNeto/impIVA/concepto/monId sin transformarlos', async () => {
+    const getVoucherInfo = vi.fn().mockResolvedValue({
+      codAutorizacion: 'CAE-999',
+      fchVto: '20261231',
+      resultado: 'A',
+      docTipo: 99,
+      docNro: 0,
+      impTotal: 1210,
+      cbteFch: '20260923',
+      impNeto: 1000,
+      impIVA: 210,
+      concepto: 2,
+      monId: 'PES',
+    });
+    const adapter = new ArcaSdkBillingAdapter(fakeArcaClient({ getVoucherInfo }));
+
+    const result = await adapter.getVoucherInfo(1, 3, 6);
+
+    expect(result).toMatchObject({
+      docTipo: 99,
+      docNro: 0,
+      impTotal: 1210,
+      cbteFch: '20260923',
+      impNeto: 1000,
+      impIVA: 210,
+      concepto: 2,
+      monId: 'PES',
+    });
   });
 
   it('el SDK puede devolver null directo (comprobante inexistente) -- se propaga como null, no explota', async () => {

@@ -119,11 +119,25 @@ export class ArcaSdkBillingAdapter implements AfipBillingPort {
     // Nombres en camelCase acá (codAutorizacion/fchVto) -- este DTO del
     // SDK normaliza el XML crudo de AFIP, a diferencia de
     // CreateVoucherResultDto que expone cae/caeFchVto directo.
+    //
+    // ADR `ISSUE-BEFORE-REVERSE-WINDOW-001` (23/09/2026), Bloque 3, §3.14,
+    // gap 4(b) -- docTipo/docNro/impTotal/cbteFch/impNeto/impIVA/concepto/
+    // monId reenviados tal cual del DTO del SDK (VoucherInfo,
+    // electronic-billing.types.d.ts), sin transformarlos -- la validación
+    // cruzada de la reconciliación contra AFIP los necesita.
     const info = await withAfipTimeout(this.client.electronicBillingService.getVoucherInfo(cbteNro, ptoVta, cbteTipo), 'getVoucherInfo');
     if (!info) return null;
     return {
       codAutorizacion: info.codAutorizacion ?? null,
       fchVto: info.fchVto ?? null,
+      docTipo: info.docTipo ?? null,
+      docNro: info.docNro ?? null,
+      impTotal: info.impTotal ?? null,
+      cbteFch: info.cbteFch ?? null,
+      impNeto: info.impNeto ?? null,
+      impIVA: info.impIVA ?? null,
+      concepto: info.concepto ?? null,
+      monId: info.monId ?? null,
       raw: info,
     };
   }

@@ -94,6 +94,13 @@ export class InMemoryCreditNoteRequestRepository implements CreditNoteRequestRep
     return updated;
   }
 
+  async findByIdForUpdate(_client: SqlClient, id: string): Promise<CreditNoteRequest | null> {
+    // Sin transacción in-memory real -- ver docblock del archivo. Mismo
+    // criterio que transitionWithClient(): no hay lock que tomar, solo se
+    // devuelve el estado actual.
+    return this.requests.get(id) ?? null;
+  }
+
   async listByState(
     state: CreditNoteRequestState,
     options: ListCreditNoteRequestsByStateOptions = {},

@@ -311,6 +311,14 @@ const NO_CONSUMER_ROUTES: Record<string, string> = {
   '/api/reservations/:p/cancellation-refund/preview': 'Backlog ya declarado en app-main/CLAUDE.md, sección irreversible-action-gate (cancelación C2 sin preview/confirm de reembolso todavía en UI). F14-01.',
   '/api/reservations/:p/cancellation-refund/confirm': 'Ídem.',
 
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3, §3.9/§3.14 --
+  // las 3 rutas nuevas de la bandeja de reconciliación manual/AFIP, mismo
+  // criterio que las 3 de /api/credit-note-requests de arriba: construidas
+  // en este bloque, sin pantalla en appfrontend-main todavía -- no abandonadas.
+  '/api/invoices/uncertain': 'Construido 23/09/2026 (ADR ISSUE-BEFORE-REVERSE-WINDOW-001 Bloque 3, §3.9), UI pendiente -- no abandonado.',
+  '/api/invoices/:p/mark-not-issued': 'Ídem.',
+  '/api/invoices/:p/reconcile-with-afip': 'Ídem, §3.14 (P-1).',
+
   // Hallazgo nuevo de esta cerca (16/09/2026, D-23(1)), no estaba en la lista
   // de 35 de F14-01 -- ese grep no distinguía /platform/businesses/:id (GET
   // de un negocio puntual) de sus 3 hermanos con sufijo (status/provision/
