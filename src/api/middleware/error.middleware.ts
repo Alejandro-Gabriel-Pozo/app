@@ -369,6 +369,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL':
     case 'CREDIT_NOTE_AMBIGUOUS_SUBJECT':
     case 'CREDIT_NOTE_REQUEST_INVALID_TRANSITION':
+    case 'RETRY_INVOICE_IN_FLIGHT':
       return 409;
 
     // --- 503 Service Unavailable ---

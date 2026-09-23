@@ -280,6 +280,26 @@ export function getMaxTenantPools(): number {
   return readIntEnv('MAX_TENANT_POOLS', 200);
 }
 
+/**
+ * Bloque 4 (23/09/2026, ADR `docs/diseno-invoice-retry-reverse-window-guard-
+ * 2026-09-23.md` §3.4) -- `N`, el umbral de vencimiento del
+ * `InvoicePendingExpiryWorker`: una factura `PENDING` cuyo `pending_since`
+ * supera este valor se considera "colgada" y se mueve a `FAILED_UNCERTAIN`
+ * (ver `sql.invoice.repository.ts::expirePendingWithClient()`).
+ *
+ * Default 10 minutos (§3.4 del ADR) -- bien por encima del techo real de
+ * `issue()` (~80s: hasta 4 llamadas encadenadas al SDK de AFIP, cada una
+ * con `AFIP_REQUEST_TIMEOUT_MS = 20_000`, ver `afip-request.timeout.ts`),
+ * con margen para jitter de red y para que una respuesta tardía del socket
+ * (el timer de aplicación no cancela el TCP subyacente) todavía tenga
+ * tiempo de resolver antes de que el worker la declare colgada.
+ * Configurable, no hardcodeado sin nombre -- mismo criterio que el resto
+ * de timeouts de esta Wave (`DB_STATEMENT_TIMEOUT_MS`, etc.).
+ */
+export function getInvoicePendingExpiryThresholdMs(): number {
+  return readIntEnv('INVOICE_PENDING_EXPIRY_THRESHOLD_MS', 10 * 60_000);
+}
+
 export function getDbEncryptionKey(): string | undefined {
   return process.env.DB_ENCRYPTION_KEY;
 }

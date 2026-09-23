@@ -1332,3 +1332,44 @@ export class CreditNoteRequestNotFoundError extends DomainError {
     super(`Solicitud de Nota de Crédito "${id}" no encontrada`, 'CREDIT_NOTE_REQUEST_NOT_FOUND');
   }
 }
+
+/**
+ * Bloque 4 (23/09/2026, ADR `docs/diseno-invoice-retry-reverse-window-guard-
+ * 2026-09-23.md` §3.7/§6, hallazgo `ISSUE-BEFORE-REVERSE-WINDOW-001`) --
+ * `InvoiceService.retryExisting()` rechaza cualquier reintento contra una
+ * factura que YA está `PENDING` en el momento en que se leyó `existing`
+ * (guard de solo lectura, sin query nueva, corre junto a los otros dos
+ * guards tempranos del método -- `ISSUED`/`FAILED_UNCERTAIN` sin limpiar).
+ *
+ * Nace en este bloque, no en el Bloque 2c (la toma exclusiva de
+ * `pending_since`, todavía sin implementar) -- cuando 2c exista, su propio
+ * `UPDATE ... RETURNING` sin fila REUSA este mismo error sin redefinirlo
+ * (§3.7 del ADR): las dos ventanas que cada uno cierra son DISTINTAS (este
+ * guard ve un `PENDING` YA asentado al momento de leer `existing`; 2c cierra
+ * la carrera de dos `retryExisting()` concurrentes sobre una fila
+ * `REJECTED`/`FAILED_UNCERTAIN` limpiada que los dos leen como reintentable),
+ * pero el desenlace observable para el caller es el MISMO 409 en los dos
+ * casos -- "hay un intento en vuelo, esperá a que se resuelva o venza".
+ *
+ * **409, no 422** (`AR_REVERSAL_REQUIRES_CREDIT_NOTE`-style, que sí es
+ * 422): es una precondición TEMPORAL que se resuelve sola con el tiempo (el
+ * `InvoicePendingExpiryWorker` del Bloque 4 vence la marca a los N minutos,
+ * ver `src/config/env.ts::getInvoicePendingExpiryThresholdMs()`), no una
+ * regla de negocio violada. Mismo grupo semántico que el resto de errores
+ * 409 de "carrera en curso" ya listados en `error.middleware.ts`.
+ *
+ * Política confirmada por el dueño (ADR §2): siempre 409 mientras la marca
+ * esté fresca, sin excepción -- no hay liberación manual antes del
+ * vencimiento automático del worker (a propósito: un operador liberando la
+ * marca mientras la llamada a AFIP sigue realmente en curso reabriría la
+ * ventana retry-vs-reverse que este bloque entero viene a cerrar).
+ */
+export class RetryInvoiceInFlightError extends DomainError {
+  constructor(public readonly invoiceId: string) {
+    super(
+      `La factura "${invoiceId}" ya tiene un intento de emisión en vuelo (PENDING) -- ` +
+      `esperá a que se resuelva o a que el vencimiento automático la libere antes de reintentar.`,
+      'RETRY_INVOICE_IN_FLIGHT',
+    );
+  }
+}

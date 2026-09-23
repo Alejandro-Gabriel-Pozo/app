@@ -64,8 +64,8 @@ import {
   CreditNoteAttributionMismatchError,
   CreditNoteAmbiguousSubjectError,
   ServiceItemNotFoundError,
-  CreditNoteRequestInvalidTransitionError,
   CreditNoteRequestNotFoundError,
+  RetryInvoiceInFlightError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
@@ -78,6 +78,15 @@ import type {
   CreditNoteRequestSubject,
   TransitionCreditNoteRequestInput,
 } from './credit-note-request.entities.js';
+// Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+// 2026-09-23.md §3.7/§6) -- transitionCreditNoteRequestAfterFailure() se
+// extrajo a un módulo compartido para que InvoicePendingExpiryWorker
+// (src/workers/invoice-pending-expiry.worker.ts) pueda usar el MISMO
+// método que issue()/reconcileAfterFailure() ya usan acá abajo, sin
+// duplicar la lógica de tolerancia de CERRADA. El método privado de esta
+// clase (más abajo) queda como delegador fino -- mismo nombre, para no
+// tocar sus ~3 call-sites internos.
+import { transitionCreditNoteRequestAfterFailure as transitionCreditNoteRequestAfterFailureShared } from './credit-note-request-failure-transition.js';
 import { logger } from '../logger.js';
 
 const AUDIT_ENTITY = 'invoices';
@@ -1489,11 +1498,38 @@ export class InvoiceService {
    *   desbloqueó la factura (`markUncertainClearedWithClient()`). Esto SÍ
    *   reintenta -- ya no es la misma incertidumbre que el guard de arriba
    *   protege, un humano la resolvió.
-   * - El resto (PENDING, REJECTED, o FAILED_UNCERTAIN con
-   *   `afipContacted=false`): se sabe con certeza que no quedó nada
-   *   emitido, reintento seguro reusando la MISMA fila y el MISMO
-   *   `afipRequest` ya persistido (no se recalcula nada del cobro de
-   *   nuevo -- ver R12, una transacción confirmada no se edita).
+   * - PENDING: Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+   *   2026-09-23.md §3.7/§6, `ISSUE-BEFORE-REVERSE-WINDOW-001`) -- hay un
+   *   intento de emisión en vuelo AHORA MISMO (el camino fresco, o -- desde
+   *   Bloque 2c, todavía sin implementar -- un reintento anterior que ya
+   *   tomó la marca). Reintentar en paralelo podría llamar a
+   *   `createNextVoucher()` dos veces para el mismo comprobante (dos CAE
+   *   reales) o marcar `ISSUED` una factura cuyo cargo
+   *   `reverseTransfer()` revirtió durante la ventana entre el guard fresco
+   *   y la llamada a AFIP (el problema raíz que este ADR entero cierra). Se
+   *   rechaza con `RetryInvoiceInFlightError` (409) -- guard de solo
+   *   lectura, sin query nueva (`existing` ya está en memoria), corre junto
+   *   a los dos guards de arriba, ANTES de filtrar `chargeTxs`/llamar a
+   *   `assertNoOtherLiveInvoiceForCharges()`/abrir la transacción de
+   *   `assertChargesStillInvoiceable()` -- los tres son lecturas puras
+   *   sobre `existing`, rechazar acá el caso más barato (y más común: un
+   *   reintento sobre una fila que ya no está en un estado reintentable)
+   *   antes de pagar el costo de una consulta a la base o de abrir una
+   *   transacción para nada. Única salida: esperar a que
+   *   `InvoicePendingExpiryWorker` (§3.3, `src/workers/invoice-pending-expiry.worker.ts`)
+   *   venza la marca -- no hay liberación manual antes de eso (decisión del
+   *   dueño, ADR §2). Ventana residual que ESTE guard no cierra (por
+   *   construcción -- lee `existing.status` una sola vez, antes de abrir
+   *   cualquier transacción): dos `retryExisting()` concurrentes sobre la
+   *   MISMA fila `REJECTED`/`FAILED_UNCERTAIN` limpiada leen los dos un
+   *   status que NO es `PENDING`, pasan este guard sin problema -- cerrar
+   *   ESA carrera es trabajo de la toma exclusiva del Bloque 2c (mismo
+   *   error, reusado sin redefinir), no de este guard.
+   * - El resto (REJECTED, o FAILED_UNCERTAIN con `afipContacted=false`): se
+   *   sabe con certeza que no quedó nada emitido, reintento seguro reusando
+   *   la MISMA fila y el MISMO `afipRequest` ya persistido (no se recalcula
+   *   nada del cobro de nuevo -- ver R12, una transacción confirmada no se
+   *   edita).
    *
    * `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` (23/09/2026, gate
    * `architecture-governor`, ronda 2, `docs/pendientes-2026-09-12.md`) --
@@ -1514,6 +1550,11 @@ export class InvoiceService {
   private async retryExisting(existing: Invoice): Promise<Invoice> {
     if (existing.status === 'ISSUED') return existing;
     if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted && !existing.uncertainClearedAt) return existing;
+    // Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+    // 2026-09-23.md §3.7/§6) -- ver el docblock de arriba, bullet PENDING,
+    // para el porqué completo y la precedencia frente a los guards de
+    // DUPLICATE-CAE-001/CHARGE-STATE-GUARD-001 de más abajo.
+    if (existing.status === 'PENDING') throw new RetryInvoiceInFlightError(existing.id);
 
     // CHARGE-STATE-GUARD-001 (Wave 13, Zona 2, 21/09/2026, gate
     // `architecture-governor`, docs/diseno-invoice-retry-charge-guard-2026-09-18.md)
@@ -1927,6 +1968,15 @@ export class InvoiceService {
    * SÍ hace fallar toda la transacción -- señalaría un camino no
    * contemplado por este diseño, y hay que enterarse, no enmascararlo.
    *
+   * **Aclaración (Bloque 4, 23/09/2026):** "no alcanzable" es sobre estos 3
+   * call-sites de `InvoiceService` puntualmente -- SÍ es alcanzable hoy por
+   * un caso patológico ajeno a esta clase: si la transacción del
+   * `InvoicePendingExpiryWorker` tarda tanto que commitea recién después de
+   * su propio threshold y una escritura tardía se cuela en ese margen, la
+   * transición que el worker intenta puede toparse con `EN_REVISION_MANUAL`
+   * como `fromState` -- lanza y hace rollback de forma segura, dejando la
+   * factura en el `FAILED_UNCERTAIN` que el worker ya había fijado.
+   *
    * **Nota (Wave 13, Zona 2, 21/09/2026, gate `architecture-governor`):**
    * desde `assertChargesStillInvoiceable()` (CHARGE-STATE-GUARD-001),
    * `retryExisting()` tiene una TERCERA forma de fallar, anterior a esta --
@@ -1937,32 +1987,30 @@ export class InvoiceService {
    * corre sobre `REFUND`/`ADJUSTMENT` (docs/diseno-invoice-retry-charge-guard-2026-09-18.md
    * §2/§6), así que el workflow de NC de este método sigue viendo
    * exactamente los mismos 2 casos de reintento que describe arriba.
+   *
+   * **B-4 (Bloque 4, 23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+   * 2026-09-23.md §3.7) -- desde este bloque, `retryExisting()` bloquea
+   * TAMBIÉN cualquier factura `PENDING` (no solo `ISSUED` y
+   * `FAILED_UNCERTAIN` con `afipContacted:true`, como decía esta nota antes)
+   * con `RetryInvoiceInFlightError` -- así que un `PENDING` tampoco es
+   * alcanzable acá vía `retryExisting()` (el guard nuevo corta antes de que
+   * ese método pueda tocarla por ese camino).** El único caller nuevo que SÍ
+   * le pasa una factura recién salida de `PENDING` es
+   * `InvoicePendingExpiryWorker` (`src/workers/invoice-pending-expiry.worker.ts`)
+   * -- NO invoca este método directamente (es privado); llama a la función
+   * compartida de la que este método delega, `transitionCreditNoteRequestAfterFailureShared()`
+   * (`credit-note-request-failure-transition.ts`), con su propio
+   * `creditNoteRequestRepo` inyectado. El contrato (no-op sin fila, tolera
+   * `CERRADA`, falla loud para cualquier otro estado inesperado) es
+   * IDÉNTICO para los dos callers -- ver el docblock de esa función para el
+   * detalle completo, no duplicado acá.
    */
   private async transitionCreditNoteRequestAfterFailure(
     client: SqlClient,
     invoiceId: string,
     transition: TransitionCreditNoteRequestInput,
   ): Promise<void> {
-    const request = await this.creditNoteRequestRepo.findByInvoiceId(invoiceId);
-    if (!request) return; // camino mayoritario -- sin escape de NC, nada que transicionar.
-
-    try {
-      await this.creditNoteRequestRepo.transitionWithClient(client, request.id, transition);
-    } catch (err) {
-      if (err instanceof CreditNoteRequestInvalidTransitionError && err.fromState === 'CERRADA') {
-        logger.warn(
-          {
-            creditNoteRequestId: request.id,
-            invoiceId,
-            attemptedToState: transition.toState,
-          },
-          '[InvoiceService] credit_note_request ya estaba CERRADA (terminal) -- se tolera el intento de transición ' +
-            '(reintento de una factura cuyo workflow de NC ya se había resuelto), no se aborta el UPDATE de invoices ya aplicado en esta misma tx',
-        );
-        return;
-      }
-      throw err;
-    }
+    return transitionCreditNoteRequestAfterFailureShared(this.creditNoteRequestRepo, client, invoiceId, transition);
   }
 
   /**

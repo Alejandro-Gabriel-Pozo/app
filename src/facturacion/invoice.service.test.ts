@@ -261,6 +261,34 @@ class FakeInvoiceRepository implements InvoiceRepository {
     return updated;
   }
   async getStatus(id: string): Promise<InvoiceStatus | null> { return this.invoices.get(id)?.status ?? null; }
+  // Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+  // 2026-09-23.md §3.3/§4/§6) -- sin caller en este archivo (InvoicePendingExpiryWorker
+  // vive en su propio módulo, con sus propios fakes,
+  // invoice-pending-expiry.worker.test.ts) -- implementado para satisfacer
+  // la interfaz completa que este fake ya implementa, espejando el
+  // predicado real (status PENDING + pendingSince vencido).
+  async getPendingExpiredInvoiceIds(thresholdMs: number): Promise<string[]> {
+    const cutoff = Date.now() - thresholdMs;
+    return [...this.invoices.values()]
+      .filter((i) => i.status === 'PENDING' && i.pendingSince !== null && i.pendingSince.getTime() < cutoff)
+      .map((i) => i.id);
+  }
+  async expirePendingWithClient(
+    _client: SqlClient,
+    id: string,
+    thresholdMs: number,
+  ): Promise<{ id: string; financialTransactionId: string | null } | null> {
+    const existing = this.invoices.get(id);
+    const cutoff = Date.now() - thresholdMs;
+    if (!existing || existing.status !== 'PENDING' || existing.pendingSince === null || existing.pendingSince.getTime() >= cutoff) {
+      return null;
+    }
+    const updated: Invoice = {
+      ...existing, status: 'FAILED_UNCERTAIN', afipContacted: true, pendingSince: null, uncertainClearedAt: null,
+    };
+    this.invoices.set(id, updated);
+    return { id: updated.id, financialTransactionId: updated.financialTransactionId };
+  }
 }
 
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
@@ -1989,15 +2017,22 @@ describe('InvoiceService', () => {
       expect(createNextVoucher).toHaveBeenCalledTimes(1);
     });
 
-    it('posición del guard (load-bearing): una NC (ADJUSTMENT) que YA tiene su propia invoice PENDING sigue cayendo en retryExisting(), no en el guard cruzado', async () => {
-      // Reproduce lo que dependen los 4 call-sites reales de cancelación-con-NC
-      // (cancel-order-with-credit-note.service.ts / cancel-reservation-with-credit-note.service.ts):
-      // un reintento del MISMO ADJUSTMENT tiene que devolver la NC ya creada
-      // por ESTE camino -- idempotencyKey `invoice:ft-1` matchea ANTES
-      // (:333-334) de que el guard cruzado (:335+) llegue a mirar `invoice_charges`.
-      // No hace falta seedear la factura original que revierte -- retryExisting()
-      // (`:1014-1032`) nunca toca `reversedInvoiceId`/tx.type, solo credentials
-      // + profile + el afipRequest ya guardado en la fila existente.
+    it('posición del guard (load-bearing) -- CORREGIDO por Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md §3.7/§6): una NC (ADJUSTMENT) que YA tiene su propia invoice PENDING cae en el guard `RetryInvoiceInFlightError` de retryExisting(), ANTES de llegar al guard cruzado -- no en el guard cruzado (DUPLICATE-CAE-001), ni reintentando contra AFIP', async () => {
+      // Historia (no reescribir esta nota -- deja constancia de qué probaba
+      // este test ANTES de Bloque 4, mismo criterio que el resto del repo
+      // para correcciones de comportamiento intencional): hasta Bloque 4,
+      // retryExisting() SÍ reintentaba contra AFIP sobre una fila PENDING
+      // (sin afipContacted) -- este test probaba que ese reintento pasaba
+      // por `idempotencyKey` ANTES de llegar al guard cruzado
+      // (DUPLICATE-CAE-001), sin lanzar InvoiceAlreadyLinkedByOtherPathError.
+      // Bloque 4 agrega un guard TODAVÍA más temprano (`existing.status ===
+      // 'PENDING'` -> RetryInvoiceInFlightError, ver el docblock de
+      // retryExisting()) -- desde ese bloque, NINGÚN PENDING reintenta
+      // contra AFIP, sin importar si tiene o no un conflicto cruzado
+      // potencial. El punto original del test (que el camino cruzado NO se
+      // confunde con esta fila) sigue probado, solo que el desenlace
+      // observable cambió: el guard PENDING nuevo gana, más temprano, con
+      // un error DISTINTO al que el guard cruzado hubiera lanzado.
       const pendingNc: Invoice = {
         id: 'inv-nc-pendiente', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
@@ -2015,13 +2050,12 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const result = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' }); // NO InvoiceAlreadyLinkedByOtherPathError -- el guard PENDING corre primero
 
-      // retryExisting() sobre un PENDING sin afipContacted SÍ reintenta contra
-      // AFIP (mismo camino que el test de FAILED_UNCERTAIN sin contactar) --
-      // lo que importa acá es que NO tiró InvoiceAlreadyLinkedByOtherPathError.
-      expect(result.id).toBe('inv-nc-pendiente');
-      expect(createNextVoucher).toHaveBeenCalledTimes(1);
+      expect(createNextVoucher).not.toHaveBeenCalled(); // cero contacto con AFIP -- distinto del comportamiento pre-Bloque 4
+      expect(invoiceRepo.invoices.get('inv-nc-pendiente')?.status).toBe('PENDING'); // la fila no se tocó -- guard de solo lectura
     });
   });
 
@@ -2225,6 +2259,92 @@ describe('InvoiceService', () => {
       expect(invoice.id).toBe('inv-uncertain');
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cae).toBe('CAE-RETRY');
+    });
+  });
+
+  describe('Bloque 4 (23/09/2026, gate `architecture-governor`, docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md §3.7/§6) -- retryExisting() rechaza PENDING con RetryInvoiceInFlightError', () => {
+    function seedPendingInvoice(overrides: Partial<Invoice> = {}): void {
+      invoiceRepo.invoices.set('inv-pending', {
+        id: 'inv-pending', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'PENDING',
+        afipContacted: false, pendingSince: new Date(), uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: null, errorMessage: null, createdAt: new Date(), issuedAt: null,
+        ...overrides,
+      });
+    }
+
+    it('PENDING fresco (camino fresco en vuelo): RetryInvoiceInFlightError inmediato, cero llamadas a AFIP', async () => {
+      seedPendingInvoice();
+      const getLastVoucher = vi.fn();
+      const createNextVoucher = vi.fn();
+      const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
+
+      expect(getLastVoucher).not.toHaveBeenCalled();
+      expect(createNextVoucher).not.toHaveBeenCalled();
+      // La fila sigue exactamente como estaba -- el guard es de solo lectura.
+      expect(invoiceRepo.invoices.get('inv-pending')?.status).toBe('PENDING');
+    });
+
+    it('PENDING vieja (candidata a que el worker de vencimiento la reclame): mismo 409, sin importar hace cuánto está PENDING -- el guard no distingue "fresca" de "vencida" (política del dueño, ADR §2)', async () => {
+      seedPendingInvoice({ pendingSince: new Date('2020-01-01T00:00:00Z') });
+      const service = buildService();
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
+    });
+
+    it('precedencia: el guard PENDING corre ANTES que assertNoOtherLiveInvoiceForCharges() (DUPLICATE-CAE-001) -- cero queries de más', async () => {
+      seedPendingInvoice();
+      invoiceRepo.charges.set('ft-1', 'inv-otra-viva'); // simularía un conflicto, si el guard nuevo lo dejara pasar
+      invoiceRepo.invoices.set('inv-otra-viva', {
+        id: 'inv-otra-viva', businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-1',
+        idempotencyKey: 'invoice:consolidada', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: 1, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: 'CAE-OTRA', caeVto: '2026-12-31', status: 'ISSUED',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      });
+      const getOtherLiveInvoiceLinksForCharges = vi.spyOn(invoiceRepo, 'getOtherLiveInvoiceLinksForCharges');
+      const service = buildService();
+
+      await expect(
+        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
+      ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
+
+      // Si el guard PENDING no corriera primero, este reintento llegaría a
+      // assertNoOtherLiveInvoiceForCharges() y rechazaría con
+      // InvoiceAlreadyLinkedByOtherPathError en vez de RetryInvoiceInFlightError
+      // -- el código ya verificado arriba prueba la precedencia por el tipo
+      // de error; esto confirma además que ni siquiera se pagó el costo de
+      // la query.
+      expect(getOtherLiveInvoiceLinksForCharges).not.toHaveBeenCalled();
+    });
+
+    it('regresión -- los dos guards existentes (ISSUED, FAILED_UNCERTAIN sin limpiar) siguen devolviendo la fila tal cual, el guard PENDING nuevo no les cambia el contrato', async () => {
+      invoiceRepo.invoices.set('inv-issued', {
+        id: 'inv-issued', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: 1, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: 'CAE-1', caeVto: '2026-12-31', status: 'ISSUED',
+        afipContacted: true, pendingSince: null, uncertainClearedAt: null, uncertainClearedBy: null, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      });
+      const service = buildService();
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.id).toBe('inv-issued');
+      expect(invoice.status).toBe('ISSUED');
     });
   });
 
