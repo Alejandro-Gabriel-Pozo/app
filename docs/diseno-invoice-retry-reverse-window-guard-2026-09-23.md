@@ -1322,6 +1322,207 @@ otra vía) — aceptable para un reporte de revisión humana, que prefiere un su
 subset que dependa de que un log sobreviva (ver la declaración de A-3/A-4 en §3.9 sobre por qué NO
 se persiste el intento rechazado en una tabla nueva).
 
+**Diseño de implementación — Bloque 6 (ronda 18, gate `architecture-governor` — propuesta, sin
+código todavía).**
+
+Bloque 6 es el último de los 6 bloques que lista §6 sin diseño propio. Implementa exactamente lo
+que el cuerpo de §3.10 de arriba ya describe (motivo (d): candidato `AR_REVERTED_INVOICE_LIVE` +
+candidato `MANUAL_RESOLUTION_STATE_MISMATCH` + RBAC `MANAGEMENT`) — verificado, no supuesto, que
+nada de eso existe en código: `UnreconciledLiveInvoice.motivo` (`invoice.entities.ts`) declara solo
+`'TERMINAL_CON_COMPROBANTE_VIVO' | 'REVERSION_ABIERTA'`; ninguna de las dos cadenas nuevas aparece
+en `src/facturacion/*.ts`; y `GET /api/invoices/unreconciled` sigue en `authorize(Roles.FRONT_DESK)`
+(`invoices.routes.ts`). La referencia de una ronda de gate anterior ("motivo nuevo de §3.10,
+documentado pero no implementado") es exacta — §3.10 es diseño completo en prosa sin mecanismo SQL
+ni contrato de tipos, y sin ronda de gate propia hasta ahora.
+
+**Precondición que §3.10 dejaba pendiente, resuelta en esta ronda.** El texto original pedía
+"verificar en `route-consumer-coverage`/grep de `appfrontend-main` si algo lo usa hoy antes de
+implementar" antes de decidir si subir el grupo del endpoint completo o partirlo en dos. Grepeado
+`appfrontend/src` completo por `unreconciled`: cero resultados. Independiente, la allowlist
+`NO_CONSUMER_ROUTES` de `route-consumer-coverage.test.ts` ya declara
+`'/api/invoices/unreconciled': 'F14-01, ídem.'` — sin consumidor conocido hoy en el otro repo. La
+condición que activaba "evaluar separar el motivo nuevo en un endpoint propio `MANAGEMENT` en vez de
+subir el existente entero" no se activa. Coherente con el precedente que esta misma sesión ya sentó
+para `GET /api/invoices/uncertain` (Bloque 3, §3.9, ya en `main`) — su propio docblock dice
+textualmente: *"RBAC MANAGEMENT (decisión del dueño, mismo criterio que el reporte (d) de §3.10 --
+ambos exponen estado de facturación sin reconciliar)"* — ese comentario, ya commiteado, asume que el
+reporte (d) completo termina en `MANAGEMENT`, no partido en dos endpoints. **Límite declarado, no
+nuevo:** el grep solo cubre `appfrontend-main` — mismo límite que `route-consumer-coverage.test.ts`
+declara para sí mismo (no ve clientes fuera de ese repo, ej. un script manual o Postman contra
+`FRONT_DESK`). No hay forma de cerrar ese residuo desde este ADR.
+
+**Por qué `AR_REVERTED_INVOICE_LIVE` es alcanzable pese al guard 8-bis de `reverseTransfer()`.**
+`reverseTransfer()` (`accounts-receivable.service.ts`) es el único camino de código que escribe
+`accounts_receivable.status = 'REVERTIDO'`, y su guard 8-bis bloquea la reversa completa si
+`getAllLinkedInvoicesWithClient()` encuentra, sobre el `CHARGE` de la AR, cualquier factura en un
+estado que consume el cargo (`ISSUED` no reconciliada, `PENDING`, o `FAILED_UNCERTAIN` con
+`afipContacted` sin limpiar) — por construcción, un `REVERTIDO` nuevo no debería poder coexistir con
+una factura viva sin reconciliar. Pero el propio docblock de `reverseTransfer()`, en su lista de
+"Residuos declarados, no resueltos en este commit", dice sin ambigüedad: *"TOCTOU de
+`requestConsolidatedInvoice()`/`finalizeIssued()`: ninguno de los dos toma lock sobre la AR/CHARGE --
+si commitea ENTRE la lectura de este método y el suyo, puede emitir CAE real contra un cargo ya
+revertido. Fuera de alcance ... ver ... `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
+que lo cierra por el lado del reintento -- bloque 1 de ese ADR ya implementado acá; bloques 2-6, en
+HOLD"*. Es decir: el propio código de Bloque 1 de este ADR ya apunta a este documento como el lugar
+donde esa ventana se cierra, y Bloque 6 la cierra por el único lado posible sin agregar un lock
+cruzado AR↔factura nuevo (fuera de alcance, no decidido en ningún punto de este ADR): detección
+posterior, no prevención. Coherente con el principio ya declarado en el `CLAUDE.md` de este repo
+("la app no le dice al cliente cómo trabajar ... aplica a cualquier diseño que se plantee bloquear
+... cuando el sistema no puede resolver algo solo") — en vez de un lock nuevo entre dos subsistemas
+que hoy no se coordinan (AR y emisión AFIP), Bloque 6 le da a `MANAGEMENT` una bandeja para encontrar
+y cerrar a mano el puñado de filas que esa ventana, real pero rara, puede dejar atrás.
+
+**Diseño SQL — candidato 1, `AR_REVERTED_INVOICE_LIVE`.** Nueva rama en
+`SqlInvoiceRepository.listUnreconciledLiveInvoices()` (`sql.invoice.repository.ts`), SQL directo,
+sin delegar a `classifyOrderLiveInvoice()`/`classifyReservationLiveInvoice()` — esas dos resuelven la
+doctrina de compensación de órdenes/reservas, que no aplica acá: el predicado es más simple ("¿la AR
+que este `CHARGE` originó ya se revirtió, pero el mismo `CHARGE` sigue con una factura viva?"), sin
+ningún estado de orden/reserva de por medio.
+
+```sql
+SELECT ar.id AS ar_id, ar.reversed_at, linked.id AS invoice_id, linked.status,
+       linked.pto_vta, linked.cbte_nro, linked.imp_total, linked.issued_at
+  FROM accounts_receivable ar
+  JOIN ( -- mismo UNION ALL individual+consolidada que getAllLinkedInvoicesWithClient()
+    SELECT id, financial_transaction_id, status, pto_vta, cbte_nro, imp_total, issued_at
+      FROM invoices WHERE financial_transaction_id IS NOT NULL
+    UNION ALL
+    SELECT i.id, ic.financial_transaction_id, i.status, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at
+      FROM invoice_charges ic JOIN invoices i ON i.id = ic.invoice_id
+  ) linked ON linked.financial_transaction_id = ar.financial_transaction_id
+ WHERE ar.status = 'REVERTIDO'
+   AND linked.status = ANY($1::text[])  -- INVOICE_STATUSES_CONSUMING_CHARGE
+```
+
+El UNION ALL de arriba es texto idéntico al que ya usa `getAllLinkedInvoicesWithClient()` (mismo
+archivo) — extraer a una constante compartida (mismo criterio que `NC_LINKAGE_UNION`, ya en este
+archivo) en vez de copiar el fragmento una cuarta vez, para que las tres copias no puedan divergir
+en silencio (mismo riesgo que el propio docblock de `resolveInvoiceLinkage()` ya declara sobre sus
+copias hermanas). `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts`) como parámetro, no una
+lista repetida a mano. `sinceAt = ar.reversed_at` (columna ya existe en `schema.sql`, poblada por
+`reverseTransfer()` — ver `AR_REVERTED_INVOICE_LIVE-Wave-11`/`reverseTransfer()` arriba). Sin `LIMIT`
+ni N+1 — a diferencia de B1/B2, esto es una sola query, no un paso-1-enumera/paso-2-clasifica: no
+hay una doctrina de compensación externa que reusar acá, así que no aplica el argumento que obliga
+al mecanismo de dos pasos de B1/B2 (docblock de la interfaz, arriba).
+
+**No deduplicar contra B1/B2 — mismo criterio que B1 vs. B2 entre sí.** El `CHARGE` de una AR
+siempre nace con `reservation_id` poblado (`postStayTransfer()`, ver guard 8-bis) — la MISMA
+reserva puede, en teoría, disparar B1/B2 (si además llega a `CANCELLED`/`EXPIRED`, o tiene su propia
+reversión abierta) Y `AR_REVERTED_INVOICE_LIVE` (si su AR se revirtió) para el mismo comprobante,
+sin que sean el mismo hecho: B1/B2 hablan del estado de la RESERVA: `AR_REVERTED_INVOICE_LIVE` habla
+del estado de la AR, independiente de si la reserva sigue viva. El docblock de `UnreconciledLiveInvoice`
+ya declara esta doctrina para B1 vs. B2 ("dos hechos legítimos y distintos, no un duplicado a
+deduplicar") — Bloque 6 la hereda sin reabrirla.
+
+**Bifurcación de negocio #1, RESUELTA (`AskUserQuestion`, 23/09/2026) — forma de la fila para este
+candidato.** `UnreconciledLiveInvoice.entityType` hoy es `'ORDER' | 'RESERVATION'` — ninguna de las
+dos describe bien a una AR revertida (la AR no es una orden ni una reserva; referencia una estadía,
+y su `CHARGE` sí tiene un `reservation_id`, pero esa reserva puede seguir perfectamente viva). Dos
+formas razonables de completar la fila, con consecuencias distintas para quien lea el reporte:
+- **(A) Extender `entityType` con un tercer literal, `'ACCOUNTS_RECEIVABLE'`** — `entityId = ar.id`,
+  `entityStatus = 'REVERTIDO'` (el status real de la AR). Más preciso: el estado mostrado siempre
+  describe la entidad que realmente cambió. Costo: el contrato de tipos gana un tercer valor que
+  cualquier consumidor futuro (hoy ninguno, `NO_CONSUMER_ROUTES`) tiene que contemplar.
+- **(B) Reusar `'RESERVATION'`** vía `charge.reservation_id` — sin extender el tipo, pero
+  `entityStatus` pasaría a mostrar el estado LIVE de la reserva (`CONFIRMED`/`COMPLETED`/etc.), un
+  significado distinto al que esa misma columna tiene en toda otra fila del reporte (ahí siempre es
+  un estado terminal de cancelación). Un operador leyendo la bandeja podría interpretar mal una fila
+  `RESERVATION` / `COMPLETED` mezclada con filas `RESERVATION` / `CANCELLED`.
+
+**Decisión del dueño: (A).** El costo (un tercer literal) es menor que el riesgo de leer mal una
+bandeja de revisión fiscal. Implementación: `entityType: 'ORDER' | 'RESERVATION' | 'ACCOUNTS_RECEIVABLE'`
+en `UnreconciledLiveInvoice` (`invoice.entities.ts`); el candidato `AR_REVERTED_INVOICE_LIVE` puebla
+`entityType: 'ACCOUNTS_RECEIVABLE'`, `entityId: ar.id`, `entityStatus: 'REVERTIDO'`. Sin consumidor
+hoy (`NO_CONSUMER_ROUTES`), así que el tercer literal no rompe nada existente — solo amplía el
+contrato para quien lo consuma en el futuro.
+
+**Diseño SQL — candidato 2, `MANUAL_RESOLUTION_STATE_MISMATCH`.** Segunda rama nueva, mismo método,
+también SQL directo (sin `classify*`, mismo argumento que candidato 1 — acá tampoco hay doctrina de
+compensación de por medio):
+
+```sql
+SELECT cnr.id AS credit_note_request_id, cnr.order_id, cnr.reservation_id,
+       cnr.invoice_id, i.status, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at,
+       i.uncertain_cleared_at, o.status AS order_status, r.status AS reservation_status
+  FROM credit_note_request cnr
+  JOIN invoices i ON i.id = cnr.invoice_id
+  LEFT JOIN orders o ON o.id = cnr.order_id
+  LEFT JOIN reservations r ON r.id = cnr.reservation_id
+ WHERE cnr.state = 'EN_REVISION_MANUAL'
+   AND (i.status = 'ISSUED' OR (i.status = 'FAILED_UNCERTAIN' AND i.uncertain_cleared_at IS NOT NULL))
+```
+
+`entityType`/`entityId`/`entityStatus` sí caen limpio en el contrato existente acá — `credit_note_request`
+siempre tiene exactamente uno de `order_id`/`reservation_id` (CHECK de schema, `chk_credit_note_request_order_or_reservation`),
+así que `entityType = order_id IS NOT NULL ? 'ORDER' : 'RESERVATION'`, `entityId = COALESCE(order_id, reservation_id)`,
+`entityStatus = COALESCE(order_status, reservation_status)` — sin bifurcación de tipos acá, a
+diferencia del candidato 1. `invoiceId`/`ptoVta`/`cbteNro`/`impTotal`/`issuedAt` de la fila son los
+de la propia Nota de Crédito en revisión (`cnr.invoice_id`) — no de la factura original que revierte
+(`cnr.reversed_invoice_id`, que esta consulta no necesita). `sinceAt = i.status = 'ISSUED' ? i.issued_at : i.uncertain_cleared_at`
+— el momento en que la factura alcanzó el desenlace real que la solicitud todavía no refleja, no
+`cnr.updated_at` (esa columna se mueve con cualquier toque a la fila, incluida la transición
+`PENDIENTE -> EN_REVISION_MANUAL` que no tiene nada que ver con el mismatch).
+
+**Campo nuevo de tipo, un solo agregado:** `creditNoteRequestId: string | null` en
+`UnreconciledLiveInvoice` (`invoice.entities.ts`), poblado solo para `MANUAL_RESOLUTION_STATE_MISMATCH`
+— es el id que el frontend necesita para accionar. `revertingTransactionId`/`revertingType`/
+`revertingStatus`/`ncInvoiceId`/`ncStatus`/`ncAfipContacted` quedan `null` para los dos candidatos
+nuevos, mismo criterio que ya aplica a B1 (campos exclusivos de `REVERSION_ABIERTA`).
+
+**Ninguna acción nueva hace falta — verificado, no asumido.** `POST /api/credit-note-requests/:id/resolve`
+(`InvoiceService.reclassifyManualResolution()` → `classifyManualResolutionOutcome()`,
+`invoice.service.ts`) YA maneja, de forma idempotente, exactamente los dos casos que este candidato
+detecta: `snapshot.status === 'ISSUED' && input.outcome === 'EMITIDA'` con CAE coincidente (cierra
+`CERRADA`/`EMITIDA` sin reescribir nada), y `snapshot.status === 'FAILED_UNCERTAIN' &&
+uncertainClearedAt != null && input.outcome === 'NO_EMITIDA'` (cierra `CERRADA`/`NO_EMITIDA`). El
+problema que Bloque 6 resuelve es puramente de VISIBILIDAD — nadie sabía que estas filas existían
+para llamar a ese endpoint ya existente con el `outcome` correcto. Sin acción nueva, sin endpoint
+nuevo, sin cambio en `invoice.service.ts`.
+
+**Extensión del tipo `UnreconciledLiveInvoice.motivo`:** `'TERMINAL_CON_COMPROBANTE_VIVO' |
+'REVERSION_ABIERTA' | 'AR_REVERTED_INVOICE_LIVE' | 'MANUAL_RESOLUTION_STATE_MISMATCH'` — los dos
+nombres literales ya los fija el texto original de §3.10 (el segundo, "o el nombre que se fije al
+implementar", queda tal cual: no es una decisión de negocio, es una etiqueta interna sin consumidor
+hoy).
+
+**RBAC.** `GET /api/invoices/unreconciled` (`invoices.routes.ts`) pasa de `authorize(Roles.FRONT_DESK)`
+a `authorize(Roles.MANAGEMENT)` — el endpoint completo, los 4 `motivo` juntos, no partido (ver la
+precondición ya resuelta arriba). Actualizar en el mismo commit: el docblock de `invoices.routes.ts`
+(líneas 22-24, hoy dicen "FRONT_DESK"), la fila de `docs/rbac-matriz-endpoints.md` para
+`createInvoicesRouter` (hoy dice `GET /unreconciled — FRONT_DESK`), y — aunque el conteo total de
+`authorize()` no cambia (se reclasifica una llamada existente, no se agrega una) —
+`rbac-matrix-section2-sync.test.ts` no valida el GRUPO de cada fila (hueco ya declarado en el
+`CLAUDE.md` de este repo, sección RBAC-MATRIX-SECTION2-001), así que ninguna cerca automática fuerza
+este cambio de matriz: queda en la disciplina del commit, no en un test que lo verifique.
+
+**Tests propuestos (extensión de §7):**
+1. Integración contra Postgres real, `unreconciled-live-invoices.integration.test.ts` (ya existe,
+   cubre B1/B2) — extender con un caso `AR_REVERTED_INVOICE_LIVE`: `transferStayBalanceToReceivable()`
+   + una factura individual `ISSUED` sobre el mismo `financial_transaction_id` + `reverseTransfer()`
+   forzado a pasar el guard 8-bis (requiere simular la ventana TOCTOU directamente con SQL — no hay
+   forma de disparar el guard en falso desde la API pública, es justo lo que el guard existe para
+   impedir; el test arma el estado post-condición a mano, como ya hacen otros tests de este archivo
+   para "REVERTIDO" según el comentario del propio schema).
+2. Mismo archivo, caso `MANUAL_RESOLUTION_STATE_MISMATCH` — `credit_note_request` en
+   `EN_REVISION_MANUAL` + su `invoice_id` forzado a `ISSUED` por fuera del flujo normal (mismo
+   criterio de armado directo que el punto 1).
+3. Unit, `sql.invoice.repository.test.ts` (si existe fixture equivalente) o integración — verificar
+   que un candidato `AR_REVERTED_INVOICE_LIVE` y un candidato B1/B2 sobre la MISMA reserva emiten
+   filas separadas, ninguna suprime a la otra (guarda de regresión para la doctrina de "no
+   deduplicar" de arriba).
+4. RBAC — extender (o clonar) el test que ya cubre `/uncertain` en `MANAGEMENT` para `/unreconciled`
+   con `FRONT_DESK` esperando 403, `MANAGEMENT` esperando 200.
+
+**Confianza / lo que este diseño NO decide.** El mecanismo SQL, el RBAC, y la ausencia de una
+acción nueva están verificados contra código real (`reverseTransfer()`, `resolveCreditNoteRequestManually()`,
+`NO_CONSUMER_ROUTES`, el precedente ya commiteado de `/uncertain`) — no inventados. **Bifurcación #1**
+(forma de la fila para `AR_REVERTED_INVOICE_LIVE`) quedó resuelta por el dueño — opción (A),
+`entityType: 'ACCOUNTS_RECEIVABLE'` — ver arriba. No se encontró una segunda bifurcación de negocio
+en esta ronda — la pregunta de si subir el RBAC completo o partirlo en dos endpoints (que sí tenía
+dos respuestas razonables en el texto original de §3.10) quedó resuelta por la precondición de
+consumidores ya verificada arriba, no por una preferencia de este diseño. Con esto, Bloque 6 queda
+sin decisiones de negocio pendientes — listo para el gate `architecture-governor`.
+
 ### 3.11 Alcance NC (decisión del dueño: sí, parejo con `CHARGE`)
 
 Los reintentos de NC (`REFUND`/`ADJUSTMENT`) también toman la marca "en vuelo" — mismo mecanismo
@@ -1335,6 +1536,127 @@ comportamiento nuevo que reconciliar ahí.
 necesita su propio punto de entrada en `retryExisting()`, fuera de ese `if`, para cubrir el caso
 `REFUND`/`ADJUSTMENT` puro (sin `CHARGE` en el lote). Detalle de implementación, no cambia el
 diseño de arriba.
+
+**Diseño de implementación (ronda 17, gate `architecture-governor` — propuesta, sin código
+todavía; Bloque 2c ya está completo en `main` — §3.2/§3.16, §3.5 y §3.8 verificados en código,
+ver Historial de revisión — así que Bloque 5 queda desbloqueado).**
+
+**Mecanismo: cero SQL nuevo, cero repositorio nuevo.**
+`InvoiceRepository.takeRetryClaimWithClient()` (`sql.invoice.repository.ts`, ya implementado y
+desplegado en Bloque 2c/§3.16) no tiene ninguna condición sobre `type` — su
+`UPDATE ... WHERE id = $1 AND (status = 'REJECTED' OR (status = 'FAILED_UNCERTAIN' AND (NOT
+afip_contacted OR uncertain_cleared_at IS NOT NULL))) RETURNING id` (§3.2) actúa sobre la fila de
+`invoices` sin distinguir `CHARGE` de `REFUND`/`ADJUSTMENT`. Extender el mecanismo a NC no agrega
+una rama nueva al predicado ni una columna nueva — agrega un segundo call-site que invoque el
+MISMO método.
+
+**Cambio en `InvoiceService.retryExisting()` (`invoice.service.ts`):** hoy la toma solo corre
+dentro de `if (chargeTxs.length > 0) { ... }` (el bloque que también abre
+`assertChargesStillInvoiceable()`). El diseño agrega un `else`:
+
+```ts
+if (chargeTxs.length > 0) {
+  await this.assertNoOtherLiveInvoiceForCharges(existing, chargeTxs);
+  await this.transactionManager.run(async (client) => {
+    await this.assertChargesStillInvoiceable(client, chargeTxs);
+    await this.invoiceRepo.takeRetryClaimWithClient(client, existing.id);
+  });
+} else {
+  // Bloque 5 (§3.11) -- NC pura (REFUND/ADJUSTMENT), mismo mecanismo de
+  // toma exclusiva, sin los guards CHARGE-only (ver más abajo por qué no
+  // aplican acá).
+  await this.transactionManager.run((client) => this.invoiceRepo.takeRetryClaimWithClient(client, existing.id));
+}
+```
+
+**Por qué `chargeTxs.length === 0` es exactamente "NC pura", sin ambigüedad — verificado, no
+asumido:** una factura individual tiene un solo `financialTransactionId` y ese `tx` tiene un solo
+`type`; una factura consolidada SIEMPRE se arma solo con cargos `CHARGE` ("nunca se genera una
+consolidada para un REFUND", comentario de `getOutstandingByCustomerId()` en
+`sql.invoice.repository.ts`, y el docblock de `assertNoOtherLiveInvoiceForCharges()` en
+`invoice.service.ts` confirma que una NC individual "nunca entra a este bloque"). No existe un
+tercer caso ("NC dentro de un lote mixto `CHARGE`+NC") que el `else` tenga que distinguir aparte.
+
+**Por qué los dos guards CHARGE-only (`assertNoOtherLiveInvoiceForCharges()`,
+`assertChargesStillInvoiceable()`) NO se llaman en la rama nueva — ya decidido, no una decisión de
+este bloque:**
+- `assertNoOtherLiveInvoiceForCharges()`: su propio docblock ya dice que nunca lanza para una NC
+  ("el caller ni siquiera llama a este método") — comportamiento sin cambios, la rama `else`
+  simplemente hace explícito lo que hoy es implícito (el `if` nunca se ejecutaba para NC).
+- `assertChargesStillInvoiceable()`: exención ya decidida y congelada por
+  `NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT` (Wave 13,
+  `docs/diseno-invoice-retry-charge-guard-2026-09-18.md`, cerca
+  `RETRY-EXISTING-NC-PRODUCER-SAFETY-001` en `reversed-invoice-id-convention.test.ts`) — los 3
+  productores reales de NC nacen DESPUÉS del cambio de estado que referencian, nunca antes, así
+  que no hace falta re-validarlo al reintentar. Bloque 5 no reabre esa decisión.
+
+**Orden de locks — por qué NO hace falta un N7/§3.16 nuevo acá:** la rama `else` toma exactamente
+UN lock: el de la propia fila `invoices` vía el `UPDATE` de `takeRetryClaimWithClient()`. No hay
+AR, orden ni reserva involucrados en esta transacción (a diferencia del camino `CHARGE`, que
+además lockea AR/orden/reserva antes de la factura propia, orden congelado por
+`AR-INVOICE-LOCK-ORDER-001`) — no hay ABBA posible con un solo lock. El único otro camino que toma
+un lock sobre esta MISMA fila mientras está `REJECTED`/`FAILED_UNCERTAIN` limpiada es otro
+`retryExisting()` concurrente sobre la misma factura, que entra por el mismo `else` y compite por
+el mismo `UPDATE ... RETURNING` — exactamente el caso "doble click" que el mecanismo ya resuelve
+por construcción (§3.2).
+
+**Qué NO toca este bloque (verificado, no supuesto):**
+- `resolveInvoiceLinkage()` / `getAllLinkedInvoicesWithClient()` / guard 8-bis de
+  `reverseTransfer()` — ninguno de los tres consulta por el `financialTransactionId` de una NC;
+  resuelven contra el `financialTransactionId` del `CHARGE` original. El invariante de más arriba
+  (una NC nunca reversa su propio `financialTransactionId`, reversa el de un `CHARGE` distinto vía
+  `reversedInvoiceId`) ya lo establece Wave 13. Sin cambio de comportamiento en `reverseTransfer()`.
+- `getInFlightCreditNoteTotalForUpdate()` / `getInFlightCreditNoteTotalForPairForUpdate()` — ya
+  declarado sin conflicto más arriba en esta misma sección; Bloque 5 no les agrega ni les saca
+  alcance.
+- Los 3 call-sites de `ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001`
+  (`transferStayBalanceToReceivable()`, `markInvoiced()`, `markCollected()`, todos en
+  `accounts-receivable.service.ts`) — **overlap verificado y descartado, no ignorado:** los tres
+  resuelven `linkage` a partir de `ar.financialTransactionId` (el `CHARGE` del AR), nunca a partir
+  del `financialTransactionId` de una NC — una factura `REFUND`/`ADJUSTMENT` no es alcanzable desde
+  ninguno de los tres. El gap sigue siendo real para `CHARGE`, pero Bloque 5 no lo agrava ni lo
+  cierra; los dos hallazgos son ortogonales.
+- Ningún error nuevo — la rama `else` reusa `RetryInvoiceInFlightError` (§3.7), lanzado por el
+  propio `takeRetryClaimWithClient()` cuando el `UPDATE` no devuelve fila. El guard de solo
+  lectura de Bloque 4 (`if (existing.status === 'PENDING') throw ...`, al principio de
+  `retryExisting()`) ya corre para TODOS los tipos, antes de llegar a este `if`/`else` — sin
+  cambios, ya cubre NC hoy.
+
+**Documentación a actualizar en la implementación (mismo criterio que B-4, ronda 7):** el docblock
+de `retryExisting()` (citado por nombre, no por línea, desde SCHEMA-ANCHOR-DRIFT-001) que hoy dice
+*"Alcance de este bloque: solo el camino `CHARGE` ... un reintento de NC pura ... todavía NO pasa
+por la toma exclusiva; extenderla ahí es Bloque 5 ..., fuera de alcance de este cambio"* pasa a
+describir el `else` nuevo en vez de su ausencia.
+
+**Tests propuestos (extensión de §7):**
+1. Unit, `invoice.service.test.ts` — reintento de una factura `REFUND`/`ADJUSTMENT` individual
+   `REJECTED` llama a `takeRetryClaimWithClient()` exactamente una vez y NO llama a
+   `assertChargesStillInvoiceable()` ni a `assertNoOtherLiveInvoiceForCharges()` (spy) — guarda de
+   regresión para que un refactor futuro no empiece a correr los guards CHARGE-only sobre NC sin
+   querer.
+2. Integración contra Postgres real — "doble click" de NC: mismo patrón que el test ya existente
+   de §7 para `CHARGE` (dos `retryExisting()` concurrentes, uno gana, el otro recibe
+   `RetryInvoiceInFlightError`), corrido con una factura `type: 'REFUND'` (o `'ADJUSTMENT'`) en vez
+   de `CHARGE`. Recomendación: parametrizar/extender el test existente en vez de duplicarlo entero
+   — el SQL bajo prueba (`takeRetryClaimWithClient()`) es literalmente el mismo, lo único que
+   cambia es el `type` de la fila de origen. Esto es una preferencia de diseño de test, no una
+   decisión de negocio — el gate de implementación puede resolverla sin pasar por el dueño.
+3. No hace falta un test de orden de locks nuevo (`*-lock-order.test.ts`) — no hay un segundo lock
+   que ordenar (ver el punto de arriba). Si el gate de implementación prefiere una cerca explícita
+   de todas formas (mismo espíritu que `AR-INVOICE-LOCK-ORDER-001`), es una decisión de rigor de
+   ese gate, no de este diseño.
+
+**Confianza / lo que este diseño NO decide:** la propuesta de arriba es una extensión mecánica de
+un mecanismo ya aprobado e implementado (Bloque 2c) a un segundo call-site del mismo método, sin
+SQL nuevo, sin columna nueva, sin error nuevo, y sin reabrir ninguna de las decisiones del dueño ya
+tomadas en este ADR (§2, §3.7, el encabezado de este mismo §3.11) ni en
+`docs/diseno-invoice-retry-charge-guard-2026-09-18.md` (exención NC de
+`assertChargesStillInvoiceable()`). No se identificó, en esta ronda, una bifurcación de negocio con
+más de una respuesta razonable — a diferencia de P-1/P-2/"AFIP prevalece" en rondas anteriores de
+este mismo ADR, acá la única decisión de negocio real (¿tratar a NC igual que a `CHARGE`?) ya la
+tomó el dueño en la redacción original de este §3.11 ("sí, parejo con `CHARGE`"). El único punto
+dejado abierto es de rigor de testing (punto 2 de la lista de arriba: parametrizar vs. duplicar),
+para el gate de implementación, no para el dueño.
 
 ### 3.12 Los otros 8 call-sites de `resolveInvoiceLinkage()` (hueco B8 de la ronda 2, corregido en la ronda 3 — fuera de alcance de este ADR)
 
@@ -3400,3 +3722,67 @@ revisar. 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implem
   commiteado y con qué hash, verificar `git log`/`git status` en el momento de la lectura — no
   asumirlo de esta frase. §3.5/§3.8, Bloque 5 (depende de 2c completo) y Bloque 6: sin código,
   diseño ya existente en este documento, sin ronda de gate propia todavía.
+- **23/09/2026, ronda 17 (propuesta de diseño para Bloque 5, §3.11) — sin código todavía, HOLD
+  hasta que pase su propio gate de implementación.** Confirmado primero, contra código real, que
+  Bloque 2c está completo en `main` (§3.2/§3.16 -- `takeRetryClaimWithClient()` existe en
+  `sql.invoice.repository.ts` y se usa en `InvoiceService.retryExisting()`; §3.5 -- `markFailedWithClient()`
+  resetea `uncertain_cleared_at` incondicionalmente; §3.8 -- el guard 8-bis de `reverseTransfer()`
+  filtra por `uncertainClearedAt == null`), así que la dependencia que el bullet de Bloque 5 en §6
+  declara ("depende de 2c") está saldada. Diseño agregado al final de §3.11: un `else` nuevo en
+  `retryExisting()` que llama al MISMO `takeRetryClaimWithClient()` ya existente para el caso NC
+  pura (`chargeTxs.length === 0`), sin SQL nuevo, sin guards CHARGE-only, sin error nuevo, y sin
+  lock adicional que ordenar (un solo lock, el de la propia fila). Overlap verificado y descartado
+  con `ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001`
+  (`docs/pendientes-2026-09-12.md`): los 3 call-sites de ese hallazgo
+  (`transferStayBalanceToReceivable()`, `markInvoiced()`, `markCollected()`) resuelven `linkage`
+  contra el `financialTransactionId` `CHARGE` del AR, nunca alcanzable desde una factura
+  `REFUND`/`ADJUSTMENT` — los dos hallazgos son ortogonales, ninguno agrava al otro. No se
+  encontró, en esta ronda, ninguna bifurcación de negocio con más de una respuesta razonable: la
+  única decisión de negocio real de Bloque 5 (¿NC se trata igual que `CHARGE` para la toma
+  exclusiva?) ya la había tomado el dueño en el encabezado original de este §3.11 ("sí, parejo con
+  `CHARGE`"), antes de esta ronda. El único punto dejado abierto es de rigor de testing
+  (parametrizar el test de "doble click" existente vs. duplicarlo para NC), para el gate de
+  implementación, no para el dueño.
+- **23/09/2026, ronda 18 (propuesta de diseño para Bloque 6, §3.10) — sin código todavía, HOLD hasta
+  que pase su propio gate de implementación.** Confirmado primero, contra código real, que nada del
+  reporte (d) de §3.10 existe todavía: `UnreconciledLiveInvoice.motivo` sigue en dos valores,
+  ninguna de las dos cadenas nuevas aparece en `src/facturacion/*.ts`, y `GET /api/invoices/unreconciled`
+  sigue en `Roles.FRONT_DESK`. Diseño agregado al final de §3.10: dos ramas SQL directas nuevas en
+  `listUnreconciledLiveInvoices()` (candidato `AR_REVERTED_INVOICE_LIVE` sobre `accounts_receivable.status
+  = 'REVERTIDO'` + el mismo UNION ALL individual/consolidada que `getAllLinkedInvoicesWithClient()`,
+  filtrado a `INVOICE_STATUSES_CONSUMING_CHARGE`; candidato `MANUAL_RESOLUTION_STATE_MISMATCH` sobre
+  `credit_note_request.state = 'EN_REVISION_MANUAL'` LEFT JOIN su propia factura, exactamente como ya
+  describía el texto original de §3.10), un campo nuevo (`creditNoteRequestId`), y la suba de RBAC del
+  endpoint completo a `MANAGEMENT` — sin partirlo en dos, porque la precondición que el propio §3.10
+  dejaba pendiente ("verificar si `appfrontend-main` usa esta ruta hoy") se verificó en esta ronda con
+  resultado negativo (grep propio + `NO_CONSUMER_ROUTES` de `route-consumer-coverage.test.ts`, que ya
+  declaraba esta ruta sin consumidor), y es coherente con el precedente ya commiteado para
+  `GET /api/invoices/uncertain` (Bloque 3, §3.9), cuyo propio docblock ata su RBAC `MANAGEMENT` al
+  mismo criterio que el reporte (d) de §3.10. Grounding verificado, no supuesto, para por qué
+  `AR_REVERTED_INVOICE_LIVE` es alcanzable pese al guard 8-bis de `reverseTransfer()`: el propio
+  docblock de ese método declara sin resolver la ventana TOCTOU entre `reverseTransfer()` y
+  `requestConsolidatedInvoice()`/`finalizeIssued()`, y remite explícitamente a este ADR ("bloques 2-6,
+  en HOLD") como el lugar donde se cierra — por el lado de detección posterior, no de prevención con
+  un lock nuevo (fuera de alcance, no decidido en ningún punto de este documento). Verificado también
+  que ninguna acción nueva hace falta para `MANUAL_RESOLUTION_STATE_MISMATCH`:
+  `resolveCreditNoteRequestManually()`/`classifyManualResolutionOutcome()` (`invoice.service.ts`) ya
+  manejan de forma idempotente los dos desenlaces que este candidato detecta — el bloque es puramente
+  de visibilidad.
+
+  **Una bifurcación de negocio real, a diferencia de la ronda 17 (que no encontró ninguna):** la
+  forma de la fila para `AR_REVERTED_INVOICE_LIVE` — el `entityType` del contrato hoy es
+  `'ORDER' | 'RESERVATION'`, y ninguna de las dos describe bien a una AR revertida. Opción (A)
+  extender el tipo con un tercer literal `'ACCOUNTS_RECEIVABLE'` (más preciso, contrato más grande)
+  vs. opción (B) reusar `'RESERVATION'` vía el `reservation_id` del `CHARGE` (sin extender el tipo,
+  pero `entityStatus` pasaría a significar algo distinto — el estado LIVE de la reserva, no un estado
+  terminal de cancelación como en toda otra fila del reporte). Recomendación de este diseño: (A) —
+  presentada vía `AskUserQuestion`, siguiendo la regla del `CLAUDE.md` de este repo sobre preguntas
+  de alcance que esconden una decisión de negocio.
+
+- **23/09/2026, ronda 19 — decisión del dueño sobre la bifurcación de ronda 18.** `AskUserQuestion`
+  respondida: **opción (A)**, la recomendada — `entityType` gana el tercer literal
+  `'ACCOUNTS_RECEIVABLE'`. Aplicada arriba, en el cuerpo de §3.10 (`entityType: 'ORDER' | 'RESERVATION'
+  | 'ACCOUNTS_RECEIVABLE'`, `entityId: ar.id`, `entityStatus: 'REVERTIDO'` para el candidato
+  `AR_REVERTED_INVOICE_LIVE`). Con esto, Bloque 6 no tiene decisiones de negocio pendientes — el
+  diseño completo (candidatos 1 y 2, RBAC, ausencia de acción nueva, tests propuestos) queda listo
+  para su propio gate `architecture-governor` de pre-implementación.
