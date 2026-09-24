@@ -63,6 +63,7 @@ import {
   DepositNotPaidError,
   LodgingRequiresServiceError,
   ReservationChargeInvoicedError,
+  ReservationConcurrentlyModifiedError,
 } from '../domain/errors.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 import { BookableServiceNotFoundError } from './bookable-service.service.js';
@@ -416,20 +417,8 @@ export class ReservationService {
       ratePlanId?: string | null;
     },
   ): Promise<Reservation> {
-    const existing = await this.requireReservation(id);
-
-    // Calendario de PMS (18/08/2026) — drag-to-move/resize necesita poder
-    // editar una reserva CONFIRMED, no solo PENDING (mover una reserva ya
-    // confirmada de habitación/fecha es el caso de uso principal del
-    // tape-chart). Sigue bloqueado para CANCELLED/COMPLETED (A6.4, estados
-    // terminales no se reabren). totalPrice/lines quedan congelados igual
-    // que antes — este cambio no toca esa decisión ya tomada.
-    if (existing.status !== 'PENDING' && existing.status !== 'CONFIRMED') {
-      throw new InvalidReservationError(
-        `Solo se pueden modificar reservas en estado PENDING o CONFIRMED. Estado actual: ${existing.status}`,
-      );
-    }
-
+    // Guard de forma, no depende del estado de la fila -- no hace falta
+    // leer ni lockear nada para saber que no vino ningún campo.
     if (
       !changes.startTime && !changes.endTime && !changes.details && !changes.resourceId
       && changes.adultos === undefined && changes.ninos === undefined && changes.ratePlanId === undefined
@@ -439,102 +428,192 @@ export class ReservationService {
       );
     }
 
-    const newStartTime = changes.startTime ?? existing.startTime;
-    const newEndTime   = changes.endTime   ?? existing.endTime;
-
-    // J1 (23/08/2026, pendientes-2026-08-23.md) — solo dispara cuando se
-    // está moviendo el inicio (drag-to-move del calendario); editar otros
-    // campos de una reserva vieja sigue permitido, no se toca acá.
-    // Confirmado con el dueño: mover una reserva al pasado se bloquea
-    // igual que crearla en el pasado.
-    if (
-      changes.startTime !== undefined
-      && newStartTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS
-    ) {
-      throw new InvalidReservationError('No se puede mover una reserva a una fecha/hora de inicio en el pasado.');
-    }
-    const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
-    const newRatePlanId = changes.ratePlanId !== undefined ? changes.ratePlanId : existing.ratePlanId;
-    const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;
-    const newNinos     = changes.ninos   !== undefined ? changes.ninos   : existing.ninos;
-
-    // Reasignación de recurso (drag-to-move) — resuelve el recurso NUEVO
-    // antes de validar detalles/disponibilidad, para que todo lo demás
-    // (fields de categoría, locks, chequeo de ocupación) corra contra el
-    // recurso correcto.
-    let resource = existing.resource;
-    if (changes.resourceId && changes.resourceId !== existing.resource.id) {
-      const newResource = await this.resourceRepository.getById(changes.resourceId);
-      if (!newResource) throw new ResourceNotFoundError(changes.resourceId);
-      // getById() no filtra por active (R2) — mismo chequeo explícito que
-      // createReservation() para una reserva nueva.
-      if (!newResource.active) {
-        throw new InvalidReservationError(`El recurso ${changes.resourceId} está desactivado.`);
-      }
-      resource = newResource;
-    }
-
-    const category = await this.categoryRepository.findById(resource.categoryId);
-    if (category) {
-      validateDetailsAgainstFields(rawDetails, category.fields);
-    }
-
-    // Bug 2 (25/08/2026) — recalcula el snapshot SOLO si hubo reasignación
-    // de recurso (mismo criterio R9 que totalPrice/lines más abajo: no se
-    // resincroniza en cada edición si el negocio cambia is_exclusive de la
-    // categoría después de creada la reserva).
-    const reassigned = changes.resourceId !== undefined && changes.resourceId !== existing.resource.id;
-    const isExclusiveResource = reassigned
-      ? (category?.isExclusive ?? false)
-      : existing.isExclusiveResource;
-
-    // Recursos bloqueados por el servicio, sobre el recurso EFECTIVO
-    // (el nuevo si hubo reasignación, el mismo de siempre si no)
-    const lockedResourceIds = await this.availability.resolveLockedResourceIds(
-      existing.serviceId ?? undefined,
-      resource.id,
-    );
-
-    // Recotización (18/08/2026, a pedido explícito del dueño — reportado
-    // como "el precio no varía al editar"). Antes NUNCA se recalculaba,
-    // a propósito (ver historial de este comentario en git blame). Ahora
-    // se recalcula SOLO si la reserva sigue PENDING: una CONFIRMED ya
-    // generó un CHARGE financiero (clientes-finanzas) por el total viejo
-    // — pisar `totalPrice` sin un movimiento de ajuste explícito
-    // desincroniza la reserva del cobro ya emitido (A3.9, criterios-
-    // negocio.md: "todo movimiento tiene contrapartida"). Ese ajuste para
-    // CONFIRMED queda pendiente aparte, requiere diseñarlo (ver
-    // pendientes-2026-08-18.md) — no se improvisa acá.
-    let totalPrice = existing.totalPrice;
-    let lines = existing.lines;
-    let appliedCustomerRateId = existing.appliedCustomerRateId;
-    if (existing.status === 'PENDING') {
-      const service = existing.serviceId
-        ? await this.bookableServiceRepository.findById(existing.serviceId)
-        : null;
-      const priced = await this.pricing.resolvePrice({
-        customerId: existing.customer.id,
-        resourceId: resource.id,
-        serviceId:  existing.serviceId ?? undefined,
-        ratePlanId: newRatePlanId ?? undefined,
-        resource,
-        service,
-        startTime:  newStartTime,
-        endTime:    newEndTime,
-      });
-      totalPrice = priced.totalPrice;
-      lines = priced.lines.map((line, i) => ({
-        id:            `${id}-L${i + 1}`,
-        reservationId: id,
-        unitDate:      line.unitDate,
-        price:         line.price,
-      }));
-      appliedCustomerRateId = priced.appliedCustomerRateId;
-    }
+    // Pre-chequeo FUERA de la transacción, mismo criterio que el `preCheck`
+    // de confirmReservation() (más abajo en este archivo): NO es la
+    // protección real contra la carrera -- eso lo da requireReservationWithLock()
+    // de acá abajo -- solo evita abrir una transacción para un id que ni
+    // siquiera existe. UPDATE-RESERVATION-LOCK-ORDER-001 (24/09/2026) --
+    // además de eso, ahora también se reusa DENTRO de la transacción para
+    // decidir qué recursos lockear ANTES del lock de la fila (ver más
+    // abajo) -- por eso se guarda el resultado en vez de descartarlo.
+    const preCheck = await this.requireReservation(id);
 
     let updated!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
+      // UPDATE-RESERVATION-LOCK-ORDER-001 (24/09/2026, corrección del gate
+      // `architecture-governor` sobre UPDATE-RESERVATION-LOST-STATUS-001,
+      // ver docblock de ReservationConcurrentlyModifiedError en
+      // domain/errors.ts) -- lockear el RECURSO primero, la FILA de la
+      // reserva después: mismo orden que createReservation() y el resto del
+      // código -- convención derivada del paso 1 de
+      // docs/conocimiento/playbook-locks-exclusividad.md (el recurso se
+      // lockea antes de evaluar disponibilidad), no una cita textual de ese
+      // documento. La primera versión de UPDATE-RESERVATION-
+      // LOST-STATUS-001 invertía ese orden (fila primero, recurso recién
+      // adentro de assertAllResourcesAvailable() más abajo) -- eso abre un
+      // deadlock ABBA real: una transacción tiene la fila R1 y espera el
+      // recurso A, otra tiene A y espera R1.
+      //
+      // Para decidir QUÉ recursos lockear hace falta saber el recurso
+      // candidato ANTES de tener el lock de la fila -- se usa `preCheck`
+      // (la lectura SIN lock de arriba) para eso. `effectiveResourceId`:
+      // el `resourceId` nuevo si el PUT lo trae, o el que la reserva ya
+      // tenía según `preCheck` si no.
+      const effectiveResourceId = changes.resourceId ?? preCheck.resource.id;
+      const lockSet = await this.availability.resolveLockedResourceIds(
+        preCheck.serviceId ?? undefined,
+        effectiveResourceId,
+      );
+      await this.resourceRepository.lockByIds(client, [...lockSet].sort());
+
+      // UPDATE-RESERVATION-LOST-STATUS-001 (24/09/2026, confirmado por
+      // architecture-governor) -- releer CON LOCK, antes de calcular
+      // cualquier cambio (ahora: recién DESPUÉS de lockear los recursos de
+      // arriba). Antes de este fix, `existing` se leía sin lock y ANTES de
+      // abrir la transacción: si en paralelo otra operación
+      // (confirmReservation, cancelReservation, o el worker
+      // reservation-hold-expiry.worker.ts) cambiaba el status de la MISMA
+      // reserva y hacía commit antes de que este UPSERT terminara,
+      // `initialStatus: existing.status` pisaba ese cambio con el status
+      // VIEJO (lost update, A8.1 criterios-negocio.md) -- podía resucitar
+      // una reserva CANCELLED, o revertir una CONFIRMED a PENDING después
+      // de que `reservation.confirmed` ya hubiera disparado el CHARGE.
+      // Mismo patrón que ya usan confirmReservation/cancelReservation/
+      // completeReservation/confirmPriceAdjustment
+      // (requireReservationWithLock, Bug 3, 25/08/2026) --
+      // updateReservation() era el único método de este archivo que mutaba
+      // una reserva sin pasar por ese lock. Todo lo que antes se calculaba
+      // con `existing` (leído afuera) se recalcula acá adentro con
+      // `existing` (ahora la lectura lockeada) -- así cualquier cambio
+      // concurrente que ya hizo commit se ve reflejado antes de decidir qué
+      // escribir, no solo para `status` sino para todo snapshot que este
+      // método reenvía tal cual (depositAmount, cancellationPolicySnapshot,
+      // etc. -- ver comentarios más abajo).
+      const existing = await this.requireReservationWithLock(client, id);
+
+      // Guard de coherencia (UPDATE-RESERVATION-LOCK-ORDER-001) -- `preCheck`
+      // se leyó SIN lock, antes de decidir `lockSet` de arriba. Si la
+      // reserva cambió de recurso o de servicio en paralelo entre esa
+      // lectura y el lock real de la fila (otra transacción concurrente hizo
+      // commit en el medio), `lockSet` quedó calculado sobre datos
+      // obsoletos -- pudo no incluir el recurso real de la reserva. Seguir
+      // adelante decidiendo qué escribir sobre un lock parcial/equivocado
+      // es exactamente la clase de carrera que este fix vino a cerrar del
+      // otro lado (status) -- acá se aborta y se pide reintento en vez de
+      // arriesgar la misma clase de bug para resourceId/serviceId.
+      if (existing.resource.id !== preCheck.resource.id || existing.serviceId !== preCheck.serviceId) {
+        throw new ReservationConcurrentlyModifiedError(id);
+      }
+
+      // Calendario de PMS (18/08/2026) — drag-to-move/resize necesita poder
+      // editar una reserva CONFIRMED, no solo PENDING (mover una reserva ya
+      // confirmada de habitación/fecha es el caso de uso principal del
+      // tape-chart). Sigue bloqueado para CANCELLED/COMPLETED (A6.4, estados
+      // terminales no se reabren). totalPrice/lines quedan congelados igual
+      // que antes — este cambio no toca esa decisión ya tomada. Chequeado
+      // acá adentro (contra la lectura lockeada), no antes de abrir la tx:
+      // es exactamente el campo que la carrera de UPDATE-RESERVATION-LOST-
+      // STATUS-001 podía cambiar por debajo mientras este método corría.
+      if (existing.status !== 'PENDING' && existing.status !== 'CONFIRMED') {
+        throw new InvalidReservationError(
+          `Solo se pueden modificar reservas en estado PENDING o CONFIRMED. Estado actual: ${existing.status}`,
+        );
+      }
+
+      const newStartTime = changes.startTime ?? existing.startTime;
+      const newEndTime   = changes.endTime   ?? existing.endTime;
+
+      // J1 (23/08/2026, pendientes-2026-08-23.md) — solo dispara cuando se
+      // está moviendo el inicio (drag-to-move del calendario); editar otros
+      // campos de una reserva vieja sigue permitido, no se toca acá.
+      // Confirmado con el dueño: mover una reserva al pasado se bloquea
+      // igual que crearla en el pasado.
+      if (
+        changes.startTime !== undefined
+        && newStartTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS
+      ) {
+        throw new InvalidReservationError('No se puede mover una reserva a una fecha/hora de inicio en el pasado.');
+      }
+      const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
+      const newRatePlanId = changes.ratePlanId !== undefined ? changes.ratePlanId : existing.ratePlanId;
+      const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;
+      const newNinos     = changes.ninos   !== undefined ? changes.ninos   : existing.ninos;
+
+      // Reasignación de recurso (drag-to-move) — resuelve el recurso NUEVO
+      // antes de validar detalles/disponibilidad, para que todo lo demás
+      // (fields de categoría, locks, chequeo de ocupación) corra contra el
+      // recurso correcto.
+      let resource = existing.resource;
+      if (changes.resourceId && changes.resourceId !== existing.resource.id) {
+        const newResource = await this.resourceRepository.getById(changes.resourceId);
+        if (!newResource) throw new ResourceNotFoundError(changes.resourceId);
+        // getById() no filtra por active (R2) — mismo chequeo explícito que
+        // createReservation() para una reserva nueva.
+        if (!newResource.active) {
+          throw new InvalidReservationError(`El recurso ${changes.resourceId} está desactivado.`);
+        }
+        resource = newResource;
+      }
+
+      const category = await this.categoryRepository.findById(resource.categoryId);
+      if (category) {
+        validateDetailsAgainstFields(rawDetails, category.fields);
+      }
+
+      // Bug 2 (25/08/2026) — recalcula el snapshot SOLO si hubo reasignación
+      // de recurso (mismo criterio R9 que totalPrice/lines más abajo: no se
+      // resincroniza en cada edición si el negocio cambia is_exclusive de la
+      // categoría después de creada la reserva).
+      const reassigned = changes.resourceId !== undefined && changes.resourceId !== existing.resource.id;
+      const isExclusiveResource = reassigned
+        ? (category?.isExclusive ?? false)
+        : existing.isExclusiveResource;
+
+      // Recursos bloqueados por el servicio, sobre el recurso EFECTIVO
+      // (el nuevo si hubo reasignación, el mismo de siempre si no)
+      const lockedResourceIds = await this.availability.resolveLockedResourceIds(
+        existing.serviceId ?? undefined,
+        resource.id,
+      );
+
+      // Recotización (18/08/2026, a pedido explícito del dueño — reportado
+      // como "el precio no varía al editar"). Antes NUNCA se recalculaba,
+      // a propósito (ver historial de este comentario en git blame). Ahora
+      // se recalcula SOLO si la reserva sigue PENDING: una CONFIRMED ya
+      // generó un CHARGE financiero (clientes-finanzas) por el total viejo
+      // — pisar `totalPrice` sin un movimiento de ajuste explícito
+      // desincroniza la reserva del cobro ya emitido (A3.9, criterios-
+      // negocio.md: "todo movimiento tiene contrapartida"). Ese ajuste para
+      // CONFIRMED queda pendiente aparte, requiere diseñarlo (ver
+      // pendientes-2026-08-18.md) — no se improvisa acá.
+      let totalPrice = existing.totalPrice;
+      let lines = existing.lines;
+      let appliedCustomerRateId = existing.appliedCustomerRateId;
+      if (existing.status === 'PENDING') {
+        const service = existing.serviceId
+          ? await this.bookableServiceRepository.findById(existing.serviceId)
+          : null;
+        const priced = await this.pricing.resolvePrice({
+          customerId: existing.customer.id,
+          resourceId: resource.id,
+          serviceId:  existing.serviceId ?? undefined,
+          ratePlanId: newRatePlanId ?? undefined,
+          resource,
+          service,
+          startTime:  newStartTime,
+          endTime:    newEndTime,
+        });
+        totalPrice = priced.totalPrice;
+        lines = priced.lines.map((line, i) => ({
+          id:            `${id}-L${i + 1}`,
+          reservationId: id,
+          unitDate:      line.unitDate,
+          price:         line.price,
+        }));
+        appliedCustomerRateId = priced.appliedCustomerRateId;
+      }
+
       // partySize (Bug 1, 25/08/2026): updateReservation() no lo recalcula
       // (permanece congelado desde la creación, mismo criterio que ya
       // aplicaba antes de esta sesión) -- se reenvía existing.partySize tal

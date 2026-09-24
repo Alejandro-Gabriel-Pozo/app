@@ -17,7 +17,7 @@ import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.numb
 import { InMemoryCancellationPolicyRepository } from './in-memory.cancellation-policy.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
-import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
+import { InvalidReservationError, ResourceNotFoundError, ReservationNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -1271,6 +1271,27 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-1', {}),
       ).rejects.toThrow(InvalidReservationError);
+    });
+
+    // Hueco señalado por el gate `architecture-governor` (UPDATE-RESERVATION-
+    // LOCK-ORDER-001, 24/09/2026): hasta acá ningún test unitario cubría
+    // updateReservation() con un id inexistente -- solo se sabía que las
+    // rutas HTTP lo bloqueaban antes de llegar al service. Dos casos: el
+    // guard de FORMA (body vacío) corre ANTES de leer nada de repositorio
+    // (no depende de que el id exista), así que un id inexistente + body
+    // vacío rechaza por InvalidReservationError, NO por
+    // ReservationNotFoundError -- si algún día se reordenara el guard de
+    // forma después de `requireReservation()`, este test lo detectaría.
+    it('con un id inexistente y body vacío, rechaza por forma (InvalidReservationError) antes de buscar la reserva', async () => {
+      await expect(
+        service.updateReservation('id-inexistente', {}),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('lanza ReservationNotFoundError si la reserva no existe y el body sí trae campos', async () => {
+      await expect(
+        service.updateReservation('id-inexistente', { startTime: new Date('2026-08-01T18:00:00Z') }),
+      ).rejects.toThrow(ReservationNotFoundError);
     });
 
     // -----------------------------------------------------------------------

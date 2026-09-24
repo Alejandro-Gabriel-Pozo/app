@@ -72,6 +72,7 @@ import { SqlCancellationPolicyRepository }    from '../../reservas/sql.cancellat
 import { SqlAuditLogRepository }              from '../../repositories/audit-log.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../reservas/reservation.service.js';
+import type { Reservation }                   from '../../reservas/Reservation.js';
 import { Customer }                           from '../../clientes-finanzas/customer.entities.js';
 import {
   InvalidReservationError,
@@ -144,6 +145,18 @@ async function setupFixture() {
   const customer  = await seedCustomer(db);
   const service   = await buildService();
   return { category, resource, customer, service };
+}
+
+/**
+ * Mismo helper que `reservation-cancel-invoice-toctou.integration.test.ts`
+ * (y varios otros tests de TOCTOU de este repo) — ver ese archivo para el
+ * razonamiento completo (los dos brazos, por qué no usa Promise.race).
+ */
+async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean }> {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { settled };
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +670,210 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         }),
       ).rejects.toThrow(InvalidReservationError);
     });
+  });
+
+  // ─── updateReservation — concurrencia (UPDATE-RESERVATION-LOST-STATUS-001) ─
+  //
+  // Bug confirmado por architecture-governor (24/09/2026): antes del fix,
+  // updateReservation() leía la reserva SIN lock, ANTES de abrir su propia
+  // transacción, y armaba el UPSERT final con `initialStatus:
+  // existing.status` usando esa lectura vieja. Si otra operación cambiaba
+  // el status de la MISMA reserva y hacía commit ANTES de que el UPSERT de
+  // updateReservation() terminara, el UPSERT pisaba ese cambio con el
+  // status VIEJO -- lost update clásico (A8.1, criterios-negocio.md).
+  //
+  // Mismo método que `reservation-cancel-invoice-toctou.integration.test.ts`
+  // para RESERVA-10: no deja el orden de llegada al azar -- sostiene a mano,
+  // en una conexión real, el mismo efecto que cancelReservation() aplica
+  // DENTRO de su transacción (reservations.status = 'CANCELLED'), sin
+  // commitear, y prueba que updateReservation() se queda esperando ESE lock
+  // puntual y, al verlo liberado, decide contra el dato FRESCO (rechaza en
+  // vez de resucitar la reserva).
+  describe('updateReservation — concurrencia (UPDATE-RESERVATION-LOST-STATUS-001)', () => {
+    it('espera el lock de reservations() mientras una cancelación concurrente está en vuelo, y al ver la reserva ya CANCELLED rechaza en vez de resucitarla', async () => {
+      const { category, resource, customer, service } = await setupFixture();
+
+      const seeded = await seedReservation(db, resource.id, customer.id, {
+        startTime: new Date('2031-02-10T10:00:00Z'),
+        endTime:   new Date('2031-02-10T12:00:00Z'),
+        status:    'CONFIRMED',
+      });
+      // Reserva de control -- mismo camino, sin ningún lock sostenido. Sobre
+      // un recurso DISTINTO a propósito: assertAllResourcesAvailable() ya
+      // lockea por recurso (A8.1, ResourceRepository.lockByIds()) -- si
+      // compartiera `resource` con `seeded`, ese lock por-recurso (no el
+      // lock de la fila de `seeded` que este test quiere aislar) frenaría
+      // también al control, y un "blocked.settled === false" dejaría de
+      // distinguir "el lock de ESTA fila de reservations frena la
+      // operación" de "el lock del recurso compartido frena a las dos".
+      const controlResource = await seedResource(db, category.id);
+      const control = await seedReservation(db, controlResource.id, customer.id, {
+        startTime: new Date('2031-02-11T10:00:00Z'),
+        endTime:   new Date('2031-02-11T12:00:00Z'),
+        status:    'CONFIRMED',
+      });
+
+      const connA = await pool.connect();
+      let blockedUpdate: Promise<Reservation> | undefined;
+      let controlUpdate: Promise<Reservation> | undefined;
+
+      try {
+        // Mismo efecto que la transición que cancelReservation() aplica
+        // DENTRO de su transacción, sostenido sin commitear -- simula la
+        // carrera real: otra operación (staff, o el guest cancelando desde
+        // el portal) ya canceló la reserva y esa transacción todavía no
+        // hizo commit.
+        await connA.query('BEGIN');
+        await connA.query(
+          `UPDATE reservations SET status = 'CANCELLED' WHERE id = $1 AND status = 'CONFIRMED'`,
+          [seeded.id],
+        );
+
+        blockedUpdate = service.updateReservation(seeded.id, {
+          startTime: new Date('2031-02-10T11:00:00Z'),
+        });
+        controlUpdate = service.updateReservation(control.id, {
+          startTime: new Date('2031-02-11T11:00:00Z'),
+        });
+
+        const [blocked, controlResult] = await Promise.all([
+          settledWithin(blockedUpdate, 10_000),
+          settledWithin(controlUpdate, 10_000),
+        ]);
+
+        expect(
+          controlResult.settled,
+          'El brazo de CONTROL (reserva SIN ningún lock sostenido) no resolvió dentro de la ventana -- algo ' +
+          'más está frenando la conexión, no específicamente el lock de reservations(). El resultado del ' +
+          'brazo bloqueado no es confiable mientras este control esté fallando.',
+        ).toBe(true);
+        // PRECONDICIÓN del escenario, no la prueba del fix (corrección del
+        // gate `architecture-governor`, UPDATE-RESERVATION-LOCK-ORDER-001,
+        // 24/09/2026) -- `blocked.settled === false` solo confirma que la
+        // segunda operación efectivamente se quedó esperando ALGÚN lock
+        // mientras connA no comiteaba; no distingue POR CUÁL lock quedó
+        // esperando ni EN QUÉ ORDEN los tomó (podía bloquearse igual incluso
+        // sin requireReservationWithLock() dentro de la tx, por el lock del
+        // recurso que assertAllResourcesAvailable() ya toma desde antes de
+        // este fix). Esa prueba específica -- que el ORDEN de los locks es
+        // recurso-primero-fila-después, y que ese orden no deadlockea -- la
+        // da el test dedicado de la describe de más abajo
+        // ('updateReservation — orden de locks').
+        expect(
+          blocked.settled,
+          'updateReservation() resolvió ANTES de que la transacción que sostiene CANCELLED sobre ' +
+          'reservations() hiciera commit -- requireReservationWithLock() no está tomando el lock dentro de ' +
+          'la transacción, o updateReservation() sigue decidiendo con la lectura vieja de antes de la tx.',
+        ).toBe(false);
+      } finally {
+        await connA.query('COMMIT').catch(() => {});
+        if (blockedUpdate) await blockedUpdate.catch(() => {});
+        if (controlUpdate) await controlUpdate.catch(() => {});
+        connA.release();
+      }
+
+      // El fix: al desbloquearse, updateReservation() ve la reserva YA
+      // CANCELLED (lectura lockeada, DENTRO de su propia transacción,
+      // recién después de esperar el lock de connA) y rechaza -- no la
+      // resucita con el status viejo (CONFIRMED) que había leído antes de
+      // que la cancelación concurrente hiciera commit.
+      await expect(blockedUpdate).rejects.toThrow(InvalidReservationError);
+
+      const row = await db.query<{ status: string; start_time: string }>(
+        'SELECT status, start_time FROM reservations WHERE id = $1',
+        [seeded.id],
+      );
+      expect(row.rows[0]!.status).toBe('CANCELLED');
+      // startTime NO se movió -- el UPSERT nunca corrió (la transacción de
+      // updateReservation() hizo rollback al lanzar InvalidReservationError).
+      expect(new Date(row.rows[0]!.start_time)).toEqual(new Date('2031-02-10T10:00:00Z'));
+
+      // El brazo de control, sin carrera, sí aplicó su cambio con normalidad.
+      const controlValue = await controlUpdate;
+      expect(controlValue!.startTime).toEqual(new Date('2031-02-11T11:00:00Z'));
+    }, 30_000);
+  });
+
+  // ─── updateReservation — orden de locks (UPDATE-RESERVATION-LOCK-ORDER-001) ─
+  //
+  // Corrección del gate `architecture-governor` (24/09/2026) sobre el fix de
+  // arriba (UPDATE-RESERVATION-LOST-STATUS-001): la primera versión de ese
+  // fix lockeaba la FILA de la reserva primero y el RECURSO recién después
+  // (dentro de `assertAllResourcesAvailable()`, más adelante en el flujo) --
+  // orden invertido respecto del resto del código (`createReservation()`,
+  // misma convención derivada del paso 1 de
+  // `docs/conocimiento/playbook-locks-exclusividad.md`, no una cita
+  // textual de ese documento). Ese orden invertido abre un deadlock ABBA real: una
+  // transacción tiene la fila R1 y espera el recurso A; otra tiene A y
+  // espera R1.
+  //
+  // A diferencia del describe de arriba (que solo prueba que la segunda
+  // operación se BLOQUEA, sin decir por qué lock ni en qué orden -- ver el
+  // comentario agregado sobre `blocked.settled`), este test prueba el ORDEN
+  // específicamente: connA sostiene el lock del RECURSO sin commitear, y
+  // verifica que puede tomar el lock de la FILA sin que Postgres detecte un
+  // deadlock -- eso solo es posible si `updateReservation()` todavía NO tiene
+  // el lock de la fila en ese momento (lo toma DESPUÉS de esperar el del
+  // recurso). Verificado a mano contra la versión ANTERIOR de este fix (orden
+  // invertido): el mismo test falla con el 40P01 real de Postgres
+  // ("deadlock detected") -- ver el reporte de esta sesión para el detalle.
+  describe('updateReservation — orden de locks (UPDATE-RESERVATION-LOCK-ORDER-001)', () => {
+    it('connA sostiene el lock del RECURSO primero -- puede tomar el lock de la FILA sin deadlock, y la operación en curso completa recién tras el commit', async () => {
+      const { resource, customer, service } = await setupFixture();
+
+      const seeded = await seedReservation(db, resource.id, customer.id, {
+        startTime: new Date('2031-05-10T10:00:00Z'),
+        endTime:   new Date('2031-05-10T12:00:00Z'),
+        status:    'PENDING',
+      });
+
+      const connA = await pool.connect();
+      let updatePromise: Promise<Reservation> | undefined;
+      let connAError: unknown;
+
+      try {
+        // connA toma el lock del RECURSO primero, sin commitear -- exactamente
+        // el primer lock que updateReservation() tiene que tomar CON el fix
+        // (lockByIds() sobre `resources`, antes de requireReservationWithLock()).
+        await connA.query('BEGIN');
+        await connA.query('SELECT 1 FROM resources WHERE id = $1 FOR UPDATE', [resource.id]);
+
+        // Dispara la operación real (sin awaitear todavía) -- con el fix, se
+        // queda esperando el lock de connA sobre el RECURSO, sin haber
+        // tomado todavía el lock de la FILA de `reservations`.
+        updatePromise = service.updateReservation(seeded.id, {
+          startTime: new Date('2031-05-10T11:00:00Z'),
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // Con el orden correcto (recurso primero, fila después) esto NO
+        // deadlockea: updateReservation() todavía no tiene el lock de la
+        // fila (está esperando el del recurso, que connA ya tiene) -- connA
+        // puede tomarlo sin ciclo, son dos locks independientes y nadie
+        // sostiene la fila todavía.
+        try {
+          await connA.query('SELECT 1 FROM reservations WHERE id = $1 FOR UPDATE', [seeded.id]);
+        } catch (err) {
+          connAError = err;
+        }
+      } finally {
+        await connA.query('COMMIT').catch(() => {});
+        connA.release();
+      }
+
+      expect(
+        connAError,
+        'connA no pudo tomar el lock de la FILA de reservations mientras sostenía el lock del RECURSO -- ' +
+        'eso es un deadlock real de Postgres (40P01) o equivalente: significa que updateReservation() tomó ' +
+        'el lock de la FILA ANTES de esperar el del RECURSO, invirtiendo el orden que este fix corrige.',
+      ).toBeUndefined();
+
+      // Tras el COMMIT de connA (libera recurso y fila), la operación en
+      // curso completa con normalidad -- ya no hay nada que la frene.
+      const updated = await updatePromise;
+      expect(updated.startTime).toEqual(new Date('2031-05-10T11:00:00Z'));
+    }, 30_000);
   });
 
   // ─── EXCLUDE constraint — respaldo A8.2 del Bug 2 ─────────────────────

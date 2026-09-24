@@ -981,6 +981,39 @@ export class ReservationCancelledCannotInvoiceError extends DomainError {
 }
 
 /**
+ * UPDATE-RESERVATION-LOCK-ORDER-001 (24/09/2026, corrección del gate
+ * `architecture-governor` sobre UPDATE-RESERVATION-LOST-STATUS-001) --
+ * `updateReservation()` necesita saber QUÉ recursos lockear (el conjunto
+ * bloqueado por el servicio de la reserva) ANTES de poder tomar el lock de
+ * la fila de `reservations` (orden recurso-primero-fila-después, la misma
+ * convención que ya sigue el resto del código -- derivada del paso 1 de
+ * `docs/conocimiento/playbook-locks-exclusividad.md`, no una cita textual
+ * de ese documento. Lockear la fila primero, como hacía la versión
+ * anterior de este fix, invierte ese orden respecto del resto del código
+ * y puede deadlockear en ABBA con `createReservation()`/otro
+ * `updateReservation()` concurrente). Para
+ * decidir ese conjunto usa `preCheck` -- la lectura SIN lock que ya
+ * corría antes de abrir la transacción, solo para no abrir una tx sobre un
+ * id inexistente. Si entre esa lectura y el lock real de la fila la
+ * reserva cambió de recurso o de servicio (otra transacción concurrente
+ * hizo commit en el medio), el conjunto de recursos que se lockeó pudo
+ * quedar calculado sobre datos obsoletos -- ni siquiera incluir el recurso
+ * real. En vez de seguir con un lock parcial/equivocado, la operación
+ * aborta acá y pide reintento: el caller vuelve a llamar con el estado
+ * fresco. 409, mismo criterio que `RefundBaseChangedError` (carrera
+ * detectada entre una lectura sin lock usada para decidir el alcance del
+ * trabajo, y el lock real tomado después).
+ */
+export class ReservationConcurrentlyModifiedError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" cambió de recurso o de servicio en paralelo antes de poder tomar su lock -- reintentá la operación con el estado actual.`,
+      'RESERVATION_CONCURRENTLY_MODIFIED',
+    );
+  }
+}
+
+/**
  * D3 (pendientes-2026-08-19.md) -- una vez que el negocio ya cargó su CUIT
  * (perfil fiscal "confirmado", ver business-profile.service.ts), cambiar
  * razón social/CUIT/domicilio fiscal deja de estar disponible para

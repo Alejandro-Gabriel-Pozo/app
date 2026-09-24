@@ -361,6 +361,16 @@ function domainErrorStatus(error: DomainError): number {
     // el estado real de la empresa destino (cero negocios vinculados),
     // reintentable una vez que alguien la resuelva (alta manual del
     // primer negocio).
+    //
+    // UPDATE-RESERVATION-LOCK-ORDER-001 (24/09/2026, corrección del gate
+    // `architecture-governor` sobre UPDATE-RESERVATION-LOST-STATUS-001) --
+    // RESERVATION_CONCURRENTLY_MODIFIED (case al final de este grupo 409)
+    // entra al mismo grupo semántico que REFUND_BASE_CHANGED de más arriba:
+    // una lectura sin lock (`preCheck`,
+    // usada para decidir qué recursos lockear ANTES del lock de la fila)
+    // quedó obsoleta contra lo que el lock real encontró después. 409
+    // reintentable, no se reintenta solo (mismo criterio A8.6 que
+    // REFUND_BASE_CHANGED).
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -440,6 +450,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'COMPANY_LINK_REQUEST_ALREADY_PENDING':
     case 'COMPANY_LINK_REQUEST_INVALID_TRANSITION':
     case 'COMPANY_HAS_NO_ELIGIBLE_APPROVER':
+    case 'RESERVATION_CONCURRENTLY_MODIFIED':
       return 409;
 
     // --- 503 Service Unavailable ---
