@@ -1145,6 +1145,77 @@ CREATE INDEX IF NOT EXISTS idx_propagation_queue_pending
   WHERE processed_at IS NULL AND failed_at IS NULL;
 
 -- ===========================================================================
+-- BLOQUE VÍNCULO A EMPRESA POR SOLICITUD — company_link_requests
+-- (24/09/2026, D-05/P-03, Wave 15 -- docs/diseno-wave15-sesion-saga-
+-- aprovisionamiento-2026-09-24.md §3, gate `architecture-governor`
+-- APROBADO CON CONDICIONES)
+-- ===========================================================================
+-- TRANSACCIÓN (docs/criterios-datos.md Parte 1) -- mismo criterio ya
+-- confirmado en este repo para `credit_note_request`
+-- (docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md:564): un
+-- hecho que ocurre (se pide vincular), se confirma (`APPROVED`, corre
+-- `linkBusinessToCompany()`) o se revierte (`REJECTED`/`CANCELLED`) -- sin
+-- `code` propio, sin `active`/`deleted_at`, máquina de estados acotada
+-- (A6.1-A6.6, docs/criterios-negocio.md). A6.5 ("toda transición deja
+-- rastro: quién, cuándo, desde qué estado") lo satisfacen las columnas
+-- `status`/`resolved_by_identity_id`/`resolved_at` en sí -- mismo mecanismo
+-- que `user_invitations` (BLOQUE INVITACIONES, más arriba en este mismo
+-- archivo) usa para su propio ciclo PENDING/ACCEPTED/REVOKED, sin una fila
+-- de audit_log genérica aparte (ver companies.routes.ts para la nota
+-- completa sobre por qué NO se usa domain/audit.ts::recordFieldChanges()
+-- acá).
+--
+-- Reemplaza el efecto INMEDIATO de `POST /api/companies/link`
+-- (companies.routes.ts) para el caso de UN NEGOCIO ADICIONAL uniéndose a
+-- una empresa que ya tiene al menos un negocio vinculado: antes, ese
+-- vínculo quedaba escrito con solo verificar que la `company` existiera,
+-- sin que el lado receptor se enterara ni pudiera objetar. `POST /link`
+-- (vínculo directo, sin aprobación) NO se toca en este bloque -- sigue
+-- existiendo tal cual, decisión de alcance explícita (ver companies.routes.ts).
+--
+-- Mismo patrón de índice único parcial que `user_invitations`/
+-- `credit_note_request` para "a lo sumo una fila activa" (CLAUDE.md
+-- app-main, sección Modularidad): a lo sumo UNA solicitud PENDING por
+-- (requesting_business_id, target_company_id) a la vez.
+CREATE TABLE IF NOT EXISTS company_link_requests (
+  id                         VARCHAR(255) PRIMARY KEY,
+  requesting_business_id     VARCHAR(255) NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  target_company_id          VARCHAR(255) NOT NULL REFERENCES companies(id)  ON DELETE CASCADE,
+  status                     VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                               CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
+  requested_by_identity_id   VARCHAR(255) NOT NULL REFERENCES identities(id),
+  requested_at               TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  resolved_by_identity_id    VARCHAR(255)          REFERENCES identities(id),
+  resolved_at                TIMESTAMPTZ,
+  created_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_company_link_requests_pending
+  ON company_link_requests (requesting_business_id, target_company_id)
+  WHERE status = 'PENDING';
+
+-- El aprobador resuelve "¿qué está pendiente para mi company?" -- ver
+-- assertEligibleApprover()/findLinkRequestById() en
+-- companies.routes.ts / company.repository.ts. No existe todavía un
+-- findLinkRequestsByTargetCompany() -- listar las solicitudes pendientes
+-- de una company (para que el aprobador las descubra sin conocer el id de
+-- antemano) queda como trabajo futuro, este índice ya lo deja preparado.
+CREATE INDEX IF NOT EXISTS idx_company_link_requests_target
+  ON company_link_requests (target_company_id) WHERE status = 'PENDING';
+
+CREATE INDEX IF NOT EXISTS idx_company_link_requests_requesting
+  ON company_link_requests (requesting_business_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'company_link_requests_updated_at') THEN
+    CREATE TRIGGER company_link_requests_updated_at
+      BEFORE UPDATE ON company_link_requests
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
 -- BLOQUE AUDITORÍA DE PLATAFORMA — platform_audit_log
 -- (28/08/2026, Fase 2 de docs/plan-separacion-dominios-multirubro-2026-08-28.md)
 -- ===========================================================================

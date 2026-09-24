@@ -397,6 +397,18 @@ documental de ronda 14 en el propio ADR). Mismo criterio que las cuatro
 correcciones anteriores: la cita se corrige en el mismo commit que
 produce el delta.
 
+**Corrección 24/09/2026 (D-05/P-03, Wave 15 -- vínculo a empresa por
+solicitud + aprobación en dos pasos, gate `architecture-governor` sobre el
+diseño): 266 → 269.** `docs/inventario-rutas.md` regenerado en este mismo
+bloque (+3 rutas de `companies.routes.ts`, nuevas en el árbol vivo, no
+`CLOSURE_MOUNTS`): `POST /api/companies/link-requests`,
+`POST /api/companies/link-requests/:id/approve`,
+`POST /api/companies/link-requests/:id/reject`. Ninguna de las 3 está
+documentada en `spec.ts` (el numerador de la cita "17 de N" de más abajo
+no se mueve, solo el denominador). Mismo criterio que las cinco
+correcciones anteriores: la cita se corrige en el mismo commit que
+produce el delta.
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -425,10 +437,11 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 8 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-17 de 266 -- corrección 23/09/2026, Bloque 3 de
-`ISSUE-BEFORE-REVERSE-WINDOW-001`, ver arriba: el total subió con las 3
-rutas nuevas de `invoices.routes.ts`, ninguna documentada en `spec.ts`,
-así que el numerador (17) no se movió, solo el denominador). Depende de `NODE_ENV` — generado con `development`, `/` y
+17 de 269 -- corrección 24/09/2026, D-05/P-03 Wave 15, ver arriba: el
+total subió con las 3 rutas nuevas de `companies.routes.ts`, ninguna
+documentada en `spec.ts`, así que el numerador (17) no se movió, solo el
+denominador. Corrección anterior: 23/09/2026, Bloque 3 de
+`ISSUE-BEFORE-REVERSE-WINDOW-001`, mismo criterio, 263→266). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Consumo — qué ruta usa quién

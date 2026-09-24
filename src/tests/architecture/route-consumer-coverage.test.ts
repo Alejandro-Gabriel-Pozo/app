@@ -319,6 +319,14 @@ const NO_CONSUMER_ROUTES: Record<string, string> = {
   '/api/invoices/:p/mark-not-issued': 'Ídem.',
   '/api/invoices/:p/reconcile-with-afip': 'Ídem, §3.14 (P-1).',
 
+  // D-05/P-03 (24/09/2026, Wave 15) -- las 3 rutas nuevas de solicitud +
+  // aprobación en dos pasos, mismo criterio que las familias de arriba
+  // recién construidas: sin pantalla en appfrontend-main todavía (esta
+  // implementación es solo el backend), no abandonadas.
+  '/api/companies/link-requests': 'Construido 24/09/2026 (D-05/P-03, Wave 15), UI pendiente -- no abandonado.',
+  '/api/companies/link-requests/:p/approve': 'Ídem.',
+  '/api/companies/link-requests/:p/reject': 'Ídem.',
+
   // Hallazgo nuevo de esta cerca (16/09/2026, D-23(1)), no estaba en la lista
   // de 35 de F14-01 -- ese grep no distinguía /platform/businesses/:id (GET
   // de un negocio puntual) de sus 3 hermanos con sufijo (status/provision/

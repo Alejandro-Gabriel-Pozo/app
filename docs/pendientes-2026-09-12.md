@@ -6002,6 +6002,31 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
 **Movido a `docs/resuelto.md`** — corrección de etiqueta del mismo FN#2
 (`lock-order.test.ts`) ya registrado como cerrado en `docs/resuelto.md`.
 
+## Wave 15 — D-05/P-03 vinculación de empresas (24/09/2026)
+
+- **`COMPANY-LINK-LEGACY-BYPASS-001` (24/09/2026, condición 1 del gate
+  `architecture-governor`, pre-commit sobre la implementación de D-05/P-03
+  — ver `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
+  §3).** El flujo nuevo de solicitud + aprobación en dos pasos
+  (`POST /api/companies/link-requests` + `.../approve|reject`,
+  `src/platform/companies.routes.ts`) convive con el endpoint viejo,
+  `POST /api/companies/link` (mismo archivo), que sigue vivo, sin cambios
+  de comportamiento y sin ningún guard nuevo. Cualquier `MANAGEMENT` de
+  un negocio `ENTERPRISE` puede seguir vinculándose a cualquier company
+  por UUID sin que el lado receptor se entere ni apruebe nada —
+  exactamente el comportamiento que D-05 existe para corregir. El
+  implementador no lo tocó a propósito (mismo criterio que
+  "preguntas de alcance pueden esconder una decisión de negocio" de este
+  `CLAUDE.md`: decidir si el endpoint viejo se deprecia, se guarda detrás
+  del mismo flujo de aprobación, o queda como camino rápido intencional
+  es una decisión de producto, no de implementación) — pero había quedado
+  documentado solo en un docblock de código, no acá, que es el único
+  lugar que se relee al empezar cada sesión. **Acción puntual que lo
+  cierra:** decisión del dueño sobre qué hacer con
+  `POST /api/companies/link` (deprecar, gatear detrás del mismo flujo de
+  aprobación, o dejarlo como está y documentar por qué es aceptable),
+  después del commit de D-05/P-03.
+
 ## Wave 15 — items 1+2, TTL de sesión + `token_version` (24/09/2026)
 
 - **`SESSION-TTL-NARROW-SCOPE-001`** (24/09/2026, condición 1a del gate

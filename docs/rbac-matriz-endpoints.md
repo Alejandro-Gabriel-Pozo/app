@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 23/09/2026 (ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 6, §3.10 -- `invoices.routes.ts`, `GET /unreconciled` reclasificada de `FRONT_DESK` a `MANAGEMENT`; sin call-sites nuevos, 218 sigue igual -- se reclasifica un `authorize()` existente, no se agrega uno. Actualización anterior: mismo ADR, Bloque 3, §3.9/§3.14 -- `invoices.routes.ts` sumó 3 rutas nuevas: `GET /uncertain` (`MANAGEMENT`), `POST /:id/mark-not-issued` y `POST /:id/reconcile-with-afip` (las dos, `EMISOR_NOTA_CREDITO`) -- 215 → 218 call-sites de `authorize()`).
+**Última actualización:** 24/09/2026 (D-05/P-03, Wave 15 -- `companies.routes.ts` suma 3 rutas nuevas: `POST /link-requests` (`MANAGEMENT` + `requirePlan(ENTERPRISE)`), `POST /link-requests/:id/approve` y `POST /link-requests/:id/reject` (las dos, `MANAGEMENT` + guard de pertenencia) -- 218 → 221 call-sites de `authorize()`). Actualización anterior: 23/09/2026 (ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 6, §3.10 -- `invoices.routes.ts`, `GET /unreconciled` reclasificada de `FRONT_DESK` a `MANAGEMENT`; sin call-sites nuevos, 218 sigue igual -- se reclasifica un `authorize()` existente, no se agrega uno. Actualización anterior: mismo ADR, Bloque 3, §3.9/§3.14 -- `invoices.routes.ts` sumó 3 rutas nuevas: `GET /uncertain` (`MANAGEMENT`), `POST /:id/mark-not-issued` y `POST /:id/reconcile-with-afip` (las dos, `EMISOR_NOTA_CREDITO`) -- 215 → 218 call-sites de `authorize()`).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (218 call-sites, 39 archivos)
+## 2. Matriz de endpoints por archivo (221 call-sites, 39 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -206,6 +206,9 @@ ver sección 4.
 - GET `/me` — `MANAGEMENT`
 - POST `/` — `MANAGEMENT` (+ `requirePlan(ENTERPRISE)` — gate de PLAN, no de módulo)
 - POST `/link` — `MANAGEMENT` (+ `requirePlan(ENTERPRISE)`)
+- POST `/link-requests` — `MANAGEMENT` (+ `requirePlan(ENTERPRISE)`) — D-05/P-03 (24/09/2026, Wave 15): pide vincular el negocio propio a una company existente, crea `company_link_requests` PENDING, no vincula nada todavía.
+- POST `/link-requests/:id/approve` — `MANAGEMENT` + guard de pertenencia (`assertEligibleApprover()`, no solo el rol — el aprobador tiene que ser MANAGEMENT de un negocio YA vinculado a la company destino de la solicitud, ver companies.routes.ts).
+- POST `/link-requests/:id/reject` — `MANAGEMENT` + mismo guard de pertenencia que approve.
 
 **`business.routes.ts`** — POST `/register` público, ver sección 4.
 

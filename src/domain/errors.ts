@@ -338,6 +338,87 @@ export class ProductNotSharedError extends DomainError {
   }
 }
 
+// ---------------------------------------------------------------------------
+// D-05/P-03 (24/09/2026, Wave 15 -- docs/diseno-wave15-sesion-saga-
+// aprovisionamiento-2026-09-24.md §3) -- solicitud + aprobación en dos pasos
+// para vincular un negocio a una empresa ya existente (companies.routes.ts).
+// ---------------------------------------------------------------------------
+
+export class CompanyLinkRequestNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Solicitud de vínculo ${id} no encontrada.`, 'COMPANY_LINK_REQUEST_NOT_FOUND');
+  }
+}
+
+/**
+ * A lo sumo una solicitud PENDING por (negocio, empresa) a la vez --
+ * `uq_company_link_requests_pending` (platform.schema.sql). Mismo criterio
+ * que `RateCatalogEntryConflictError`/`ResourceNameConflictError`: se
+ * traduce desde el 23505 crudo de Postgres en la ruta, no se adivina antes
+ * de escribir.
+ */
+export class CompanyLinkRequestAlreadyPendingError extends DomainError {
+  constructor(requestingBusinessId: string, targetCompanyId: string) {
+    super(
+      `El negocio ${requestingBusinessId} ya tiene una solicitud pendiente hacia la empresa ${targetCompanyId}.`,
+      'COMPANY_LINK_REQUEST_ALREADY_PENDING',
+    );
+  }
+}
+
+/**
+ * Transición inválida de la máquina de estados propia de
+ * `company_link_requests` (A6.3, docs/criterios-negocio.md) -- se intentó
+ * aprobar/rechazar una solicitud que ya no está PENDING (doble click, o
+ * la ganó otra transacción concurrente vía el UPDATE guardado por
+ * `WHERE status = 'PENDING'`, ver `resolveLinkRequestWithClient()`).
+ */
+export class CompanyLinkRequestInvalidTransitionError extends DomainError {
+  constructor(id: string, currentStatus: string) {
+    super(
+      `La solicitud ${id} ya no está pendiente (estado actual: ${currentStatus}) -- no se puede aprobar ni rechazar de nuevo.`,
+      'COMPANY_LINK_REQUEST_INVALID_TRANSITION',
+    );
+  }
+}
+
+/**
+ * D-05/P-03 §3.2, condición 1 del gate (guard de pertenencia) -- el
+ * aprobador tiene `Roles.MANAGEMENT`, pero NO de un negocio ya vinculado a
+ * `targetCompanyId`. Distinto código que `CompanyHasNoEligibleApproverError`
+ * a propósito: acá SÍ existen aprobadores posibles para esta empresa, este
+ * actor puntual no es uno de ellos -- ver esa otra clase para el caso donde
+ * no existe ninguno.
+ */
+export class CompanyLinkRequestNotEligibleApproverError extends DomainError {
+  constructor(approverBusinessId: string, targetCompanyId: string) {
+    super(
+      `El negocio ${approverBusinessId} no está vinculado a la empresa ${targetCompanyId} -- solo un MANAGEMENT de un negocio ya vinculado puede aprobar o rechazar esta solicitud.`,
+      'COMPANY_LINK_REQUEST_NOT_ELIGIBLE_APPROVER',
+    );
+  }
+}
+
+/**
+ * D-05/P-03 §3.2, condición 2 del gate (caso borde bootstrap) --
+ * `targetCompanyId` todavía no tiene NINGÚN negocio vinculado, así que no
+ * existe ningún usuario MANAGEMENT que pueda aprobar este vínculo por
+ * definición -- fail-loud explícito en vez de dejar que
+ * `assertEligibleApprover()` (companies.routes.ts) haga `.some()` sobre un
+ * array vacío y devuelva `false` en silencio, indistinguible del caso "hay
+ * aprobadores pero este actor no es uno" (`CompanyLinkRequestNotEligibleApproverError`).
+ * Primer vínculo de una empresa nueva: fuera de alcance de este bloque, ver
+ * companies.routes.ts.
+ */
+export class CompanyHasNoEligibleApproverError extends DomainError {
+  constructor(companyId: string) {
+    super(
+      `La empresa ${companyId} todavía no tiene ningún negocio vinculado -- no existe ningún usuario con MANAGEMENT que pueda aprobar o rechazar este vínculo todavía.`,
+      'COMPANY_HAS_NO_ELIGIBLE_APPROVER',
+    );
+  }
+}
+
 /** Mismo criterio que InvalidOrderTransitionError -- acción de override que no corresponde al estado actual (INACTIVO/ACTIVO/PENDIENTE_DE_REVISION). */
 export class InvalidOverrideTransitionError extends DomainError {
   constructor(currentStatus: string, attemptedAction: string) {

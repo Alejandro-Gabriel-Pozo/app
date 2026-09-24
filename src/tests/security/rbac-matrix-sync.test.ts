@@ -73,7 +73,13 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // no 215: invoices.routes.ts suma 3 authorize() nuevos --
 // GET /uncertain (Roles.MANAGEMENT), POST /:id/mark-not-issued y
 // POST /:id/reconcile-with-afip (los dos, Roles.EMISOR_NOTA_CREDITO).
-const EXPECTED_AUTHORIZE_CALL_SITES = 218;
+// D-05/P-03 (24/09/2026, Wave 15, gate `architecture-governor`) -- 221, no
+// 218: companies.routes.ts suma 3 authorize(Roles.MANAGEMENT) nuevos --
+// POST /link-requests, POST /link-requests/:id/approve y
+// POST /link-requests/:id/reject (estas dos últimas con guard de
+// pertenencia adicional, assertEligibleApprover(), que no es un
+// authorize() y por eso no suma al conteo).
+const EXPECTED_AUTHORIZE_CALL_SITES = 221;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

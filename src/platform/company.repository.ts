@@ -40,6 +40,34 @@ export interface PropagationQueueRow {
   retryCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// company_link_requests -- D-05/P-03 (24/09/2026, Wave 15,
+// docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §3). Ver el
+// docblock del BLOQUE en platform.schema.sql para la clasificación
+// (TRANSACCIÓN, criterios-negocio A6.1-A6.6).
+// ---------------------------------------------------------------------------
+
+export type CompanyLinkRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+
+export interface CompanyLinkRequest {
+  id: string;
+  requestingBusinessId: string;
+  targetCompanyId: string;
+  status: CompanyLinkRequestStatus;
+  requestedByIdentityId: string;
+  requestedAt: Date;
+  resolvedByIdentityId: string | null;
+  resolvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateCompanyLinkRequestInput {
+  requestingBusinessId: string;
+  targetCompanyId: string;
+  requestedByIdentityId: string;
+}
+
 function rowToCompany(row: Record<string, unknown>): Company {
   return {
     id: row['id'] as string,
@@ -66,6 +94,21 @@ function rowToRecipeItem(row: Record<string, unknown>): CompanyRecipeItem {
     companyProductId: row['company_product_id'] as string,
     componentProductId: row['component_product_id'] as string,
     quantityPerUnit: Number(row['quantity_per_unit']),
+  };
+}
+
+function rowToLinkRequest(row: Record<string, unknown>): CompanyLinkRequest {
+  return {
+    id: row['id'] as string,
+    requestingBusinessId: row['requesting_business_id'] as string,
+    targetCompanyId: row['target_company_id'] as string,
+    status: row['status'] as CompanyLinkRequestStatus,
+    requestedByIdentityId: row['requested_by_identity_id'] as string,
+    requestedAt: new Date(row['requested_at'] as string),
+    resolvedByIdentityId: (row['resolved_by_identity_id'] as string | null) ?? null,
+    resolvedAt: row['resolved_at'] ? new Date(row['resolved_at'] as string) : null,
+    createdAt: new Date(row['created_at'] as string),
+    updatedAt: new Date(row['updated_at'] as string),
   };
 }
 
@@ -232,5 +275,65 @@ export class CompanyRepository {
       [id, error.slice(0, 200), maxRetries],
     );
     return (rows[0]?.retry_count ?? 0) >= maxRetries;
+  }
+
+  // -------------------------------------------------------------------------
+  // company_link_requests -- D-05/P-03 (24/09/2026, Wave 15)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Puede lanzar el 23505 crudo de Postgres si ya hay una solicitud PENDING
+   * para el mismo (requesting_business_id, target_company_id)
+   * (`uq_company_link_requests_pending`) -- el caller (companies.routes.ts)
+   * lo traduce a `CompanyLinkRequestAlreadyPendingError`, mismo criterio que
+   * `ResourceNameConflictError` en `resources.routes.ts`.
+   */
+  async createLinkRequest(input: CreateCompanyLinkRequestInput): Promise<CompanyLinkRequest> {
+    const id = randomUUID();
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `INSERT INTO company_link_requests (id, requesting_business_id, target_company_id, requested_by_identity_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [id, input.requestingBusinessId, input.targetCompanyId, input.requestedByIdentityId],
+    );
+    return rowToLinkRequest(rows[0]!);
+  }
+
+  /** Sin filtro de estado (R2, docs/criterios-datos.md) -- una solicitud ya resuelta sigue siendo consultable. */
+  async findLinkRequestById(id: string): Promise<CompanyLinkRequest | undefined> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM company_link_requests WHERE id = $1`,
+      [id],
+    );
+    return rows[0] ? rowToLinkRequest(rows[0]) : undefined;
+  }
+
+  /**
+   * Transición guardada por `WHERE status = 'PENDING'` (concurrency-reasoning):
+   * si dos approve/reject concurrentes llegan acá para la misma fila, solo
+   * uno afecta una fila -- el otro recibe `undefined` y el caller
+   * (companies.routes.ts) lo traduce a `CompanyLinkRequestInvalidTransitionError`
+   * en vez de una carrera silenciosa de "el último que escribe gana".
+   *
+   * `client` opcional (default `this.db`, mismo patrón que
+   * `PlatformRepository.listPlanLimits()`) -- el approve real lo llama
+   * DENTRO de `platformRepo.runInTransaction()` para que este UPDATE y el
+   * `linkBusinessToCompany()` que sigue sean el mismo commit (atomic-state-mutation);
+   * el reject es una sola escritura y no necesita transacción explícita.
+   */
+  async resolveLinkRequestWithClient(
+    id: string,
+    status: 'APPROVED' | 'REJECTED',
+    resolvedByIdentityId: string,
+    client: SqlClient = this.db,
+  ): Promise<CompanyLinkRequest | undefined> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE company_link_requests
+       SET status = $2, resolved_by_identity_id = $3, resolved_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND status = 'PENDING'
+       RETURNING *`,
+      [id, status, resolvedByIdentityId],
+    );
+    return rows[0] ? rowToLinkRequest(rows[0]) : undefined;
   }
 }

@@ -684,9 +684,21 @@ export class PlatformRepository {
     return result.rows.map((row) => this.rowToBusiness(row));
   }
 
-  /** Vincula (o desvincula, con `companyId = null`) un negocio a una empresa. */
-  async linkBusinessToCompany(businessId: string, companyId: string | null): Promise<void> {
-    await this.db.query(
+  /**
+   * Vincula (o desvincula, con `companyId = null`) un negocio a una empresa.
+   *
+   * `client` opcional (24/09/2026, D-05/P-03, Wave 15) -- mismo patrón que
+   * `updateBusinessStatus()`/`updateBusinessPlan()` arriba: si viene, corre
+   * DENTRO de la transacción del caller. El approve de `company_link_requests`
+   * (companies.routes.ts) lo pasa para que el UPDATE de `businesses.company_id`
+   * y el `resolveLinkRequestWithClient()` que lo precede confirmen o se
+   * caigan juntos (atomic-state-mutation) -- sin esto, un fallo a mitad
+   * podía dejar la solicitud en `APPROVED` con el negocio todavía sin
+   * vincular. `POST /api/companies/link` (sin aprobación) sigue llamando
+   * sin `client`, comportamiento sin cambios.
+   */
+  async linkBusinessToCompany(businessId: string, companyId: string | null, client?: SqlClient): Promise<void> {
+    await (client ?? this.db).query(
       'UPDATE businesses SET company_id = $1, updated_at = NOW() WHERE id = $2',
       [companyId, businessId],
     );

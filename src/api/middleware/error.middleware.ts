@@ -246,8 +246,16 @@ function domainErrorStatus(error: DomainError): number {
     // válido y el rol tiene MANAGEMENT, pero no OWNER_ONLY -- mismo criterio
     // semántico que FORBIDDEN, code propio para que el frontend distinga
     // "no tenés este permiso en general" de "esto puntual quedó bloqueado".
+    // D-05/P-03 §3.2, condición 1 del gate (24/09/2026, Wave 15) --
+    // COMPANY_LINK_REQUEST_NOT_ELIGIBLE_APPROVER: el guard de pertenencia
+    // de assertEligibleApprover() (companies.routes.ts) -- el actor tiene
+    // Roles.MANAGEMENT, pero no del negocio que ya está vinculado a la
+    // company destino. Mismo grupo semántico que FORBIDDEN -- rol
+    // correcto, recurso equivocado. El comentario va acá arriba, no entre
+    // los case (no-fallthrough, ver bloque 402 de este archivo).
     case 'FORBIDDEN':
     case 'FISCAL_PROFILE_LOCKED':
+    case 'COMPANY_LINK_REQUEST_NOT_ELIGIBLE_APPROVER':
       return 403;
 
     // --- 404 Not Found ---
@@ -277,7 +285,12 @@ function domainErrorStatus(error: DomainError): number {
     case 'RATE_CATALOG_ENTRY_NOT_FOUND':
     case 'ACCOUNT_RECEIVABLE_NOT_FOUND':
     case 'MAINTENANCE_WINDOW_NOT_FOUND':
+    // D-05/P-03 (24/09/2026, Wave 15) -- COMPANY_LINK_REQUEST_NOT_FOUND
+    // entra al mismo grupo: GET/POST sobre un id de company_link_requests
+    // que no existe. El comentario va acá arriba, no entre los case
+    // (no-fallthrough, ver bloque 402 de este archivo).
     case 'CREDIT_NOTE_REQUEST_NOT_FOUND':
+    case 'COMPANY_LINK_REQUEST_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -334,6 +347,20 @@ function domainErrorStatus(error: DomainError): number {
     // "corregir" reintentando (ver sus propios docblocks en domain/errors.ts).
     // El comentario va acá arriba, no entre los case (no-fallthrough, ver
     // bloque 402 de este archivo).
+    //
+    // D-05/P-03 (24/09/2026, Wave 15) -- las tres precondiciones de estado
+    // de `company_link_requests` (companies.routes.ts, más abajo en este
+    // mismo grupo): ALREADY_PENDING (índice único parcial,
+    // R6-equivalente) e INVALID_TRANSITION (mismo grupo semántico que
+    // CREDIT_NOTE_REQUEST_INVALID_TRANSITION, arriba) son precondición de
+    // estado del recurso, request bien formado. HAS_NO_ELIGIBLE_APPROVER
+    // (condición 2 del gate, caso borde bootstrap) entra al mismo grupo
+    // por sugerencia explícita del gate de diseño: no es que el actor no
+    // tenga permiso (eso es 403, ver COMPANY_LINK_REQUEST_NOT_ELIGIBLE_APPROVER
+    // más arriba) -- es que la operación no puede completarse todavía dado
+    // el estado real de la empresa destino (cero negocios vinculados),
+    // reintentable una vez que alguien la resuelva (alta manual del
+    // primer negocio).
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -410,6 +437,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'INVOICE_VOUCHER_NUMBER_ALREADY_REGISTERED':
     case 'AFIP_RECONCILIATION_PRECONDITION_FAILED':
     case 'RETRY_INVOICE_IN_FLIGHT':
+    case 'COMPANY_LINK_REQUEST_ALREADY_PENDING':
+    case 'COMPANY_LINK_REQUEST_INVALID_TRANSITION':
+    case 'COMPANY_HAS_NO_ELIGIBLE_APPROVER':
       return 409;
 
     // --- 503 Service Unavailable ---
