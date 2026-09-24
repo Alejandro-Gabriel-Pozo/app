@@ -49,6 +49,10 @@ class FakeCustomerRepository {
     this.saveWithGoogleCalls.push({ customer, googleSub });
     this.byGoogleSub.set(googleSub, customer);
   }
+  /** Wave 15 item 2 (24/09/2026) -- login()/loginWithGoogle() lo consultan al emitir el token. */
+  async getTokenVersion(): Promise<number | null> {
+    return 0;
+  }
 }
 
 function fakeNumberSequenceRepo(): NumberSequenceRepository {

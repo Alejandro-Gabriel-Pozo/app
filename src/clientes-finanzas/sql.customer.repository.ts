@@ -58,6 +58,19 @@ const BASE_SELECT = `
 export class SqlCustomerRepository implements CustomerRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
+  /**
+   * Wave 15 item 2 (24/09/2026) — ver docblock en `CustomerRepository`.
+   * Consulta dedicada, sin pasar por `BASE_SELECT` (que trae también los
+   * `customer_contact_methods` vía LEFT JOIN, innecesario acá).
+   */
+  async getTokenVersion(id: string): Promise<number | null> {
+    const result = await this.sqlClient.query<{ token_version: number }>(
+      'SELECT token_version FROM customers WHERE id = $1',
+      [id],
+    );
+    return result.rows[0]?.token_version ?? null;
+  }
+
   // ── Escritura ─────────────────────────────────────────────────────────────
 
   async save(customer: Customer): Promise<void> {

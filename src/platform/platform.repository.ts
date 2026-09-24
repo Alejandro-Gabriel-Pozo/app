@@ -64,6 +64,16 @@ export interface Identity {
   dni: string | null;
   phone: string | null;
   createdAt: Date;
+  /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión) —
+   * `identities.token_version` (`NOT NULL DEFAULT 0`). Opcional en esta
+   * interfaz a propósito: no romper los dobles de test/fixtures existentes
+   * que construyen un `Identity` sin este campo (se trata como `0` donde
+   * se embebe en un JWT nuevo — mismo criterio de coerción que
+   * `payload.tv ?? 0` en `auth.middleware.ts`). `rowToIdentity()` siempre
+   * lo completa contra la BD real.
+   */
+  tokenVersion?: number;
 }
 
 export interface CreateIdentityInput {
@@ -200,6 +210,15 @@ export interface MembershipContext {
   active: boolean;
   roleId: string;
   permissionGroups: string[];
+  /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A) — `identities.token_version`
+   * de la identity dueña de esta membership, resuelto en el mismo viaje a
+   * BD que el resto de este contexto (`getMembershipContext()` más abajo,
+   * JOIN a `identities`). Opcional por el mismo motivo que en
+   * `security/auth.middleware.ts::MembershipContext` (interfaz hermana,
+   * duplicada por diseño entre los dos archivos — ver su docblock).
+   */
+  tokenVersion?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,20 +1137,52 @@ export class PlatformRepository {
    * isMembershipActive() (14/08/2026). LEFT JOIN a role_permission_groups
    * a propósito: un rol recién creado sin ningún grupo asignado todavía
    * debe resolver `permissionGroups: []`, no "membership no encontrada".
+   *
+   * Wave 15 item 2 (24/09/2026, D-04 opción A) — suma `i.token_version` al
+   * mismo viaje a BD (JOIN a `identities`, no LEFT JOIN: toda membership
+   * tiene una identity dueña por FK NOT NULL). Es la lectura "gratis" que
+   * el gate pidió para el lado staff (decisión de costo, ver
+   * docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §2.2):
+   * `authenticate()` YA llama esta función en cada request de `/api/*` vía
+   * `resolveMembershipContext`, así que agregar una columna a un SELECT
+   * que ya corría no suma ningún round-trip nuevo.
    */
   async getMembershipContext(identityId: string, businessId: string): Promise<MembershipContext | null> {
-    const result = await this.db.query<{ active: boolean; role_id: string; permission_groups: string[] }>(
-      `SELECT m.active, m.role_id,
+    const result = await this.db.query<{ active: boolean; role_id: string; token_version: number; permission_groups: string[] }>(
+      `SELECT m.active, m.role_id, i.token_version,
               COALESCE(ARRAY_AGG(rpg.permission_group) FILTER (WHERE rpg.permission_group IS NOT NULL), ARRAY[]::text[]) AS permission_groups
        FROM memberships m
+       JOIN identities i ON i.id = m.identity_id
        LEFT JOIN role_permission_groups rpg ON rpg.role_id = m.role_id
        WHERE m.identity_id = $1 AND m.business_id = $2
-       GROUP BY m.active, m.role_id`,
+       GROUP BY m.active, m.role_id, i.token_version`,
       [identityId, businessId],
     );
     const row = result.rows[0];
     if (!row) return null;
-    return { active: row.active, roleId: row.role_id, permissionGroups: row.permission_groups };
+    return {
+      active: row.active,
+      roleId: row.role_id,
+      permissionGroups: row.permission_groups,
+      tokenVersion: row.token_version,
+    };
+  }
+
+  /**
+   * Wave 15 item 1 (24/09/2026, P-02(D-04)+D-07, TTL de sesión por
+   * tenant/audiencia) — `businesses.session_ttl_seconds`, nullable,
+   * `NULL` = "sin override, usar la constante de producto". Lookup propio
+   * y mínimo (una sola columna) en vez de reusar `findById()` (trae la
+   * fila entera) porque se llama en el camino de `/refresh`, que hasta
+   * ahora era una re-firma pura en memoria — ver
+   * `security/session-ttl.ts::resolveSessionTtl()`.
+   */
+  async getSessionTtlSeconds(businessId: string): Promise<number | null> {
+    const result = await this.db.query<{ session_ttl_seconds: number | null }>(
+      'SELECT session_ttl_seconds FROM businesses WHERE id = $1',
+      [businessId],
+    );
+    return result.rows[0]?.session_ttl_seconds ?? null;
   }
 
   /**
@@ -1622,6 +1673,13 @@ export class PlatformRepository {
       dni: row.dni,
       phone: row.phone,
       createdAt: new Date(row.created_at),
+      // Wave 15 item 2 -- `row.token_version` viene `undefined` en los
+      // dobles de test que devuelven filas parciales (ej. `{}` en
+      // platform.repository.test.ts); `?? 0` lo trata igual que la
+      // ausencia del claim `tv` en un JWT viejo (mismo criterio de
+      // coerción en todo el mecanismo, ver docblock de `tv` en
+      // auth.middleware.ts::JwtPayload).
+      tokenVersion: row.token_version ?? 0,
     };
   }
 
@@ -1713,6 +1771,8 @@ interface IdentityRow {
   dni: string | null;
   phone: string | null;
   created_at: string;
+  /** Wave 15 item 2 (24/09/2026) — `NOT NULL DEFAULT 0`, siempre presente en filas reales. */
+  token_version: number;
 }
 
 interface MembershipJoinRow {

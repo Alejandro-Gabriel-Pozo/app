@@ -558,7 +558,16 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // EXISTS (pg_constraint) ...`, sin DROP previo). Requiere el pre-flight
 // de despliegue documentado en el ADR §3.6 ANTES de correr este deploy
 // contra producción -- paso de runtime, no de este commit.
-export const CURRENT_SCHEMA_VERSION = 62;
+//
+// v63 (24/09/2026): Wave 15 item 2 (D-04 opción A, revocación real de
+// sesión, docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md
+// §2) -- BLOQUE 28, schema.sql: `customers.token_version INTEGER NOT NULL
+// DEFAULT 0`. Mismo mecanismo de rollout seguro que `identities.
+// token_version` (platform.schema.sql, aplicado en cada boot de
+// server.ts, no acá) -- ver ese bloque para el razonamiento completo de
+// por qué el DEFAULT 0 es lo que evita desloguear sesiones vivas al
+// desplegar.
+export const CURRENT_SCHEMA_VERSION = 63;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

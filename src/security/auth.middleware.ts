@@ -82,6 +82,20 @@ export interface JwtPayload {
   business_id?: string;
   /** ID del Customer entity — presente solo en tokens CUSTOMER */
   customer_id?: string;
+  /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión —
+   * `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md` §2).
+   * `token_version` de la identity/customer en el momento en que ESTE
+   * token se firmó (`signToken()` en `issueTenantToken()`/
+   * `refreshTenantToken()`/`selectBusiness()` de `auth.service.ts`, y sus
+   * equivalentes de `customer.auth.service.ts`). Ausente en todo JWT
+   * firmado ANTES de este deploy — `authenticate()` lo trata como `tv = 0`
+   * (coerción `payload.tv ?? 0`, nunca "sin verificar"), no como
+   * indefinido: es lo que evita desloguear a todo el staff/clientes con
+   * sesión viva en el momento del deploy (mismo DEFAULT 0 que las columnas
+   * `token_version`, ver `platform.schema.sql`/`schema.sql`).
+   */
+  tv?: number;
   iat: number;
   exp: number;
 }
@@ -242,6 +256,16 @@ export interface MembershipContext {
   active: boolean;
   roleId: string;
   permissionGroups: string[];
+  /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A — ver docblock de `tv` en
+   * `JwtPayload` más arriba). Opcional a propósito: mantiene compatible a
+   * cualquier test/double existente que construya un `MembershipContext`
+   * sin este campo (se trata como `0` en la comparación de
+   * `authenticate()`, ver más abajo — mismo criterio de coerción que
+   * `payload.tv ?? 0`). En producción, `PlatformRepository.getMembershipContext()`
+   * siempre lo completa (columna `NOT NULL DEFAULT 0`).
+   */
+  tokenVersion?: number;
 }
 
 /**
@@ -308,6 +332,7 @@ export const authenticate = (
 
     let roleId: string | undefined;
     let permissionGroups: string[] | undefined;
+    let tokenVersion: number | undefined;
 
     if (resolveMembershipContext && payload.role !== UserRole.CUSTOMER && payload.business_id) {
       let context: MembershipContext | null;
@@ -324,8 +349,29 @@ export const authenticate = (
         });
         return;
       }
+      // Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de
+      // sesión) -- mismo código de respuesta que la membresía inactiva
+      // (decisión del gate `architecture-governor`, ver
+      // docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md
+      // §2.2): un token cuyo `tv` quedó desactualizado es, en los hechos,
+      // una sesión cuyo acceso a ESTE negocio ya no es válido, aunque la
+      // fila de `memberships` siga activa. `payload.tv ?? 0` /
+      // `context.tokenVersion ?? 0`: la ausencia del claim (todo JWT
+      // emitido antes de este deploy) y la ausencia del campo en el
+      // contexto (dobles de test viejos) se tratan las dos como `0`, nunca
+      // como "sin verificar" -- con la columna naciendo en `DEFAULT 0`,
+      // eso es lo que evita desloguear a todo el staff en el momento del
+      // deploy (mecanismo completo en el docblock de `tv` en `JwtPayload`).
+      if ((payload.tv ?? 0) !== (context.tokenVersion ?? 0)) {
+        res.status(401).json({
+          code: 'MEMBERSHIP_INACTIVE',
+          message: 'Tu acceso a este negocio fue desactivado.',
+        });
+        return;
+      }
       roleId = context.roleId;
       permissionGroups = context.permissionGroups;
+      tokenVersion = context.tokenVersion;
     }
 
     req.user = {
@@ -335,6 +381,14 @@ export const authenticate = (
       ...(permissionGroups !== undefined && { permissionGroups }),
       ...(payload.business_id !== undefined && { businessId: payload.business_id }),
       ...(payload.customer_id !== undefined && { customerId: payload.customer_id }),
+      // Wave 15 item 2 -- claim crudo del JWT vigente en ESTA request,
+      // siempre presente (coercionado a 0). El portal de clientes no tiene
+      // un resolveMembershipContext() equivalente (rama de arriba se
+      // saltea a propósito para CUSTOMER) así que necesita este valor acá
+      // para hacer su propia comparación río abajo -- ver el middleware
+      // dedicado en api/routes/customer.routes.ts.
+      tv: payload.tv ?? 0,
+      ...(tokenVersion !== undefined && { tokenVersion }),
     };
     next();
   };

@@ -80,7 +80,10 @@ export class CustomerAuthService {
 
     await this.customerRepository.saveWithPassword(customer, passwordHash);
 
-    const token = this.issueToken(id);
+    // Wave 15 item 2 (24/09/2026) -- fila recién insertada, `token_version`
+    // es el DEFAULT 0 de la columna (schema.sql BLOQUE 28) por construcción
+    // -- no hace falta una query para saberlo.
+    const token = this.issueToken(id, 0);
     return { token, expiresIn: this.tokenTtlSeconds, customer: { id, fullName: input.fullName, email: input.email } };
   }
 
@@ -96,7 +99,11 @@ export class CustomerAuthService {
       throw err;
     }
 
-    const token = this.issueToken(record.customer.id);
+    // Wave 15 item 2 (24/09/2026) -- token_version ACTUAL, no cacheado: si
+    // hubo un `anonymize()`/revocación entre logins previos, un login
+    // NUEVO igual tiene que llevar el valor real, nunca uno viejo.
+    const tv = await this.customerRepository.getTokenVersion(record.customer.id) ?? 0;
+    const token = this.issueToken(record.customer.id, tv);
     return {
       token,
       expiresIn: this.tokenTtlSeconds,
@@ -139,7 +146,14 @@ export class CustomerAuthService {
       }
     }
 
-    const token = this.issueToken(customer.id);
+    // Wave 15 item 2 (24/09/2026) -- mismo criterio que login(): valor
+    // real, no asumido. Para el caso "recién creado en esta misma llamada"
+    // (ramas `saveWithGoogle`/`saveWithPassword` de arriba) sigue siendo
+    // correcto pedirlo -- ya está persistido cuando se llega acá, y evita
+    // un segundo camino de "asumir 0" que hay que mantener sincronizado
+    // con el schema si el default de la columna cambiara alguna vez.
+    const tv = await this.customerRepository.getTokenVersion(customer.id) ?? 0;
+    const token = this.issueToken(customer.id, tv);
     return {
       token,
       expiresIn: this.tokenTtlSeconds,
@@ -147,9 +161,9 @@ export class CustomerAuthService {
     };
   }
 
-  private issueToken(customerId: string): string {
+  private issueToken(customerId: string, tokenVersion: number): string {
     return signToken(
-      { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: this.businessId },
+      { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: this.businessId, tv: tokenVersion },
       this.jwtSecret,
       this.tokenTtlSeconds,
     );

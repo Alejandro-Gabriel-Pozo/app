@@ -27,4 +27,21 @@ export interface AuthenticatedUser {
   businessId?: string;
   /** ID del Customer entity — presente solo en tokens CUSTOMER */
   customerId?: string;
+  /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión) —
+   * `token_version` crudo del JWT vigente en esta request (`payload.tv ?? 0`,
+   * siempre presente). Lo usa el middleware de revocación del portal de
+   * clientes (`api/routes/customer.routes.ts`), que no tiene equivalente al
+   * `resolveMembershipContext` de staff — ver docblock de `authenticate()`.
+   */
+  tv?: number;
+  /**
+   * Valor ACTUAL de `token_version` para esta identity/customer, resuelto
+   * durante esta request (staff: `MembershipContext.tokenVersion`, ya
+   * verificado contra `tv` arriba; portal: el middleware de revocación lo
+   * completa después de consultarlo). Se reusa al re-emitir un token
+   * (`POST /api/auth/refresh` / `POST /api/customer/refresh`) para no
+   * repetir la consulta que ya corrió para esta misma request.
+   */
+  tokenVersion?: number;
 }

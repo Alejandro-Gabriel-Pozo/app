@@ -162,6 +162,103 @@ describe('authenticate() — resolveMembershipContext', () => {
   });
 });
 
+/**
+ * Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión —
+ * docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §2).
+ * Cubre las dos propiedades que el gate pidió verificar explícitamente
+ * (§2.2): (1) revocación real -- un token viejo deja de servir después de
+ * un bump; (2) sin falsos positivos -- un token sin claim `tv` (pre-deploy)
+ * o con `tv` al día no se cae por la sola presencia del mecanismo.
+ */
+describe('authenticate() — token_version (revocación real de sesión, Wave 15 item 2)', () => {
+  it('un JWT viejo SIN claim tv (emitido antes de este deploy) sigue pasando si token_version en BD es 0 (default de la migración) -- NO falso positivo', async () => {
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'], tokenVersion: 0 };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
+    const req = fakeReqWithToken(employeeToken()); // sin `tv` en el payload
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ tv: 0, tokenVersion: 0 });
+  });
+
+  it('un JWT emitido DESPUÉS del deploy con tv al día pasa (login/refresh normal)', async () => {
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'], tokenVersion: 2 };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
+    const tokenConTv = signToken({ sub: 'identity-1', business_id: 'biz-1', tv: 2 }, SECRET);
+    const req = fakeReqWithToken(tokenConTv);
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ tv: 2, tokenVersion: 2 });
+  });
+
+  it('rechaza con 401 MEMBERSHIP_INACTIVE un token cuyo tv quedó desactualizado tras un bump (revocación real)', async () => {
+    // Token emitido cuando token_version era 1 (ej. login antes de un
+    // cambio de contraseña); la BD ya avanzó a 2.
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'], tokenVersion: 2 };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
+    const tokenViejo = signToken({ sub: 'identity-1', business_id: 'biz-1', tv: 1 }, SECRET);
+    const req = fakeReqWithToken(tokenViejo);
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.body).toMatchObject({ code: 'MEMBERSHIP_INACTIVE' });
+  });
+
+  it('rechaza con 401 un token viejo sin claim tv si la BD YA avanzó (bump ocurrido después de que este token se emitió)', async () => {
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'], tokenVersion: 1 };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
+    const req = fakeReqWithToken(employeeToken()); // sin `tv` -> coerciona a 0
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.body).toMatchObject({ code: 'MEMBERSHIP_INACTIVE' });
+  });
+
+  it('un MembershipContext sin tokenVersion (dobles de test viejos) se trata como 0, no rompe la comparación', async () => {
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'] }; // sin tokenVersion
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
+    const req = fakeReqWithToken(employeeToken()); // sin tv tampoco
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('no aplica a tokens CUSTOMER -- authenticate() ya saltea resolveMembershipContext para ellos (ver bloque de arriba)', async () => {
+    const resolveMembershipContext = vi.fn();
+    const customerToken = signToken(
+      { sub: 'customer-1', role: UserRole.CUSTOMER, customer_id: 'customer-1', business_id: 'biz-1' },
+      SECRET,
+    ); // sin tv
+    const req = fakeReqWithToken(customerToken);
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
+
+    expect(resolveMembershipContext).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ tv: 0 }); // coercionado igual, para que customer.routes.ts lo use
+  });
+});
+
 describe('authorize()', () => {
   function reqWithUser(user: Partial<NonNullable<Request['user']>>): Request {
     return { user } as unknown as Request;

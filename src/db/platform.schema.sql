@@ -1574,5 +1574,36 @@ ON CONFLICT (scope_type, scope_id, term_key, locale) DO NOTHING;
 
 
 -- =============================================================================
+-- BLOQUE SESSION_TTL / TOKEN_VERSION (24/09/2026, Wave 15 --
+-- docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §1/§2,
+-- las dos bifurcaciones de negocio resueltas por AskUserQuestion el
+-- 24/09/2026 -- ver §1.2/§2.1 de ese documento)
+-- =============================================================================
+
+-- Item 1 (P-02(D-04)+D-07, TTL de sesión por tenant/audiencia) -- nullable,
+-- DEFAULT NULL = usa la constante de producto (JWT_EXPIRES_IN vía
+-- parseExpiresIn(), security/auth.service.ts). No cambia el comportamiento
+-- de NINGÚN negocio existente hasta que alguien la setee explícitamente --
+-- mismo criterio "aditivo, sin efecto hasta usarse" que el resto de las
+-- columnas de configuración por tenant de este archivo (ej. PLAN_LIMITS).
+-- Ver security/session-ttl.ts::resolveSessionTtl().
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS session_ttl_seconds INTEGER;
+
+-- Item 2 (D-04 opción A, revocación real de sesión vía token_version) --
+-- DEFAULT 0 + backfill automático (el propio DEFAULT) para TODA fila
+-- existente. El mecanismo de rollout seguro que evita desloguear al staff
+-- de todos los tenants en el momento del deploy depende de que este
+-- DEFAULT sea exactamente 0: todo JWT firmado ANTES de este deploy no
+-- tiene claim `tv` en su payload, y auth.middleware.ts::authenticate()
+-- coerciona esa ausencia a `tv = 0` (nunca a "sin verificar") -- con la BD
+-- también en 0 para las filas existentes, 0 === 0 y ninguna sesión viva
+-- se cae. Detalle completo del mecanismo (incluida la razón de por qué la
+-- comparación estricta sin esta coerción SÍ tumbaría todo el staff) en
+-- §2.2 del documento citado arriba. No cambiar este DEFAULT sin releer esa
+-- sección entera.
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
+
+-- =============================================================================
 -- Fin del schema central
 -- =============================================================================

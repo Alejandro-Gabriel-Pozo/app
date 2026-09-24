@@ -68,6 +68,16 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     return this.store.get(id)?.customer;
   }
 
+  /**
+   * Wave 15 item 2 (24/09/2026) — este doble no modela bumps de
+   * `token_version` (ningún test lo necesita todavía): devuelve `0` para
+   * cualquier customer existente, `null` si no existe. Suficiente para el
+   * caso "sesión no revocada" que el resto de este repositorio ejercita.
+   */
+  async getTokenVersion(id: string): Promise<number | null> {
+    return this.store.has(id) ? 0 : null;
+  }
+
   async getAll(onlyCurrentAccountEnabled = false): Promise<Customer[]> {
     const all = Array.from(this.store.values()).map((r) => r.customer);
     return onlyCurrentAccountEnabled ? all.filter((c) => c.enableCurrentAccount) : all;

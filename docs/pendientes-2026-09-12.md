@@ -6001,3 +6001,47 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
 
 **Movido a `docs/resuelto.md`** — corrección de etiqueta del mismo FN#2
 (`lock-order.test.ts`) ya registrado como cerrado en `docs/resuelto.md`.
+
+## Wave 15 — items 1+2, TTL de sesión + `token_version` (24/09/2026)
+
+- **`SESSION-TTL-NARROW-SCOPE-001`** (24/09/2026, condición 1a del gate
+  `architecture-governor`, pre-commit sobre la implementación de D-04/D-18
+  — ver `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
+  §1). `resolveSessionTtl()` (`src/security/session-ttl.ts`) solo está
+  cableado en los 2 handlers de refresh (`POST /api/auth/refresh` en
+  `me.routes.ts`, y el equivalente de `CustomerAuthService` — ver el
+  segundo hallazgo de esta entrada). **No** está cableado en ninguno de
+  los 3 call-sites de emisión (`issueTenantToken()`) ni en
+  `CustomerAuthService.register()`/`.login()`/`.loginWithGoogle()` — esos
+  siguen usando el TTL fijo de `JWT_EXPIRES_IN`, sin consultar
+  `businesses.session_ttl_seconds`. Además, el mecanismo entero es un TTL
+  configurable, no un idle-timeout real: como ya documenta el docblock de
+  `me.routes.ts` (Wave 15, "Importante — leer antes de describir este
+  cambio en otro lado"), sin que `AuthContext` de `appfrontend-main` pase
+  a llamar `/refresh` en respuesta a actividad genuina del usuario (en vez
+  de un timer fijo), achicar el TTL acorta la sesión pero no la hace
+  expirar por inactividad real. **Acción puntual que lo confirma/cierra:**
+  decisión del dueño sobre si conviene cablear `resolveSessionTtl()` en
+  los call-sites de emisión también (o si login/register quedan a
+  propósito con el TTL fijo, ya que ahí no hay sesión previa que extender)
+  — y, aparte, una sesión con acceso de escritura a `appfrontend-main`
+  para el trabajo de `AuthContext`.
+
+- **`TOKEN-VERSION-ZERO-PRODUCTION-TRIGGERS-001`** (24/09/2026, condición
+  1b del mismo gate). El mecanismo de revocación real por `token_version`
+  (`identities.token_version`/`customers.token_version`, claim `tv`,
+  comparación en `authenticate()`/`CustomerAuthService`) está completo y
+  probado contra Postgres real
+  (`src/tests/integration/token-version-revocation.integration.test.ts`,
+  6 tests) — pero **hoy nada en `src/` incrementa esa columna en
+  producción** (confirmado por grep repo-wide: cero call-sites de
+  `UPDATE ... token_version` o su equivalente en el repositorio, fuera de
+  la migración de schema y del propio test de integración). Es decir: el
+  mecanismo de revocación existe y funciona, pero no hay ningún evento de
+  negocio (cambio de contraseña, anonimización, baja de cuenta) que lo
+  dispare todavía — mecanismo sin gatillo. **Acción puntual que lo
+  confirma/cierra:** decidir qué eventos de negocio deben bumpear
+  `token_version` (candidatos obvios: cambio de contraseña, anonimización
+  de `Customer`/`Identity`, desactivación de membership) e implementar esos
+  call-sites como bloque aparte, con su propio gate.
+

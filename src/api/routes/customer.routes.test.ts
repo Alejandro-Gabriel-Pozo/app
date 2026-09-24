@@ -60,6 +60,16 @@ vi.mock('../../reservas/sql.bookable-service.repository.js', () => ({
   SqlBookableServiceRepository: vi.fn(() => ({ findAll: findAllServicesMock })),
 }));
 
+// Wave 15 item 2 (24/09/2026) -- el middleware de revocación de sesión
+// (SESSION_REVOKED) construye su propio SqlCustomerRepository(req.db) para
+// leer token_version, mismo criterio de mock que category/bookable-service
+// de arriba: pass-through sin lógica propia (la corrección de la query la
+// cubre sql.customer.repository.test.ts).
+const getTokenVersionMock = vi.fn();
+vi.mock('../../clientes-finanzas/sql.customer.repository.js', () => ({
+  SqlCustomerRepository: vi.fn(() => ({ getTokenVersion: getTokenVersionMock })),
+}));
+
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const SECRET = 'test-secret-32-characters-minimum!!';
 
@@ -128,9 +138,20 @@ describe('POST /api/customer/logout', () => {
   });
 });
 
+/**
+ * Wave 15 (24/09/2026, docs/diseno-wave15-sesion-saga-aprovisionamiento-
+ * 2026-09-24.md §1/§2) — POST /refresh ya no es pura re-firma en memoria:
+ * resuelve `businesses.session_ttl_seconds` (item 1) vía el `platformRepo`
+ * que recibe `createCustomerRouter()`. `{} as PlatformRepository` (lo que
+ * este archivo usaba antes) ya no alcanza para esta ruta puntual.
+ */
+function fakePlatformRepoForRefresh(overrides: Partial<PlatformRepository> = {}): PlatformRepository {
+  return { getSessionTtlSeconds: vi.fn(async () => null), ...overrides } as unknown as PlatformRepository;
+}
+
 describe('POST /api/customer/refresh', () => {
   it('re-firma el token del cliente autenticado y setea la cookie con un exp nuevo', async () => {
-    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const router = createCustomerRouter(fakeContainer(), fakePlatformRepoForRefresh());
     const req = {
       user: { id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1', businessId: 'biz-1' },
     } as unknown as Request;
@@ -148,13 +169,39 @@ describe('POST /api/customer/refresh', () => {
   });
 
   it('responde 401 si el request no trae un customerId resuelto (ej. wiring roto)', async () => {
-    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const router = createCustomerRouter(fakeContainer(), fakePlatformRepoForRefresh());
     const req = { user: undefined } as unknown as Request;
 
     const res = await runRoute(router, 'post', '/refresh', req);
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('usa businesses.session_ttl_seconds cuando el negocio tiene override (Wave 15 item 1)', async () => {
+    const getSessionTtlSeconds = vi.fn(async () => 1_200);
+    const router = createCustomerRouter(fakeContainer(), fakePlatformRepoForRefresh({ getSessionTtlSeconds }));
+    const req = {
+      user: { id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1', businessId: 'biz-1' },
+    } as unknown as Request;
+
+    const res = await runRoute(router, 'post', '/refresh', req);
+
+    expect(getSessionTtlSeconds).toHaveBeenCalledWith('biz-1');
+    expect(res.body).toMatchObject({ expiresIn: 1_200 });
+  });
+
+  it('embebe req.user.tokenVersion (ya resuelto por el middleware de revocación) como tv, sin volver a consultar la BD', async () => {
+    const router = createCustomerRouter(fakeContainer(), fakePlatformRepoForRefresh());
+    const req = {
+      user: { id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1', businessId: 'biz-1', tokenVersion: 5 },
+    } as unknown as Request;
+
+    const res = await runRoute(router, 'post', '/refresh', req);
+
+    const { verifyToken } = await import('../../security/auth.middleware.js');
+    const payload = verifyToken((res.body as { token: string }).token, process.env.JWT_SECRET!) as unknown as { tv: number };
+    expect(payload.tv).toBe(5);
   });
 });
 
@@ -242,6 +289,104 @@ describe('customer.routes -- resolución de req.db (CUSTOMER-PORTAL-NO-OUTBOX-WO
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(vi.mocked(ensureTenantWorker)).not.toHaveBeenCalled();
+  });
+});
+
+describe('customer.routes -- revocación de sesión por token_version (Wave 15 item 2, 24/09/2026, D-04 opción A, SESSION_REVOKED)', () => {
+  // Mismo criterio de búsqueda por contenido que findTenantDbMiddleware()
+  // más arriba -- este middleware es OTRO router.use(...) sin `.route`,
+  // montado justo después del que resuelve req.db.
+  function findRevocationMiddleware(
+    router: ReturnType<typeof createCustomerRouter>,
+  ): (req: Request, res: Response, next: NextFunction) => unknown {
+    const stack = (router as unknown as {
+      stack: Array<{ route?: unknown; handle: (req: Request, res: Response, next: NextFunction) => unknown }>;
+    }).stack;
+    const layer = stack.find((l) => !l.route && l.handle.toString().includes('getTokenVersion'));
+    if (!layer) throw new Error('No se encontró el middleware de revocación por token_version');
+    return layer.handle;
+  }
+
+  beforeEach(() => {
+    getTokenVersionMock.mockReset();
+  });
+
+  it('deja pasar y completa req.user.tokenVersion cuando storedTokenVersion === claimedTokenVersion (tv del JWT)', async () => {
+    getTokenVersionMock.mockResolvedValue(2);
+    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const middleware = findRevocationMiddleware(router);
+
+    const req = { db: FAKE_TENANT_CLIENT, user: { customerId: 'cust-1', tv: 2 } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(getTokenVersionMock).toHaveBeenCalledWith('cust-1');
+    expect(req.user).toMatchObject({ tokenVersion: 2 });
+    expect(next).toHaveBeenCalledWith();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('rechaza con 401 SESSION_REVOKED cuando el tv del JWT quedó desactualizado (ej. cambio de contraseña/anonimización)', async () => {
+    getTokenVersionMock.mockResolvedValue(3); // la BD ya avanzó
+    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const middleware = findRevocationMiddleware(router);
+
+    const req = { db: FAKE_TENANT_CLIENT, user: { customerId: 'cust-1', tv: 2 } } as unknown as Request; // token viejo
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.body).toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('rechaza con 401 SESSION_REVOKED si el customer ya no existe (getTokenVersion devuelve null)', async () => {
+    getTokenVersionMock.mockResolvedValue(null);
+    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const middleware = findRevocationMiddleware(router);
+
+    const req = { db: FAKE_TENANT_CLIENT, user: { customerId: 'cust-1', tv: 0 } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.body).toMatchObject({ code: 'SESSION_REVOKED' });
+  });
+
+  it('un JWT viejo sin claim tv (payload.tv ausente) NO se cae en falso -- coerción a 0 matchea el DEFAULT 0 de la migración', async () => {
+    getTokenVersionMock.mockResolvedValue(0); // BD recién migrada, nadie bumpeó todavía
+    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const middleware = findRevocationMiddleware(router);
+
+    const req = { db: FAKE_TENANT_CLIENT, user: { customerId: 'cust-1' } } as unknown as Request; // sin `tv` -- token pre-deploy
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('no consulta nada y deja pasar si el request no tiene customerId (ej. wiring roto -- el resto del router ya lo rechaza aparte)', async () => {
+    const router = createCustomerRouter(fakeContainer(), {} as PlatformRepository);
+    const middleware = findRevocationMiddleware(router);
+
+    const req = { db: FAKE_TENANT_CLIENT, user: {} } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(getTokenVersionMock).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith();
   });
 });
 

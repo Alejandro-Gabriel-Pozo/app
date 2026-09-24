@@ -86,6 +86,7 @@ import {
   signToken,
 } from '../../security/auth.middleware.js';
 import { parseExpiresIn } from '../../security/auth.service.js';
+import { resolveSessionTtl } from '../../security/session-ttl.js';
 import { getJwtSecret, getJwtExpiresInRaw } from '../../config/env.js';
 import { Roles } from '../../security/roles.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
@@ -588,6 +589,59 @@ export function createCustomerRouter(
   });
 
   // -------------------------------------------------------------------------
+  // Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión —
+  // docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §2.2).
+  //
+  // A diferencia del staff, `authenticate()` NO chequea `token_version`
+  // para tokens CUSTOMER -- se saltea esa rama a propósito
+  // (`security/auth.middleware.ts::authenticate()`, mismo motivo que nunca
+  // llamó a `resolveMembershipContext` para clientes: la revocación de
+  // clientes vive en otra BD, la del tenant, no en la de plataforma). Este
+  // middleware es el lugar que cierra ese hueco para el portal.
+  //
+  // Decisión de costo del gate (24/09/2026, ver §2.2 del documento citado):
+  // el staff resuelve esto GRATIS (mismo viaje a BD que ya hacía
+  // `getMembershipContext()` en cada request de `/api/*`). El portal NO
+  // tiene un lookup por-request equivalente -- el middleware de arriba
+  // solo resuelve la conexión al tenant, no lee la fila del customer --
+  // así que esta SÍ es una query nueva por request autenticado del portal.
+  // Se acepta como su propio lookup mínimo (opción (a) de la decisión de
+  // costo, en vez de forzar una fusión artificial con algo que no
+  // comparte forma): una sola columna, corre UNA vez por request (acá, no
+  // repetida por cada ruta), y el valor resuelto (`storedTokenVersion`) se
+  // guarda en `req.user.tokenVersion` para que `POST /refresh` más abajo
+  // no tenga que volver a consultarlo.
+  //
+  // Mismo código de mecanismo que el lado staff (coerción `?? 0`, nunca
+  // "sin verificar") pero código de respuesta DISTINTO a propósito:
+  // `MEMBERSHIP_INACTIVE` no tiene sentido para un cliente (no tiene
+  // "membresía" a un negocio) -- `SESSION_REVOKED` es un código nuevo,
+  // propio del portal.
+  // -------------------------------------------------------------------------
+  router.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const customerId = req.user?.customerId;
+      if (!customerId) { next(); return; }
+
+      const storedTokenVersion = await new SqlCustomerRepository(req.db!).getTokenVersion(customerId);
+      const claimedTokenVersion = req.user?.tv ?? 0;
+
+      if (storedTokenVersion === null || storedTokenVersion !== claimedTokenVersion) {
+        res.status(401).json({
+          code: 'SESSION_REVOKED',
+          message: 'Tu sesión ya no es válida. Iniciá sesión de nuevo.',
+        });
+        return;
+      }
+
+      req.user!.tokenVersion = storedTokenVersion;
+      next();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/customer/categories
   // GET /api/customer/bookable-services
   //
@@ -681,13 +735,23 @@ export function createCustomerRouter(
 
   // -------------------------------------------------------------------------
   // POST /api/customer/refresh — re-firma el token con un exp nuevo, mismo
-  // criterio que POST /api/auth/refresh de staff (me.routes.ts). Pura
-  // re-firma en memoria: authenticate() ya validó firma+exp del token
-  // vigente en este mismo request, no hace falta releer nada de la BD.
+  // criterio que POST /api/auth/refresh de staff (me.routes.ts).
+  //
+  // Wave 15 (24/09/2026, docs/diseno-wave15-sesion-saga-aprovisionamiento-
+  // 2026-09-24.md §1/§2) — ya NO es pura re-firma en memoria:
+  // 1. TTL (item 1) -- `resolveSessionTtl()` resuelve el override por
+  //    negocio en vez del `JWT_EXPIRES_IN` fijo. Es TTL configurable, NO
+  //    un idle-timeout real -- ver `security/session-ttl.ts` para la
+  //    distinción completa.
+  // 2. `tv` (item 2) -- el middleware de revocación de arriba YA leyó el
+  //    `token_version` actual del customer para esta misma request y lo
+  //    dejó en `req.user.tokenVersion`; se reusa acá para no volver a
+  //    consultarlo (una sola query nueva por request en todo este router,
+  //    no dos).
   // -------------------------------------------------------------------------
   router.post(
     '/refresh',
-    (req: Request, res: Response): void => {
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       const customerId = req.user?.customerId;
       const businessId = req.user?.businessId;
       if (!customerId || !businessId) {
@@ -695,14 +759,19 @@ export function createCustomerRouter(
         return;
       }
 
-      const ttl = parseExpiresIn(getJwtExpiresInRaw());
-      const token = signToken(
-        { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: businessId },
-        getJwtSecret(),
-        ttl,
-      );
-      setCustomerAuthCookie(res, token, ttl);
-      res.status(200).json({ token, tokenType: 'Bearer', expiresIn: ttl });
+      try {
+        const ttl = await resolveSessionTtl(platformRepo, 'customer', parseExpiresIn(getJwtExpiresInRaw()), businessId);
+        const tv = req.user?.tokenVersion ?? 0;
+        const token = signToken(
+          { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: businessId, tv },
+          getJwtSecret(),
+          ttl,
+        );
+        setCustomerAuthCookie(res, token, ttl);
+        res.status(200).json({ token, tokenType: 'Bearer', expiresIn: ttl });
+      } catch (err) {
+        next(err);
+      }
     },
   );
 

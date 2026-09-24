@@ -68,6 +68,17 @@ export interface CustomerRepository {
   getById(id: string): Promise<Customer | undefined>;
 
   /**
+   * Wave 15 item 2 (24/09/2026, D-04 opción A, revocación real de sesión —
+   * docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §2) —
+   * lookup mínimo, una sola columna, para el middleware de revocación del
+   * portal (`api/routes/customer.routes.ts`) y para embeber `tv` al emitir
+   * un token nuevo (`login()`/`loginWithGoogle()` de
+   * `security/customer.auth.service.ts`). `null` = el customer ya no
+   * existe — el caller lo trata como sesión inválida, no como `0`.
+   */
+  getTokenVersion(id: string): Promise<number | null>;
+
+  /**
    * `onlyCurrentAccountEnabled: true` -- filtro RÍGIDO de base de datos
    * (F1-Pieza 1, pendientes-2026-08-23.md, spec del dueño: "los huéspedes
    * sin este atributo no deben aparecer bajo ninguna circunstancia"), no

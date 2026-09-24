@@ -28,14 +28,26 @@ afterEach(() => {
   else delete process.env.JWT_EXPIRES_IN;
 });
 
-// refreshTenantToken() no toca platformRepo -- authenticate() ya confirmó
-// la membership activa para esta request antes de llegar acá.
-const NOOP_PLATFORM_REPO = {} as PlatformRepository;
+/**
+ * Wave 15 (24/09/2026) -- refreshTenantToken() pasó de síncrono (pura
+ * re-firma en memoria) a async: ahora resuelve `businesses.session_ttl_seconds`
+ * (item 1). **Corrección post-gate (condición 2):** el `tv` a embeber (item
+ * 2) ya NO se relee acá vía `findIdentityById` -- el caller (`me.routes.ts`)
+ * lo pasa como tercer argumento, tomado de `req.user.tokenVersion` (ya
+ * resuelto por `authenticate()` para esta misma request). Este fake ya no
+ * necesita `findIdentityById` para este método.
+ */
+function fakePlatformRepoForRefresh(overrides: Partial<PlatformRepository> = {}): PlatformRepository {
+  return {
+    getSessionTtlSeconds: vi.fn(async () => null),
+    ...overrides,
+  } as unknown as PlatformRepository;
+}
 
 describe('AuthService.refreshTenantToken()', () => {
-  it('emite un token que verifyToken() acepta, con el mismo sub/business_id', () => {
-    const service = new AuthService(NOOP_PLATFORM_REPO);
-    const result = service.refreshTenantToken('identity-1', 'biz-1');
+  it('emite un token que verifyToken() acepta, con el mismo sub/business_id', async () => {
+    const service = new AuthService(fakePlatformRepoForRefresh());
+    const result = await service.refreshTenantToken('identity-1', 'biz-1', 0);
 
     const payload = verifyToken(result.token, process.env.JWT_SECRET!);
     expect(payload.sub).toBe('identity-1');
@@ -43,10 +55,10 @@ describe('AuthService.refreshTenantToken()', () => {
     expect(payload.role).toBeUndefined();
   });
 
-  it('usa el mismo TTL configurado (JWT_EXPIRES_IN) que login()', () => {
+  it('usa el mismo TTL configurado (JWT_EXPIRES_IN) que login() cuando el negocio no tiene override', async () => {
     process.env.JWT_EXPIRES_IN = '2h';
-    const service = new AuthService(NOOP_PLATFORM_REPO);
-    const result = service.refreshTenantToken('identity-1', 'biz-1');
+    const service = new AuthService(fakePlatformRepoForRefresh());
+    const result = await service.refreshTenantToken('identity-1', 'biz-1', 0);
 
     expect(result.expiresIn).toBe(2 * 3600);
     expect(result.tokenType).toBe('Bearer');
@@ -55,11 +67,29 @@ describe('AuthService.refreshTenantToken()', () => {
     expect(payload.exp - payload.iat).toBe(2 * 3600);
   });
 
+  it('usa businesses.session_ttl_seconds cuando el negocio tiene override (Wave 15 item 1)', async () => {
+    process.env.JWT_EXPIRES_IN = '2h';
+    const getSessionTtlSeconds = vi.fn(async () => 900); // 15 min -- override más corto que el fallback
+    const service = new AuthService(fakePlatformRepoForRefresh({ getSessionTtlSeconds }));
+    const result = await service.refreshTenantToken('identity-1', 'biz-1', 0);
+
+    expect(getSessionTtlSeconds).toHaveBeenCalledWith('biz-1');
+    expect(result.expiresIn).toBe(900);
+  });
+
+  it('embebe el token_version que le pasa el caller en el claim tv (Wave 15 item 2, corregido post-gate)', async () => {
+    const service = new AuthService(fakePlatformRepoForRefresh());
+    const result = await service.refreshTenantToken('identity-1', 'biz-1', 3);
+
+    const payload = verifyToken(result.token, process.env.JWT_SECRET!) as unknown as { tv: number };
+    expect(payload.tv).toBe(3);
+  });
+
   it('cada llamada emite un exp nuevo, no reutiliza el token anterior', async () => {
-    const service = new AuthService(NOOP_PLATFORM_REPO);
-    const first = service.refreshTenantToken('identity-1', 'biz-1');
+    const service = new AuthService(fakePlatformRepoForRefresh());
+    const first = await service.refreshTenantToken('identity-1', 'biz-1', 0);
     await new Promise((resolve) => setTimeout(resolve, 1_100)); // iat en segundos -- forzar que avance el reloj
-    const second = service.refreshTenantToken('identity-1', 'biz-1');
+    const second = await service.refreshTenantToken('identity-1', 'biz-1', 0);
 
     expect(second.token).not.toBe(first.token);
     const firstPayload = verifyToken(first.token, process.env.JWT_SECRET!);

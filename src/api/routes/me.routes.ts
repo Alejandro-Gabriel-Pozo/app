@@ -40,9 +40,23 @@
  * fuera de alcance acá). El frontend lo llama periódicamente en segundo
  * plano (AuthContext) mientras la pestaña sigue abierta.
  * 200 — { token, tokenType, expiresIn }
+ *
+ * Wave 15 (24/09/2026, docs/diseno-wave15-sesion-saga-aprovisionamiento-
+ * 2026-09-24.md §1/§2) — `AuthService.refreshTenantToken()` pasó de
+ * síncrono (pura re-firma en memoria) a async: ahora resuelve el TTL por
+ * negocio (item 1, `security/session-ttl.ts::resolveSessionTtl()`) y
+ * relee `token_version` (item 2) antes de re-firmar. **Importante — leer
+ * antes de describir este cambio en otro lado:** esto es TTL
+ * configurable, NO un idle-timeout real — el párrafo de arriba ("el
+ * frontend lo llama periódicamente en segundo plano... mientras la
+ * pestaña sigue abierta") sigue siendo la cadencia real hoy; sin que
+ * `AuthContext` (appfrontend-main) pase a llamar `/refresh` en respuesta
+ * a actividad genuina del usuario en vez de un timer fijo, achicar el TTL
+ * acorta la sesión pero no la hace expirar por inactividad real. Detalle
+ * completo en el docblock de `session-ttl.ts`.
  */
 
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { clearAuthCookie, setAuthCookie } from '../../security/auth.middleware.js';
 import { UserRole } from '../../types/enums.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
@@ -83,15 +97,19 @@ export function createMeRouter(platformRepo: PlatformRepository, authService: Au
     res.status(204).end();
   });
 
-  router.post('/refresh', (req: Request, res: Response): void => {
+  router.post('/refresh', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!req.user || req.user.businessId === undefined || req.user.customerId !== undefined) {
       res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
       return;
     }
 
-    const result = authService.refreshTenantToken(req.user.id, req.user.businessId);
-    setAuthCookie(res, result.token, result.expiresIn);
-    res.status(200).json(result);
+    try {
+      const result = await authService.refreshTenantToken(req.user.id, req.user.businessId, req.user.tokenVersion ?? 0);
+      setAuthCookie(res, result.token, result.expiresIn);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
   });
 
   return router;

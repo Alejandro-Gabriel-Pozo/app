@@ -41,6 +41,7 @@ import { verifyGoogleIdToken } from './google-oauth.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
 import { logger } from '../logger.js';
 import { getJwtSecret, getJwtExpiresInRaw } from '../config/env.js';
+import { resolveSessionTtl } from './session-ttl.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -213,20 +214,46 @@ export class AuthService {
   }
 
   /**
-   * Renueva el token de un usuario YA autenticado — mismo secret/TTL que
+   * Renueva el token de un usuario YA autenticado — mismo secret que
    * login, sin re-pedir credenciales (punto 3, pendientes-2026-08-15.md:
    * la sesión duraba 24h fijas sin forma de extenderla). `authenticate()`
    * ya confirmó, para ESTA request, que la membership sigue activa
    * (`resolveMembershipContext` en el middleware global) — no hace falta
-   * repetir esa consulta acá, solo re-firmar con un `exp` nuevo.
+   * repetir esa consulta acá para ESE chequeo.
+   *
+   * Wave 15 (24/09/2026, docs/diseno-wave15-sesion-saga-aprovisionamiento-
+   * 2026-09-24.md §1/§2) — dos cambios sobre la versión anterior, que era
+   * pura re-firma en memoria:
+   * 1. **TTL** ya no es fijo — `resolveSessionTtl()` (item 1) resuelve el
+   *    override por negocio (`businesses.session_ttl_seconds`), con el
+   *    `JWT_EXPIRES_IN` de siempre como fallback. Nota importante: esto es
+   *    TTL configurable, NO un idle-timeout real — ver el docblock de
+   *    `security/session-ttl.ts` para la distinción completa y por qué.
+   * 2. **`tv`** (item 2) — el nuevo token tiene que llevar el
+   *    `token_version` ACTUAL de la identity. **Corrección post-gate
+   *    (24/09/2026, condición 2 del gate `architecture-governor`):** este
+   *    método antes releía la identity acá (`findIdentityById`) para
+   *    obtenerlo, con el argumento de que el chequeo de `authenticate()`
+   *    "valida el token VIEJO, no sirve para el NUEVO" — ese argumento no
+   *    resiste: `authenticate()` ya leyó `token_version` de la BD para ESTA
+   *    misma request (vía `resolveMembershipContext`/`getMembershipContext`)
+   *    y lo dejó en `req.user.tokenVersion`, verificado igual al `tv` del
+   *    token viejo — es el valor ACTUAL, no uno cacheado del login
+   *    original. Reconsultarlo acá era una vuelta a la BD redundante, no
+   *    una protección real contra una revocación más reciente (una
+   *    revocación que ocurriera ENTRE el `authenticate()` de esta request y
+   *    este método, milisegundos después, de todas formas volvería a
+   *    rechazarse en la PRÓXIMA request, por el mismo mecanismo). Ahora el
+   *    caller pasa el `tokenVersion` ya resuelto.
    */
-  refreshTenantToken(identityId: string, businessId: string): { token: string; tokenType: 'Bearer'; expiresIn: number } {
+  async refreshTenantToken(identityId: string, businessId: string, tokenVersion: number): Promise<{ token: string; tokenType: 'Bearer'; expiresIn: number }> {
+    const ttl = await resolveSessionTtl(this.platformRepo, 'staff', this.tokenTtlSeconds, businessId);
     const token = signToken(
-      { sub: identityId, business_id: businessId },
+      { sub: identityId, business_id: businessId, tv: tokenVersion },
       getJwtSecret(),
-      this.tokenTtlSeconds,
+      ttl,
     );
-    return { token, tokenType: 'Bearer', expiresIn: this.tokenTtlSeconds };
+    return { token, tokenType: 'Bearer', expiresIn: ttl };
   }
 
   /**
@@ -238,7 +265,12 @@ export class AuthService {
    */
   private issueTenantToken(identity: Identity, membership: Membership): LoginResult {
     const token = signToken(
-      { sub: identity.id, business_id: membership.businessId },
+      // Wave 15 item 2 (24/09/2026) -- `identity` ya viene de una query
+      // que trajo la fila completa (`findIdentityByEmail`/`findIdentityById`/
+      // `findIdentityByGoogleSub`, `SELECT *`), así que `tokenVersion` sale
+      // gratis, sin query nueva. `?? 0` cubre los dobles de test que
+      // construyen un `Identity` sin este campo (ver su docblock).
+      { sub: identity.id, business_id: membership.businessId, tv: identity.tokenVersion ?? 0 },
       getJwtSecret(),
       this.tokenTtlSeconds,
     );

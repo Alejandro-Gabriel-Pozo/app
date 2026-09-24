@@ -307,8 +307,12 @@ describe('applyTenantSchema', () => {
     // (eso es el Bloque 2b, deploy posterior).
     // 61 -> 62 el 23/09/2026: Bloque 2b del mismo ADR -- backfill inverso +
     // chk_invoices_pending_since (BLOQUE 27, schema.sql).
+    // 62 -> 63 el 24/09/2026: Wave 15 item 2 (D-04 opción A, revocación
+    // real de sesión, docs/diseno-wave15-sesion-saga-aprovisionamiento-
+    // 2026-09-24.md §2) -- customers.token_version INTEGER NOT NULL
+    // DEFAULT 0 (BLOQUE 28, schema.sql).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(62);
+    expect(CURRENT_SCHEMA_VERSION).toBe(63);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

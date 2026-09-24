@@ -4643,3 +4643,21 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- ===========================================================================
+-- BLOQUE 28 — customers.token_version (24/09/2026, schema v63, Wave 15,
+-- docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md §2, D-04
+-- opción A, revocación real de sesión) -- mismo mecanismo y mismo DEFAULT
+-- que identities.token_version (platform.schema.sql, BLOQUE SESSION_TTL /
+-- TOKEN_VERSION): DEFAULT 0, coerción `payload.tv ?? 0` en
+-- auth.middleware.ts::authenticate(). A diferencia del staff, el portal de
+-- clientes no tiene un resolveMembershipContext()/getMembershipContext()
+-- equivalente (authenticate() saltea esa rama a propósito para tokens
+-- CUSTOMER, ver su docblock) -- la comparación la hace un middleware
+-- dedicado en api/routes/customer.routes.ts, una query nueva por request
+-- autenticado del portal (decisión de costo del gate, ver §2.2 del
+-- documento citado). Mismo argumento de rollout seguro que la sección
+-- platform: BD nace en 0, JWT viejo sin claim se coerciona a 0, matchean --
+-- ningún cliente logueado se cae al desplegar.
+-- ===========================================================================
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
