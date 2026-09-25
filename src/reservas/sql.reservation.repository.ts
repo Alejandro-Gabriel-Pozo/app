@@ -1,5 +1,6 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from './Reservation.js';
+import type { AssignmentStatus } from './Reservation.js';
 import type { ReservationRepository, ReservationFilters } from './reservation.repository.js';
 import { resolveReservationsLimit } from './reservation.repository.js';
 import type { ReservationCustomer } from './reservation-customer.entities.js';
@@ -41,6 +42,24 @@ interface ReservationRow {
   needs_maintenance_review?: boolean | null;
   is_exclusive_resource?: boolean | null;
   cancellation_policy_snapshot?: string | CancellationPolicySnapshot | null;
+  /**
+   * v11/Fase 1 (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8) —
+   * NOT NULL en la base (schema.sql, BLOQUE 29). Sin `?` acá, pero eso es
+   * solo la forma del tipo — **no** es lo que protege contra un
+   * `baseSelect()` que se olvide de esta columna ni contra un `??` de
+   * relleno agregado más adelante en `buildReservation()`: el SQL de
+   * `baseSelect()` es un string, así que TypeScript no ve qué columnas
+   * selecciona, y un `row.assignment_status ?? 'ASSIGNED'` sobre este
+   * mismo tipo no-nullable compila sin error.
+   *
+   * La protección real es en RUNTIME, en el constructor de `Reservation`
+   * (validación G-1): si `baseSelect()` olvida la columna o alguien
+   * agrega un `??` acá, `row.assignment_status` llega `undefined` al
+   * constructor y este lo rechaza con `InvalidReservationError` en vez de
+   * dejarlo caer en un default silencioso. Confirmado por test, no por el
+   * compilador — ver `src/tests/domain/reservation.test.ts`.
+   */
+  assignment_status: AssignmentStatus;
 }
 
 /**
@@ -105,6 +124,10 @@ export class SqlReservationRepository implements ReservationRepository {
       // (columna nullable) -- no hay "sin política" vs. "política vacía"
       // que distinguir en este nivel.
       reservation.cancellationPolicySnapshot ? JSON.stringify(reservation.cancellationPolicySnapshot) : null,
+      // v11/Fase 1 ($30) -- ver el docblock de assignment_status en
+      // ReservationRow: la entidad siempre trae un valor válido (el
+      // constructor lo exige), así que nunca se escribe NULL acá.
+      reservation.assignmentStatus,
     ];
   }
 
@@ -142,6 +165,11 @@ export class SqlReservationRepository implements ReservationRepository {
   // tal cual, nunca uno nuevo. Se resuelve una única vez, en
   // ReservationService.createReservation() (NumberSequenceRepository.next()),
   // antes de la primera vez que este UPSERT corre para esa reserva.
+  // assignment_status ($30) -- v11/Fase 1 (25/09/2026,
+  // docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8). Mismo
+  // criterio que reservation_number: OBLIGATORIO en el constructor de
+  // Reservation (sin default), así que va en el INSERT y en el ON
+  // CONFLICT SET igual que el resto -- nunca se escribe NULL acá.
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
@@ -151,9 +179,9 @@ export class SqlReservationRepository implements ReservationRepository {
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
       schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by,
       reservation_number, applied_customer_rate_id, needs_maintenance_review,
-      is_exclusive_resource, cancellation_policy_snapshot
+      is_exclusive_resource, cancellation_policy_snapshot, assignment_status
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -180,7 +208,8 @@ export class SqlReservationRepository implements ReservationRepository {
       applied_customer_rate_id = $26,
       needs_maintenance_review = $27,
       is_exclusive_resource    = $28,
-      cancellation_policy_snapshot = $29
+      cancellation_policy_snapshot = $29,
+      assignment_status        = $30
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -491,7 +520,8 @@ export class SqlReservationRepository implements ReservationRepository {
         r.requested_check_in_time, r.requested_check_out_time,
         r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
         r.deposit_amount, r.deposit_due_by, r.reservation_number, r.applied_customer_rate_id,
-        r.needs_maintenance_review, r.is_exclusive_resource, r.cancellation_policy_snapshot
+        r.needs_maintenance_review, r.is_exclusive_resource, r.cancellation_policy_snapshot,
+        r.assignment_status
       FROM reservations r
     `;
   }
@@ -594,6 +624,13 @@ export class SqlReservationRepository implements ReservationRepository {
         typeof row.cancellation_policy_snapshot === 'string'
           ? JSON.parse(row.cancellation_policy_snapshot)
           : row.cancellation_policy_snapshot ?? null,
+      // v11/Fase 1 (G-1) — SIN `?? 'ASSIGNED'`, a propósito: si `baseSelect()`
+      // algún día se olvida de `r.assignment_status`, este valor llega
+      // `undefined` tal cual hasta el constructor de `Reservation`, que lo
+      // rechaza con `InvalidReservationError` en vez de dejarlo caer en un
+      // default silencioso (mismo argumento que reservationNumber/
+      // appliedCustomerRateId, que tampoco llevan `??` acá).
+      assignmentStatus: row.assignment_status,
     });
   }
 

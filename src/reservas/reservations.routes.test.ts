@@ -57,6 +57,7 @@ interface FakeReservationRow {
   resource_id: string; status: ReservationStatus; start_time: string; end_time: string;
   details: string; total_price: string; deposit_amount: string; reservation_number: number;
   applied_customer_rate_id: string | null;
+  assignment_status: string;
 }
 
 function makeState() {
@@ -124,6 +125,7 @@ function seedReservation(state: ReturnType<typeof makeState>, overrides: Partial
     start_time: '2026-09-01T10:00:00.000Z', end_time: '2026-09-01T11:00:00.000Z',
     details: '{}', total_price: '100', deposit_amount: '0', reservation_number: 1,
     applied_customer_rate_id: null,
+    assignment_status: 'ASSIGNED',
     ...overrides,
   };
   state.reservations.set(row.id, row);

@@ -160,6 +160,7 @@ describe('StayService — ledger (A1, paso 3)', () => {
       totalPrice: 15000,
       reservationNumber: 1,
       appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
     });
     await reservationRepo.save(reservation);
   });
@@ -307,6 +308,7 @@ describe('StayService — gating de check-in por limpieza', () => {
       totalPrice: 15000,
       reservationNumber: 1,
       appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
     });
     await reservationRepo.save(reservation);
   });
@@ -433,6 +435,7 @@ describe('StayService — horario de check-in/check-out', () => {
       totalPrice: 15000,
       reservationNumber: 1,
       appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
     });
     await reservationRepo.save(reservation);
   });
@@ -451,6 +454,7 @@ describe('StayService — horario de check-in/check-out', () => {
       totalPrice: 15000,
       reservationNumber: 1,
       appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
     });
     void reservationRepo.save(next);
   }

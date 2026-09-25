@@ -56,6 +56,7 @@ function makePendingReservation(id: string, opts: { depositAmount?: number; depo
     depositDueBy: opts.depositDueBy ?? null,
     reservationNumber: 1,
     appliedCustomerRateId: null,
+    assignmentStatus: 'ASSIGNED',
   });
 }
 

@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { toReservationDto } from './reservation.mapper.js';
+import { toReservationDto, toCustomerReservationDto } from './reservation.mapper.js';
 import { Reservation } from '../../reservas/Reservation.js';
 import { Customer } from '../../clientes-finanzas/customer.entities.js';
 import { PhysicalResource } from '../../reservas/resource.entities.js';
@@ -34,6 +34,7 @@ describe('toReservationDto', () => {
     totalPrice: 20,
     reservationNumber: 1,
     appliedCustomerRateId: null,
+    assignmentStatus: 'ASSIGNED',
   });
 
   it('el status sobrevive un roundtrip JSON real (antes se perdía: _status vs status)', () => {
@@ -72,5 +73,18 @@ describe('toReservationDto', () => {
     // reservation está en PENDING (default) — PENDING → CONFIRMED | CANCELLED | EXPIRED (C1-Fase A).
     const roundtripped = JSON.parse(JSON.stringify(toReservationDto(reservation)));
     expect(roundtripped.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
+  });
+
+  // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+  // §6) — el DTO de staff SÍ trae assignmentStatus; el DTO recortado del
+  // portal de clientes NO.
+  it('toReservationDto() (staff) incluye assignmentStatus', () => {
+    const dto = toReservationDto(reservation);
+    expect(dto.assignmentStatus).toBe('ASSIGNED');
+  });
+
+  it('toCustomerReservationDto() (portal de clientes) NO incluye assignmentStatus', () => {
+    const dto = toCustomerReservationDto(reservation);
+    expect(dto).not.toHaveProperty('assignmentStatus');
   });
 });

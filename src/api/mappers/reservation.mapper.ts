@@ -9,7 +9,7 @@
  * - `customer.email` es `string | undefined` — se normaliza a `string` con ?? ''
  */
 
-import type { Reservation } from '../../reservas/Reservation.js';
+import type { Reservation, AssignmentStatus } from '../../reservas/Reservation.js';
 import type { BookableResource } from '../../reservas/resource.entities.js';
 import type { VisualMetadata } from '../../types/visual.interface.js';
 import type { ReservationStatus } from '../../types/enums.js';
@@ -78,6 +78,15 @@ export interface ReservationDto {
   appliedCustomerRateId: string | null;
   /** 24/08/2026 — el recurso tiene una ventana de mantenimiento abierta más allá del horizonte configurado, ver Reservation.needsMaintenanceReview. */
   needsMaintenanceReview: boolean;
+  /**
+   * v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+   * §6) — `'ASSIGNED'` | `'PENDING_ASSIGNMENT'`. Visible en el path de
+   * staff; filtrado explícitamente de las 4 respuestas del portal de
+   * clientes (`api/routes/customer.routes.ts`) — el huésped no debe ver
+   * esto como un estado nuevo en su experiencia. Fase 1 nunca produce
+   * `'PENDING_ASSIGNMENT'` todavía (eso es Fase 2).
+   */
+  assignmentStatus: AssignmentStatus;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -126,5 +135,24 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     scheduleChargeAmount: reservation.scheduleChargeAmount,
     appliedCustomerRateId: reservation.appliedCustomerRateId,
     needsMaintenanceReview: reservation.needsMaintenanceReview,
+    assignmentStatus: reservation.assignmentStatus,
   };
+}
+
+/**
+ * v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+ * §6) — el DTO de staff
+ * (`toReservationDto()`) incluye `assignmentStatus`; el portal de clientes
+ * NO debe mostrarlo — el huésped no tiene por qué ver "tu unidad todavía
+ * no está asignada definitivamente" como un estado nuevo en su
+ * experiencia (las reservas creadas desde el portal siempre entran por
+ * `resourceId` explícito, así que nacen `ASSIGNED` de entrada; el caso
+ * real a filtrar es una reserva creada por STAFF a nombre de un cliente).
+ * Envuelve `toReservationDto()` en vez de reimplementar el mapeo — un
+ * solo lugar construye el DTO completo, esta función solo lo recorta
+ * para las 4 respuestas del portal (`api/routes/customer.routes.ts`).
+ */
+export function toCustomerReservationDto(reservation: Reservation): Omit<ReservationDto, 'assignmentStatus'> {
+  const { assignmentStatus: _assignmentStatus, ...rest } = toReservationDto(reservation);
+  return rest;
 }

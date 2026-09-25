@@ -395,6 +395,13 @@ export class ReservationService {
           unitDate:      line.unitDate,
           price:         line.price,
         })),
+        // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+        // §6) — el alta sigue asignando recurso de forma inmediata, como
+        // hoy: `categoryId` ya se resolvió a `resource` (un recurso
+        // concreto) más arriba en este mismo método. Fase 2, no Fase 1, es
+        // la que introduce el alta por categoría sin recurso concreto
+        // (`PENDING_ASSIGNMENT`) — no existe todavía.
+        assignmentStatus: 'ASSIGNED',
       });
 
       await this.reservationRepository.saveWithClient(client, reservation);
@@ -686,6 +693,15 @@ export class ReservationService {
         // decidido. No se recalcula acá -- el ladder representa "qué regía
         // al CONFIRMAR", independiente de que las fechas se editen después.
         cancellationPolicySnapshot: existing.cancellationPolicySnapshot,
+        // v11/Fase 1 — MISMA familia de bug que requestedCheckInTime/
+        // depositAmount/isExclusiveResource/cancellationPolicySnapshot de
+        // arriba: Reservation.restore() NO tiene default para este campo
+        // (a propósito, G-1) — a diferencia de esos otros, olvidarlo acá
+        // no cae en silencio a un valor por defecto, tira
+        // InvalidReservationError. Se reenvía tal cual: updateReservation()
+        // no reasigna recurso por categoría (eso es Fase 2), así que el
+        // assignment_status de una reserva no cambia por esta operación.
+        assignmentStatus: existing.assignmentStatus,
       });
 
       // D-03 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §6)
@@ -866,6 +882,10 @@ export class ReservationService {
         // una reserva CONFIRMED borraría en silencio el ladder ya
         // congelado al confirmar.
         cancellationPolicySnapshot: locked.cancellationPolicySnapshot,
+        // v11/Fase 1 — mismo motivo que en updateReservation(): sin
+        // default, se reenvía tal cual. Un ajuste de precio no toca la
+        // asignación de recurso.
+        assignmentStatus: locked.assignmentStatus,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -1002,6 +1022,13 @@ export class ReservationService {
           customerName:  reservation.customer.fullName,
           resourceName:  reservation.resource.name,
           isLodging:     category?.isLodging ?? false,
+          // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+          // §6) — email.handlers.ts lo usa SOLO para alojamiento
+          // (isLodging), en vez de resourceName, cuando está presente
+          // (`?? resourceName` ahí es compatibilidad con eventos viejos
+          // reprocesados que no traen este campo). `category` ya está
+          // resuelto arriba, mismo query que ya usa `isLodging`.
+          categoryName: category?.name,
         },
       });
     });

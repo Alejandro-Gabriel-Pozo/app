@@ -567,7 +567,17 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // server.ts, no acá) -- ver ese bloque para el razonamiento completo de
 // por qué el DEFAULT 0 es lo que evita desloguear sesiones vivas al
 // desplegar.
-export const CURRENT_SCHEMA_VERSION = 63;
+//
+// v64 (25/09/2026): Fase 1 de "reserva por tipo de unidad con asignación
+// diferida" (Wave 14 ítem 4.3,
+// docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8) -- BLOQUE 29,
+// schema.sql: `reservations.assignment_status VARCHAR(20) NOT NULL
+// DEFAULT 'ASSIGNED'` + `chk_reservations_assignment_status CHECK
+// (assignment_status IN ('ASSIGNED', 'PENDING_ASSIGNMENT'))`. Solo
+// infraestructura -- ninguna reserva nace `PENDING_ASSIGNMENT` todavía
+// (eso es Fase 2), así que este bloque no necesita ningún backfill: el
+// DEFAULT cubre todo lo existente y todo lo que sigue entrando.
+export const CURRENT_SCHEMA_VERSION = 64;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

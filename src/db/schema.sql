@@ -4661,3 +4661,56 @@ END $$;
 -- ===========================================================================
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
 
+-- ===========================================================================
+-- BLOQUE 29 — reservations.assignment_status (25/09/2026, schema v64,
+-- Wave 14 ítem 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6
+-- (Fase 1) / §8 (A6.1), condición C-4 del gate `architecture-governor`,
+-- Ronda 13) -- máquina de estados NUEVA e independiente de `status`
+-- (PENDING/CONFIRMED/CANCELLED/COMPLETED/EXPIRED, más arriba en esta
+-- tabla): "¿la reserva ya tiene un recurso CONCRETO asignado, o quedó
+-- pendiente de asignación diferida (reserva por tipo de unidad)?".
+--
+-- DEFAULT 'ASSIGNED' -- backfill implícito de lo existente y de todo lo
+-- que sigue entrando por resourceId explícito o por turnos (Fase 1 no
+-- marca ninguna reserva PENDING_ASSIGNMENT todavía, ver el diseño §6 "Por
+-- qué Fase 1 no marca nada todavía": sin eso, nunca hay backfill real que
+-- hacer). NOT NULL -- no puede ser opcional: mismo motivo que
+-- ReservationProps.assignmentStatus es obligatorio SIN default en
+-- TypeScript (Reservation.ts v11) -- un valor ausente reintroduciría el
+-- bug de mayor superficie del diseño (§8 A6.1: CUALQUIER guardado de
+-- CUALQUIER reserva, no solo las diferidas).
+--
+-- Patrón DDL idempotente -- mismo precedente que chk_reservations_adultos
+-- (arriba en este archivo): ADD COLUMN IF NOT EXISTS + un DO $$ ... IF NOT
+-- EXISTS (pg_constraint) ... $$ aparte para el CHECK, sin DROP previo
+-- (mismo criterio que chk_invoices_pending_since/chk_accounts_receivable_status
+-- más arriba: un DROP+ADD incondicional forzaría revalidar la constraint
+-- contra toda la tabla en cada deploy).
+--
+-- CHECK -- espejo en SQL de ASSIGNMENT_STATUS_TRANSITIONS
+-- (Reservation.ts): el schema no debe aceptar un tercer valor que la
+-- entidad TypeScript ya rechazaría en el constructor.
+--
+-- Backup reciente de cada tenant DB obligatorio antes de correr el
+-- deploy que introduce este bloque en producción (docs/conocimiento/
+-- runbook-deploy-render.md) -- esta columna se aplica a TODAS las tenant
+-- DB en el mismo deploy (migrate:tenants encadenado al build,
+-- render.yaml, pipeline-trust).
+--
+-- Fase 1 es infraestructura pura: ninguna reserva nace PENDING_ASSIGNMENT
+-- todavía. La operación que aplica esa transición (assignDeferred(), el
+-- discriminador del PUT, "Auto Assign All", check-in/completar
+-- confirmando la asignación) es Fase 2/3, fuera de alcance de este
+-- bloque -- ver la tabla regla × fase del diseño (§6.1).
+-- ===========================================================================
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS assignment_status VARCHAR(20) NOT NULL DEFAULT 'ASSIGNED';
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_reservations_assignment_status'
+  ) THEN
+    ALTER TABLE reservations ADD CONSTRAINT chk_reservations_assignment_status
+      CHECK (assignment_status IN ('ASSIGNED', 'PENDING_ASSIGNMENT'));
+  END IF;
+END $$;
+

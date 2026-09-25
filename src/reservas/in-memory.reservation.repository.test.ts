@@ -40,6 +40,7 @@ describe('InMemoryReservationRepository — getFiltered/countFiltered (K2, isLod
       initialStatus: ReservationStatus.CONFIRMED,
       reservationNumber: 1,
       appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
     });
   }
 
@@ -100,6 +101,7 @@ describe('InMemoryReservationRepository — getFiltered() limit/offset (D-14)', 
         initialStatus: ReservationStatus.CONFIRMED,
         reservationNumber: i + 1,
         appliedCustomerRateId: null,
+        assignmentStatus: 'ASSIGNED',
       }));
     }
   }

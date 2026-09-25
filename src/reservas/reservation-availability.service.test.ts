@@ -65,6 +65,7 @@ function makeReservation(id: string, resource: BookableResource, partySize: numb
   return new Reservation({
     id, customer, resource, startTime, endTime, details: {},
     totalPrice: 100, reservationNumber: 1, appliedCustomerRateId: null,
+    assignmentStatus: 'ASSIGNED',
     partySize,
   });
 }

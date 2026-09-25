@@ -311,8 +311,13 @@ describe('applyTenantSchema', () => {
     // real de sesión, docs/diseno-wave15-sesion-saga-aprovisionamiento-
     // 2026-09-24.md §2) -- customers.token_version INTEGER NOT NULL
     // DEFAULT 0 (BLOQUE 28, schema.sql).
+    // 63 -> 64 el 25/09/2026: Fase 1 de "reserva por tipo de unidad con
+    // asignación diferida" (Wave 14 ítem 4.3,
+    // docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8) --
+    // reservations.assignment_status VARCHAR(20) NOT NULL DEFAULT
+    // 'ASSIGNED' + chk_reservations_assignment_status (BLOQUE 29, schema.sql).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(63);
+    expect(CURRENT_SCHEMA_VERSION).toBe(64);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

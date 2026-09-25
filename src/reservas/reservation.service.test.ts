@@ -727,6 +727,53 @@ describe('ReservationService', () => {
       expect(event.payload.isLodging).toBe(true);
     });
 
+    // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+    // §6) — este test protege al PRODUCTOR del evento (confirmReservation()),
+    // no al handler de mail: si
+    // alguien borra `categoryName` de confirmReservation() por error, el
+    // `?? resourceName` de email.handlers.ts hace que el mail siga andando
+    // (mostrando el recurso en vez de la categoría) sin que ningún test lo
+    // note, porque los tests del handler de mail solo ejercitan el handler,
+    // no el evento real que emite el service.
+    it('el payload de reservation.confirmed incluye categoryName con el nombre de la categoría, para alojamiento', async () => {
+      const lodgingCategoryRepo: ICategoryRepository = {
+        async findById() {
+          return {
+            id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
+            isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
+          };
+        },
+        async findAll() { return []; },
+        async countActive() { return 0; },
+        async create(): Promise<never> { throw new Error('no usado en este test'); },
+        async update(): Promise<never> { throw new Error('no usado en este test'); },
+        async deactivate() {},
+      };
+      const lodgingService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
+        FROZEN_TEST_NOW,
+      );
+
+      bookableServiceRepo.seed({
+        id: 'svc-estadia-categoryname', categoryId: 'cat-table', name: 'Actividad en el hotel',
+        bookingMode: 'slot', durationMinutes: null, price: 50,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await lodgingService.createReservation({
+        id: 'res-lodging-categoryname', resourceId: 't1', serviceId: 'svc-estadia-categoryname', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      await lodgingService.confirmReservation('res-lodging-categoryname', TEST_BUSINESS_ID, TEST_USER_ID);
+
+      const event = eventRepo.events[0] as { payload: { categoryName?: string } };
+      expect(event.payload.categoryName).toBe('Habitaciones');
+    });
+
     // ------------------------------------------------------------------
     // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026)
     // ------------------------------------------------------------------
@@ -1020,6 +1067,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
         details: {}, totalPrice: 50, initialStatus: ReservationStatus.PENDING, reservationNumber: 1,
         appliedCustomerRateId: null,
+        assignmentStatus: 'ASSIGNED',
       });
 
       expect(reservation.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
@@ -1035,6 +1083,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
         details: {}, totalPrice: 50, initialStatus: ReservationStatus.CONFIRMED, reservationNumber: 2,
         appliedCustomerRateId: null,
+        assignmentStatus: 'ASSIGNED',
       });
 
       expect(() => reservation.expire()).toThrow(InvalidReservationError);
@@ -1395,6 +1444,7 @@ describe('ReservationService', () => {
         scheduleChargeAmount:   500,
         reservationNumber:      42,
         appliedCustomerRateId:  null,
+        assignmentStatus: 'ASSIGNED',
       });
       await reservationRepo.save(seeded);
 
@@ -1433,6 +1483,7 @@ describe('ReservationService', () => {
         needsMaintenanceReview: true,
         reservationNumber: 77,
         appliedCustomerRateId: null,
+        assignmentStatus: 'ASSIGNED',
       });
       await reservationRepo.save(seeded);
 
@@ -1628,6 +1679,7 @@ describe('ReservationService', () => {
         needsMaintenanceReview: true,
         reservationNumber: 88,
         appliedCustomerRateId: null,
+        assignmentStatus: 'ASSIGNED',
       });
       await reservationRepo.save(seeded);
 
@@ -1635,6 +1687,46 @@ describe('ReservationService', () => {
 
       expect(updated.totalPrice).toBe(400); // el ajuste se aplicó
       expect(updated.needsMaintenanceReview).toBe(true); // y el snapshot sobrevivió
+    });
+
+    // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+    // §6) — mismo tipo de bug que needsMaintenanceReview/cancellationPolicySnapshot
+    // arriba: si alguien
+    // escribiera 'ASSIGNED' fijo en vez de reenviar existing.assignmentStatus/
+    // locked.assignmentStatus, este test lo detecta. Se siembra directo con
+    // el repo en memoria (no vía createReservation(), que siempre produce
+    // 'ASSIGNED' en Fase 1) para poder partir de PENDING_ASSIGNMENT.
+    it('assignmentStatus sobrevive a updateReservation() y a confirmPriceAdjustment() (no se pisa con ASSIGNED)', async () => {
+      const seeded = Reservation.restore({
+        id: 'res-assignment-survive',
+        customer,
+        resource: table,
+        serviceId: 'svc-noche-adjust',
+        startTime: new Date('2026-09-01T15:00:00Z'),
+        endTime:   new Date('2026-09-03T10:00:00Z'), // 2 noches = $200
+        details: {},
+        initialStatus: ReservationStatus.CONFIRMED,
+        totalPrice: 200,
+        reservationNumber: 99,
+        appliedCustomerRateId: null,
+        assignmentStatus: 'PENDING_ASSIGNMENT',
+      });
+      await reservationRepo.save(seeded);
+
+      // Cambio que no toca recurso ni precio directamente -- solo details.
+      const updated = await service.updateReservation('res-assignment-survive', {
+        details: { nota: 'actualizado' },
+      });
+      expect(updated.assignmentStatus).toBe('PENDING_ASSIGNMENT');
+
+      // Estira la reserva para generar una diferencia de precio pendiente,
+      // y confirma el ajuste -- ninguna de las dos operaciones reasigna
+      // recurso, así que assignmentStatus tiene que seguir intacto.
+      await service.updateReservation('res-assignment-survive', { endTime: new Date('2026-09-05T10:00:00Z') }); // 4 noches
+      const adjusted = await service.confirmPriceAdjustment('res-assignment-survive', TEST_BUSINESS_ID, 'user-manager-1');
+
+      expect(adjusted.totalPrice).toBe(400); // el ajuste se aplicó de verdad
+      expect(adjusted.assignmentStatus).toBe('PENDING_ASSIGNMENT');
     });
   });
 

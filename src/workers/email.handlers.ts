@@ -47,13 +47,15 @@ export function handleReservationConfirmedEmail(
   businessProfileRepo: BusinessProfileRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { customerEmail, customerName, resourceName, startTime, endTime, isLodging } = event.payload as {
+    const { customerEmail, customerName, resourceName, startTime, endTime, isLodging, categoryName } = event.payload as {
       customerEmail?: string | null;
       customerName?: string;
       resourceName?: string;
       startTime?: string;
       endTime?: string;
       isLodging?: boolean;
+      /** v11/Fase 1 (25/09/2026) -- solo presente para alojamiento; ver debajo. */
+      categoryName?: string;
     };
 
     // Cliente sin mail cargado (solo teléfono, ej.) -- nada que enviar, no es un error.
@@ -61,10 +63,19 @@ export function handleReservationConfirmedEmail(
 
     const profile = await businessProfileRepo.get();
 
+    // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+    // §6) -- solo para alojamiento se prefiere el nombre de la CATEGORÍA
+    // ("Habitación Doble") al nombre del recurso concreto asignado
+    // ("Hab. 204") -- el huésped reserva un tipo de unidad, no un recurso
+    // puntual. `?? resourceName` es compatibilidad con eventos del outbox
+    // reprocesados de antes de este cambio, que no traen `categoryName`.
+    // Turnos (isLodging=false) siguen mostrando resourceName sin cambios.
+    const displayName = isLodging ? (categoryName ?? resourceName) : resourceName;
+
     const { subject, html } = reservationConfirmedEmail({
       customerName: customerName ?? 'cliente',
       businessDisplayName: profile.displayName ?? DEFAULT_SENDER_NAME,
-      resourceName,
+      resourceName: displayName,
       checkInLabel:  formatReservationBoundary(startTime, isLodging, profile.timezone, profile.defaultCheckInTime),
       checkOutLabel: formatReservationBoundary(endTime,   isLodging, profile.timezone, profile.defaultCheckOutTime),
     });

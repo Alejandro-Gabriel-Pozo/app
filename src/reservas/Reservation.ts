@@ -65,6 +65,23 @@
  * las resuelve `StayService.approveScheduleChange()`. Este agregado solo
  * garantiza sus propios invariantes: no aprobar/rechazar sin un pedido
  * PENDING, no pedir sobre una reserva CANCELLED/COMPLETED, cargo >= 0.
+ *
+ * ## Cambios v11 — assignment_status (Fase 1, 25/09/2026,
+ * docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8, Wave 14 ítem 4.3)
+ * - `+assignmentStatus`: máquina de estados NUEVA e independiente de
+ *   `status` (`PENDING_ASSIGNMENT` → `ASSIGNED`, ver `ASSIGNMENT_STATUS_TRANSITIONS`
+ *   más abajo). Obligatorio y SIN default a propósito — mismo criterio que
+ *   `reservationNumber` (v10): un valor ausente (`undefined`) no tiene un
+ *   default de negocio razonable, así que el constructor lo valida por
+ *   VALOR (§8 A6.1 del diseño) y lanza `InvalidReservationError` si no es
+ *   una de las dos claves de `ASSIGNMENT_STATUS_TRANSITIONS` — incluido
+ *   `undefined`, para que un `SELECT`/caller que se olvide del campo falle
+ *   alto en vez de dejar pasar `NULL` hacia la columna `NOT NULL` de
+ *   Postgres. Fase 1 es infraestructura pura: ninguna reserva nace
+ *   `PENDING_ASSIGNMENT` todavía — el único valor que este código produce
+ *   hoy es `'ASSIGNED'`. La operación que aplica la transición
+ *   (`assignConcreteResource()`/`assignDeferred()`) es Fase 2, no existe
+ *   todavía (ver tabla regla × fase del diseño, §6.1).
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -74,6 +91,15 @@ import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { InvalidReservationError } from '../domain/errors.js';
 import type { ReservationSnapshot, ReservationLine } from './reservation.types.js';
 import type { CancellationPolicySnapshot } from './cancellation-policy.repository.js';
+
+/**
+ * v11 (Fase 1, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8) —
+ * estado de asignación de recurso concreto. Distinto de `status`
+ * (`ReservationStatus`, arriba): esta máquina vive en su propia columna
+ * (`reservations.assignment_status`) y no se acopla al ciclo de vida de
+ * la reserva salvo en el punto de precio (ver el diseño, §8).
+ */
+export type AssignmentStatus = 'PENDING_ASSIGNMENT' | 'ASSIGNED';
 
 const ALLOWED_TRANSITIONS: Record<
   ReservationStatus,
@@ -85,6 +111,25 @@ const ALLOWED_TRANSITIONS: Record<
   [ReservationStatus.COMPLETED]: [],
   [ReservationStatus.EXPIRED]:   [],
 };
+
+/**
+ * v11 (Fase 1, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1)
+ * — máquina de estados de `assignmentStatus`, independiente de `status`
+ * (arriba). Dos estados, una sola arista permitida. `ASSIGNED: []` hace
+ * que "los estados terminales no se reabren" (A6.4,
+ * docs/criterios-negocio.md) sea estructural: no hay ninguna arista de
+ * salida de `ASSIGNED`, así que no hace falta un guard aparte.
+ *
+ * Fuente única de verdad para DOS preguntas distintas: qué VALORES son
+ * válidos (`Object.keys(...)`, usado por el constructor más abajo para la
+ * validación de forma) y qué TRANSICIÓN es válida (usado por la operación
+ * de dominio que aplica el cambio — Fase 2, no existe todavía).
+ */
+export const ASSIGNMENT_STATUS_TRANSITIONS: Readonly<Record<AssignmentStatus, readonly AssignmentStatus[]>> =
+  Object.freeze({
+    PENDING_ASSIGNMENT: Object.freeze(['ASSIGNED'] as const),
+    ASSIGNED: Object.freeze([] as const),
+  });
 
 export interface ReservationProps {
   id: string;
@@ -210,6 +255,15 @@ export interface ReservationProps {
    * que congelar todavía.
    */
   cancellationPolicySnapshot?: CancellationPolicySnapshot | null;
+  /**
+   * v11 (Fase 1) — obligatorio y SIN default, mismo criterio que
+   * `reservationNumber`/`appliedCustomerRateId`: no hay un valor neutro
+   * razonable, y dejarlo caer a un default silencioso reintroduciría el
+   * bug ya documentado 4 veces en este archivo (ver docblock de la
+   * versión v11 arriba). Validado por VALOR en el constructor contra
+   * `Object.keys(ASSIGNMENT_STATUS_TRANSITIONS)`.
+   */
+  assignmentStatus: AssignmentStatus;
 }
 
 export class Reservation {
@@ -236,6 +290,7 @@ export class Reservation {
   private _needsMaintenanceReview: boolean;
   public readonly isExclusiveResource: boolean;
   private _cancellationPolicySnapshot: CancellationPolicySnapshot | null;
+  public readonly assignmentStatus: AssignmentStatus;
 
   constructor(props: ReservationProps) {
     const {
@@ -267,11 +322,24 @@ export class Reservation {
       needsMaintenanceReview = false,
       isExclusiveResource = false,
       cancellationPolicySnapshot = null,
+      assignmentStatus,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
     if (!Number.isInteger(reservationNumber) || reservationNumber < 1) {
       throw new InvalidReservationError('reservationNumber debe ser un entero mayor o igual a 1');
+    }
+    // v11 (Fase 1, G-1) — validación de VALOR, distinta de la validación
+    // de TRANSICIÓN que hará la operación de dominio de Fase 2. Mismo
+    // patrón que reservationNumber arriba: sin default en la
+    // destructuración, así que `undefined` (columna faltante en
+    // baseSelect(), caller que se olvida del campo) cae acá igual que
+    // cualquier otro valor inválido — Object.keys(...) nunca incluye
+    // "undefined" como string, así que esto también atrapa `undefined`.
+    if (!Object.keys(ASSIGNMENT_STATUS_TRANSITIONS).includes(assignmentStatus as unknown as string)) {
+      throw new InvalidReservationError(
+        `assignmentStatus inválido: ${String(assignmentStatus)}. Debe ser uno de: ${Object.keys(ASSIGNMENT_STATUS_TRANSITIONS).join(', ')}`,
+      );
     }
     if (partySize < 1) throw new InvalidReservationError('partySize debe ser al menos 1');
     if (partySize > resource.capacity) {
@@ -330,6 +398,7 @@ export class Reservation {
     this._needsMaintenanceReview = needsMaintenanceReview;
     this.isExclusiveResource = isExclusiveResource;
     this._cancellationPolicySnapshot = cancellationPolicySnapshot;
+    this.assignmentStatus = assignmentStatus;
     this._status     = initialStatus;
   }
 

@@ -55,6 +55,7 @@ function makeReservation(overrides: {
     totalPrice: 1000,
     reservationNumber: 1,
     appliedCustomerRateId: null,
+    assignmentStatus: 'ASSIGNED',
     initialStatus: overrides.status ?? ReservationStatus.CANCELLED,
     cancellationPolicySnapshot: overrides.cancellationPolicySnapshot ?? null,
   });

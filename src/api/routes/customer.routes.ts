@@ -89,7 +89,7 @@ import { parseExpiresIn } from '../../security/auth.service.js';
 import { resolveSessionTtl } from '../../security/session-ttl.js';
 import { getJwtSecret, getJwtExpiresInRaw } from '../../config/env.js';
 import { Roles } from '../../security/roles.js';
-import { toReservationDto } from '../mappers/reservation.mapper.js';
+import { toCustomerReservationDto } from '../mappers/reservation.mapper.js';
 import { ReservationStatus, BusinessStatus, UserRole } from '../../types/enums.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import {
@@ -820,7 +820,7 @@ export function createCustomerRouter(
 
         const { reservationRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const reservations = await reservationRepo.getByCustomerId(customerId);
-        res.json(reservations.map(toReservationDto));
+        res.json(reservations.map(toCustomerReservationDto));
       } catch (err) {
         next(err);
       }
@@ -860,7 +860,7 @@ export function createCustomerRouter(
           ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
         });
 
-        res.status(201).json(toReservationDto(reservation));
+        res.status(201).json(toCustomerReservationDto(reservation));
       } catch (err) {
         next(err);
       }
@@ -910,7 +910,7 @@ export function createCustomerRouter(
           },
         );
 
-        res.json(toReservationDto(updated));
+        res.json(toCustomerReservationDto(updated));
       } catch (err) {
         next(err);
       }
@@ -962,7 +962,7 @@ export function createCustomerRouter(
         // no tiene FK (identity_id libre, ver schema.sql BLOQUE 10) así que
         // un id de cliente es tan válido acá como un identity_id de staff.
         const cancelled = await reservationService.cancelReservation(reservationId, businessId, customerId);
-        res.json(toReservationDto(cancelled));
+        res.json(toCustomerReservationDto(cancelled));
       } catch (err) {
         next(err);
       }

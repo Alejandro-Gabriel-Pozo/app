@@ -24,6 +24,7 @@ describe('SqlReservationRepository', () => {
     total_price: '50.00',
     deposit_amount: '0',
     reservation_number: 1,
+    assignment_status: 'ASSIGNED',
   };
 
   beforeEach(() => {
@@ -148,6 +149,7 @@ describe('SqlReservationRepository', () => {
       'service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos', 'rate_plan_id',
       'requested_check_in_time', 'requested_check_out_time', 'schedule_approval_status',
       'schedule_approved_by', 'schedule_charge_amount', 'reservation_number',
+      'assignment_status',
     ]) {
       expect(insertClause).toContain(column);
       expect(setClause).toMatch(new RegExp(`${column}\\s*=`));

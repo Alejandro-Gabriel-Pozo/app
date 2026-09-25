@@ -152,6 +152,95 @@ describe('handleReservationConfirmedEmail', () => {
     expect(html).not.toContain('9:00 p. m.');
   });
 
+  // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+  // §6) -- alojamiento con categoryName presente: se muestra el nombre de
+  // la CATEGORÍA, no el del recurso concreto asignado.
+  it('alojamiento: prefiere categoryName sobre resourceName cuando está presente', async () => {
+    const profileRepo = new FakeBusinessProfileRepository({
+      id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '15:00:00', defaultCheckOutTime: '10:00:00',
+      legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+      fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+      fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+      maintenanceHorizonDays: 30,
+      createdAt: now, updatedAt: now,
+    });
+    const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
+
+    await handler(fakeEvent({
+      customerEmail: 'cliente@example.com',
+      customerName:  'Ale',
+      resourceName:  'Hab. 204',
+      categoryName:  'Habitación Doble',
+      startTime:     '2026-09-29T00:00:00.000Z',
+      endTime:       '2026-09-30T00:00:00.000Z',
+      isLodging:     true,
+    }));
+
+    const html = emailSender.sent[0]!.html;
+    expect(html).toContain('Habitación Doble');
+    expect(html).not.toContain('Hab. 204');
+  });
+
+  // Compatibilidad con eventos viejos del outbox reprocesados que no traen
+  // categoryName todavía (`?? resourceName`).
+  it('alojamiento: cae a resourceName si categoryName no vino en el evento (compat)', async () => {
+    const profileRepo = new FakeBusinessProfileRepository({
+      id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '15:00:00', defaultCheckOutTime: '10:00:00',
+      legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+      fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+      fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+      maintenanceHorizonDays: 30,
+      createdAt: now, updatedAt: now,
+    });
+    const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
+
+    await handler(fakeEvent({
+      customerEmail: 'cliente@example.com',
+      customerName:  'Ale',
+      resourceName:  'Hab. 204',
+      startTime:     '2026-09-29T00:00:00.000Z',
+      endTime:       '2026-09-30T00:00:00.000Z',
+      isLodging:     true,
+    }));
+
+    const html = emailSender.sent[0]!.html;
+    expect(html).toContain('Hab. 204');
+  });
+
+  // Turnos (isLodging=false) siguen mostrando resourceName, sin cambios,
+  // aunque el evento traiga categoryName.
+  it('turno: ignora categoryName y sigue mostrando resourceName', async () => {
+    const profileRepo = new FakeBusinessProfileRepository({
+      id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '15:00:00', defaultCheckOutTime: '10:00:00',
+      legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+      fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+      fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+      maintenanceHorizonDays: 30,
+      createdAt: now, updatedAt: now,
+    });
+    const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
+
+    await handler(fakeEvent({
+      customerEmail: 'cliente@example.com',
+      customerName:  'Ale',
+      resourceName:  'Barbero Isahía',
+      categoryName:  'Turnos',
+      startTime:     '2026-08-20T13:00:00.000Z',
+      endTime:       '2026-08-20T13:30:00.000Z',
+      isLodging:     false,
+    }));
+
+    const html = emailSender.sent[0]!.html;
+    expect(html).toContain('Barbero Isahía');
+    expect(html).not.toContain('Turnos');
+  });
+
   it('turno con horario real (no alojamiento): sigue convirtiendo el instante al huso del negocio', async () => {
     const profileRepo = new FakeBusinessProfileRepository({
       id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
