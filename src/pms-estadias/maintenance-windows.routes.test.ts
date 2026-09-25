@@ -37,10 +37,19 @@ class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
  * en tramos (eso lo cubre maintenance-window.service.test.ts): `conflicts`
  * se devuelve para CUALQUIER rango, así que solo sirve para el caso
  * "hay conflicto en el tramo cierto" que ya cubrían los tests existentes.
+ *
+ * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) — `getActiveForResourceInRangeWithLock`
+ * ahora es obligatorio en el tipo que exige `MaintenanceWindowService`
+ * (`Required<Pick<...>>`, ver ese archivo) — se agrega acá solo para
+ * compilar y mantener el mismo comportamiento simplificado que el resto
+ * del fake (devuelve `conflicts` sin distinguir tramo); el detalle de
+ * ORDEN/LOCK real de esa lectura lo cubre exclusivamente
+ * `maintenance-window.service.test.ts`, no esta suite de rutas.
  */
-class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient'> {
+class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'> {
   conflicts: Reservation[] = [];
   async getActiveForResourceInRange(): Promise<Reservation[]> { return this.conflicts; }
+  async getActiveForResourceInRangeWithLock(): Promise<Reservation[]> { return this.conflicts; }
   async saveWithClient(): Promise<void> {}
 }
 

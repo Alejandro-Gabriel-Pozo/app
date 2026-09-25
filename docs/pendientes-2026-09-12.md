@@ -6371,100 +6371,68 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
   distinta — no alcanza con re-verificar solo el caso
   `CONFIRMED → COMPLETED` sin asignación diferida de por medio.
 
-## Wave 14 — 4.3, hallazgo preexistente encontrado en la novena ronda de gate (24/09/2026)
+## Wave 14 — 4.3, hallazgos encontrados auditando `createWindow()` (24-25/09/2026)
 
-- **`MAINTENANCE-WINDOW-STALE-SAVE-001`** (24/09/2026, hallazgo N3 del
-  gate `architecture-governor` sobre la novena ronda de
-  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — ver §7, fila de
-  `maintenance-window.service.ts`, y el prerrequisito nuevo de Fase 2 en
-  §6). **Este ítem es independiente de 4.3 a propósito, mismo criterio que
-  `OCCUPANCY-DOUBLE-COUNT-ON-COMPLETE-001` más arriba** — el bug existe
-  hoy, en el código actual, sin ningún cambio de este diseño; 4.3 no lo
-  introduce, solo lo encontró de paso al auditar quién escribe
-  `reservations` con o sin lock.
-  `src/pms-estadias/maintenance-window.service.ts::createWindow()` lee
-  reservas SIN lock y FUERA de cualquier transacción vía
-  `getActiveForResourceInRange()` (`reservationRepository.getActiveForResourceInRange()`,
-  que a su vez usa `this.sqlClient` directo, sin `client` de transacción —
-  `sql.reservation.repository.ts:351-357`), en **4 call-sites** dentro de
-  `createWindow()` (líneas 107, 125, 134 y 142 — corregido, 24/09/2026,
-  Ronda 10: una versión anterior de este ítem decía "3 call-sites" pero
-  siempre listó las 4 líneas. De esas 4, **solo 2 alimentan el UPSERT
-  final** (verificado con `grep -n`/`sed -n` contra el archivo real): la
-  línea 107 (`conflicting`) y la línea 125 (`certainConflicts`) solo se
-  usan para el chequeo de conflicto — si hay resultados, lanzan
-  `MaintenanceWindowConflictError` y no se guarda nada; las líneas 134 y
-  142 son las dos únicas que asignan a `toFlag`, la variable que el loop
-  de más abajo recorre para escribir). Las reservas que esas 2 lecturas
-  (134/142) devuelven (`toFlag`) se guardan de vuelta, UPSERT completo de
-  cada una, recién DESPUÉS, dentro de una transacción que abre en la línea
-  160 (`await this.transactionManager.run(...)`):
-  `await this.reservationRepository.saveWithClient(client, reservation);`
-  en la línea 164, tras `reservation.markNeedsMaintenanceReview()` en la
-  línea 163. **Consecuencia concreta:** si otra operación concurrente
-  (un `PUT` de reasignación, un `assignDeferred()` una vez que exista,
-  cualquier otro escritor de `reservations`) cambia y comitea esa misma
-  reserva en la ventana entre la lectura sin lock (líneas 107-144) y el
-  commit de esta transacción (línea 160-166), el UPSERT de la línea 164
-  pisa esos cambios con el snapshot viejo — incluido `resource_id` y
-  (desde que exista la columna, Fase 1 de 4.3) `assignment_status` —
-  revirtiendo en silencio una reasignación real y violando la transición
-  de una sola vía de `assignment_status` (A6.4 del diseño de 4.3). Es,
-  verificado contra los otros 12 escritores reales de `reservations` (los
-  que usan `requireReservationWithLock()`/`getByIdWithLock()` —
-  `confirmReservation()`, `completeReservation()`, `cancelReservation()`,
-  `confirmPriceAdjustment()`, `requestScheduleChange()`,
-  `rejectScheduleChange()`, `approveScheduleChange()`,
-  `reservation-cancel-for-credit-note.ts:94/109`,
-  `reservation-hold-expiry.worker.ts:104-106/122` — todos relockean la
-  fila dentro de su propia transacción inmediatamente antes de escribir),
-  **vuelve a ser el ÚNICO escritor real de `reservations` que hoy lee
-  sin lock y fuera de transacción antes de un UPSERT completo —
-  corregido, Ronda 14 de `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
-  (C-6, gate `architecture-governor`, 24/09/2026).** Historial de esta
-  cifra, para no repetir el mismo error de arrastre: hasta el 24/09/2026
-  (Ronda 10 de ese documento) se corrigió de "el ÚNICO" a "uno de, al
-  menos, DOS" — el otro era `updateReservation()` (`reservation.service.ts`),
-  con el mismo patrón (bug `UPDATE-RESERVATION-LOST-STATUS-001`: armaba lo
-  que terminaba grabando a partir de `existing`, leída SIN lock, ANTES de
-  abrir la transacción real). **Ese bug ya se arregló y commiteó
-  (`6178d70`, ver más abajo) el mismo día** — así que, a partir de ese
-  commit, `updateReservation()` deja de compartir este patrón y
-  `createWindow()` vuelve a ser el único. La corrección de descripción de
-  la Ronda 12 de ese documento (sobre CÓMO es el arreglo de
-  `updateReservation()`, no sobre CUÁNTOS escritores hay) sigue vigente:
-  el arreglo (`UPDATE-RESERVATION-LOCK-ORDER-001`) es una RELECTURA bajo
-  lock dentro de la transacción (`requireReservationWithLock()`); la
-  única comparación que trae es la del guard de coherencia
-  `resource.id`/`serviceId` — acotada a decidir qué recurso lockear, no
-  una comparación optimista general de estado. Fuera del alcance de 4.3,
-  registrado en `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6
-  (nota "C-b"); no se duplica el detalle acá, solo esta referencia
-  cruzada.
-  **`UPDATE-RESERVATION-LOCK-ORDER-001` ya está resuelto y COMMITEADO,
-  `6178d70`** ("fix(reservas): updateReservation() lost-update bajo
-  concurrencia + orden de locks correcto") — la Ronda 11 de gate sobre 4.3
-  ya había confirmado que el arreglo terminaba con el orden recurso →
-  fila, exactamente lo que 4.3 daba por supuesto en su propio paso 6 (§8
-  A6.1), y el commit real lo confirma línea por línea (verificado con
-  `git show 6178d70 --stat` y `git log 6178d70 -1`). El orden de locks YA
-  NO sigue pendiente de decidirse NI de commitear; lo que sigue vigente
-  como nombre de referencia es `UPDATE-RESERVATION-LOST-STATUS-001`, el
-  bug original que motivó el arreglo — también resuelto por el mismo
-  commit, no solo el orden de locks. **Ya es un
-  bug hoy, independiente de 4.3** — puede revertir un drag-to-move normal
-  (`PUT /reservations/:id`) si un `createWindow()` corre en paralelo sobre
-  el mismo recurso. 4.3 lo agrava porque las ventanas `PENDING_ASSIGNMENT`
-  (Fase 2 de 4.3) hacen más frecuente el escenario de "la reserva cambió
-  mientras este código la tenía leída sin lock". **No se resuelve acá** —
-  señalado, no corregido: arreglarlo (releer con lock dentro de una
-  transacción, inmediatamente antes de guardar, mismo patrón que los
-  otros 12 escritores) es cambio de código fuera del alcance actual de
-  4.3. El diseño de 4.3 lo declara como PRERREQUISITO explícito antes de
-  activar su Fase 2 (el marcado real de `PENDING_ASSIGNMENT`) — arreglar
-  este método, o aceptar explícitamente el riesgo ya documentado. **Acción
-  puntual que lo confirma/cierra:** modificar `createWindow()` para que
-  relea cada reserva de `toFlag` con lock (`getByIdWithLock()` o
-  equivalente) DENTRO de la transacción que ya abre en la línea 160,
-  inmediatamente antes de `saveWithClient()`, en vez de reusar la entidad
-  leída sin lock más arriba en el método.
+`MAINTENANCE-WINDOW-STALE-SAVE-001` (el hallazgo que vivía en esta sección
+desde el 24/09/2026) se resolvió el 25/09/2026 — ver
+`docs/resuelto.md`. Lo que sigue es el hallazgo ADYACENTE que ese fix
+encontró de paso y **a propósito no resolvió** (alcance distinto, ver el
+propio fix).
+
+- **`MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001`** (25/09/2026,
+  encontrado por el gate `architecture-governor` al aprobar el fix de
+  `MAINTENANCE-WINDOW-STALE-SAVE-001` — carrera ADYACENTE pero DISTINTA a
+  esa, deliberadamente NO resuelta por ese fix). Clase A8.3
+  (check-then-insert sin lock que abarque las dos operaciones,
+  `docs/criterios-negocio.md`).
+  `src/pms-estadias/maintenance-window.service.ts::createWindow()`, tramo
+  CIERTO (ventana con `endDate`: chequeo de `conflicting` en
+  `:129-134`; ventana ABIERTA con tramo cierto real: chequeo de
+  `certainConflicts` en `:143-152` — re-verificar estas líneas, se mueven
+  con cada edición del archivo) hace **SELECT sin lock** (sin
+  `getActiveForResourceInRangeWithLock`) de las reservas PENDING/CONFIRMED
+  que solapan el rango de la ventana y, si viene vacío, recién más abajo
+  hace el `INSERT` de la ventana (`maintenanceWindowRepository.saveWithClient(client, window)`,
+  dentro de `transactionManager.run()`) — **sin volver a chequear nada**
+  entre el SELECT y el INSERT. **Consecuencia concreta:** si otra
+  operación concurrente crea o mueve una reserva PENDING/CONFIRMED hacia
+  ese mismo rango/recurso JUSTO entre el SELECT sin lock y el commit del
+  INSERT de la ventana, esa reserva queda dentro de una ventana de
+  mantenimiento activa **sin haber bloqueado el alta con
+  `MaintenanceWindowConflictError` (409)** y **sin ninguna marca** (el
+  tramo cierto nunca pasa por `markNeedsMaintenanceReview()` — esa
+  variable es exclusiva del tramo incierto) — el conflicto queda invisible
+  para ambos mecanismos de este servicio. **Por qué no lo resuelve el fix
+  de `STALE-SAVE-001`:** ese fix es sobre relockear el TRAMO INCIERTO
+  (`toFlag`, la lectura que SÍ se muta y graba de vuelta con
+  `saveWithClient()`) — el tramo cierto no escribe nada, solo decide si
+  bloquear o no, así que un relock ahí no sería "releer antes de escribir"
+  sino un patrón distinto (SELECT ... FOR UPDATE que sostenga el lock
+  hasta el propio INSERT de la ventana, o repetir el chequeo DENTRO de la
+  transacción inmediatamente antes del INSERT). **No resuelto acá** —
+  señalado, no corregido. **Corrección de una ronda de gate posterior
+  (25/09/2026): la acción puntual original de este ítem estaba mal.**
+  Decía "mover el chequeo del tramo cierto DENTRO de la transacción con
+  `getActiveForResourceInRangeWithLock()`, ANTES del INSERT" — pero un
+  `SELECT ... FOR UPDATE` sobre `reservations` NO puede bloquear una fila
+  que todavía no existe en ese rango, ni una que se está moviendo HACIA
+  el rango desde otro recurso/fecha — exactamente el caso que ya
+  documenta el docblock de `lockByIds()` en
+  `src/reservas/resource.repository.ts` (Bug 2: "si el rango está libre
+  no hay filas de `reservations` que lockear"). Relockear reservas no
+  cierra esta carrera. **Acción puntual real:** tomar el lock del
+  RECURSO (`resourceRepository.lockByIds(client, [resourceId])`) DENTRO
+  de la transacción, ANTES del chequeo del tramo cierto y ANTES del
+  INSERT de la ventana — mismo patrón que ya usan los que crean reservas
+  (`resourceRepository.lockByIds()` seguido de
+  `evaluateMaintenanceWindows()`, ver
+  `src/reservas/reservation-availability.service.ts`, los call-sites
+  reales de ese orden). Con esto, el orden completo pasa a ser: lock del
+  recurso → chequeo del tramo cierto → INSERT de la ventana → relock del
+  tramo incierto (el que este mismo fix ya implementó) — es la MISMA
+  dirección que `STALE-SAVE-001` (recurso antes que fila), no la
+  inversa como decía la versión anterior de este párrafo. Sigue sin
+  implementarse — necesita su propio gate de diseño antes de tocar
+  código. Alternativa: aceptar explícitamente el riesgo, mismo criterio
+  que `STALE-SAVE-001` documentó para el prerrequisito de Fase 2 de 4.3
+  en `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6.

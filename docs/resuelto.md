@@ -20,6 +20,93 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 25/09/2026
+
+- **`MAINTENANCE-WINDOW-STALE-SAVE-001`** (hallazgo N3 del gate
+  `architecture-governor`, 24/09/2026, sobre la novena ronda de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — prerrequisito de
+  Fase 2 de 4.3 en su §6) — ✅ **RESUELTO EN CÓDIGO, gate
+  `architecture-governor`, introducido en este mismo commit — buscar el
+  hash con `git log --oneline --grep "MAINTENANCE-WINDOW-STALE-SAVE-001"`.**
+  `MaintenanceWindowService.createWindow()` leía el tramo
+  incierto (`toFlag`, las reservas más allá de
+  `business_profile.maintenance_horizon_days`) con
+  `getActiveForResourceInRange()` **SIN lock y FUERA** de la transacción,
+  mutaba esas entidades en memoria (`markNeedsMaintenanceReview()`) y las
+  grababa con `saveWithClient()` DENTRO de la transacción. Hallazgo
+  AMPLIADO respecto del reporte original: `saveWithClient()` también
+  corre `syncLines()` (DELETE+INSERT de `reservation_lines`), así que el
+  snapshot viejo no solo pisaba el flag de mantenimiento — pisaba
+  CUALQUIER cambio concurrente comiteado entre esa lectura sin lock y el
+  commit (reasignación de `resource_id`, `assignment_status`,
+  `total_price`, líneas).
+  **Fix:** el tramo incierto se relee DENTRO de la transacción, con
+  `getActiveForResourceInRangeWithLock()` (`SELECT ... FOR UPDATE`),
+  DESPUÉS de `maintenanceWindowRepository.saveWithClient(client, window)`
+  — orden de locks crítico (INSERT de la ventana primero, relock de
+  reservas después), verificado por el gate contra Postgres real con un
+  deadlock ABBA reproducido al invertir el orden. El tipo del
+  `reservationRepository` en el constructor de `MaintenanceWindowService`
+  pasa de `Pick<...>` a `Required<Pick<...>>` incluyendo
+  `getActiveForResourceInRangeWithLock` — cualquier fake de test viejo
+  que no lo implemente rompe la compilación, en vez de "pasar por
+  accidente" sin ejercer el lock.
+  **Por qué relock por RANGO y no por id (registrado a pedido del gate):**
+  `getActiveForResourceInRangeWithLock()` re-filtra por
+  recurso/estado/rango en el momento mismo del lock — una reserva que
+  salió del rango o se canceló entre el cálculo del rango (sin lock) y el
+  relock (con lock) simplemente no vuelve a aparecer en el resultado, sin
+  necesitar ningún guard de coherencia adicional. Relockear por id en vez
+  de por rango habría seguido trayendo esa reserva aunque ya no
+  correspondiera marcarla — es la alternativa que el gate descartó. Por
+  la misma razón, el resultado se devuelve en silencio sin lanzar
+  `ReservationConcurrentlyModifiedError` (decisión del dueño).
+  **Lo que este fix a propósito NO toca:** el tramo cierto (chequeo que
+  lanza `MaintenanceWindowConflictError`, líneas ~129-134/~143-152) sigue
+  leyendo sin lock — es una carrera ADYACENTE pero DISTINTA (check-then-insert,
+  clase A8.3), registrada aparte como
+  `MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001` en
+  `docs/pendientes-2026-09-12.md`, no resuelta por este commit.
+  **Verificado:**
+  - Unitario (`src/pms-estadias/maintenance-window.service.test.ts`,
+    `src/pms-estadias/maintenance-windows.routes.test.ts`) — el fake de
+    `ReservationRepository` implementa `getActiveForResourceInRangeWithLock()`
+    de verdad, registrando el `client` recibido y el orden de llamadas
+    relativo al `saveWithClient()` de la ventana; asserts nuevos confirman
+    (a) el tramo incierto se lee CON LOCK y con el `client` transaccional,
+    (b) esa lectura ocurre DESPUÉS del INSERT de la ventana, (c) el tramo
+    cierto sigue leyendo SIN LOCK, sin cambios de comportamiento ahí.
+  - Integración contra Postgres real
+    (`src/tests/integration/maintenance-window-stale-save.integration.test.ts`,
+    nuevo) — dos conexiones reales: `connA` cancela una reserva del tramo
+    incierto dentro de una transacción sin commitear; `createWindow()`
+    corre en paralelo y se confirma (con `pg_blocking_pids()`, espera
+    activa, no `setTimeout`) que se queda esperando ESE lock puntual;
+    `connA` comitea; se afirma que la reserva sigue `CANCELLED` (no se
+    revirtió a `CONFIRMED`), que `needs_maintenance_review` sigue `false`,
+    y que no aparece en `needsReviewReservationIds`. **Demostrado
+    corriendo el test contra el código previo al fix** (revertido
+    temporalmente, no vía `git stash` — había cambios ajenos sin commitear
+    en el árbol de trabajo que un stash completo hubiera arrastrado; se
+    reemplazó el archivo por su versión pre-fix, se corrió el test, y se
+    restauró): **FALLA** (`expected [ Array(1) ] to not include
+    '<reservationId>'` — la reserva cancelada aparecía en
+    `needsReviewReservationIds`, evidencia directa del defecto). Con el
+    fix aplicado: **PASA**.
+  - `npx tsc --noEmit -p .`, `npm run lint -- --max-warnings 0`,
+    `npm run lint:arch`, `npx vitest run` (suite unitaria completa) y
+    `npm run test:integration` (suite de integración completa contra
+    Postgres real) — ver el reporte de la sesión para los conteos
+    exactos.
+  **Documentación actualizada en el mismo cambio:** el prerrequisito de
+  Fase 2 de 4.3 en `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6
+  se marcó RESUELTO (nota agregada inmediatamente después de la nota de
+  orden de locks que este fix sigue). Origen: `docs/pendientes-2026-09-12.md`
+  (sección "Wave 14 — 4.3, hallazgo preexistente encontrado en la novena
+  ronda de gate").
+
+---
+
 ## 23/09/2026
 
 - **`ISSUE-BEFORE-REVERSE-WINDOW-001-BLOQUE-2C-SCOPE-SPLIT-001`** (condición 3

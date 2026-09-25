@@ -1508,6 +1508,30 @@ crear la ventana, por prolijidad o para batchear los locks), invierte el
 orden y reabre el mismo patrón de deadlock ABBA que el Hallazgo 1/H2
 acaba de cerrar para "completar" y check-in.
 
+**Prerrequisito RESUELTO (25/09/2026, `MAINTENANCE-WINDOW-STALE-SAVE-001`,
+gate `architecture-governor`, introducido en este mismo commit — buscar
+el hash con `git log --oneline --grep "MAINTENANCE-WINDOW-STALE-SAVE-001"`.**
+`createWindow()` ahora relee el tramo incierto DENTRO de la
+transacción, con `getActiveForResourceInRangeWithLock()` (`SELECT ... FOR
+UPDATE`), DESPUÉS de `maintenanceWindowRepository.saveWithClient(client,
+window)` — exactamente el orden que la nota de arriba exige (recurso
+primero, vía el `FOR KEY SHARE` implícito del `INSERT` de la ventana;
+relock de reservas después). El tramo cierto (líneas ~107/125, el chequeo
+que lanza `MaintenanceWindowConflictError`) queda sin tocar a propósito —
+sigue siendo una carrera adyacente pero distinta (check-then-insert, clase
+A8.3), registrada aparte en `docs/pendientes-2026-09-12.md` (o el
+`pendientes-<fecha>` vigente al momento de leer esto), no resuelta por
+este fix. Relock por RANGO, no por id: una reserva que salió del tramo
+incierto o se canceló entre el cálculo del rango y el relock simplemente
+no vuelve a aparecer en el resultado, sin lanzar
+`ReservationConcurrentlyModifiedError` (decisión del dueño). Cobertura:
+unitario (`maintenance-window.service.test.ts`, orden y `client`
+transaccional del relock) + integración contra Postgres real
+(`src/tests/integration/maintenance-window-stale-save.integration.test.ts`,
+reproduce el escenario de esta nota con dos conexiones reales — falla
+contra el código previo a este fix, pasa con él). Fase 2 de 4.3 queda, en
+consecuencia, sin este bloqueo para activarse.
+
 ### Fase 3 — "Auto Assign All" (solo alojamiento)
 
 Endpoint nuevo, `authorize(Roles.MANAGEMENT)` — más restrictivo que la

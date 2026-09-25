@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MaintenanceWindowService } from './maintenance-window.service.js';
 import { InMemoryMaintenanceWindowRepository } from './in-memory.maintenance-window.repository.js';
 import { BookableResource } from '../reservas/resource.entities.js';
@@ -33,14 +33,40 @@ class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
  * `saveWithClient` solo registra la llamada (no hay estado real que
  * mutar acá — el fake de más abajo, FailingOnMarkedReservationRepository,
  * es el que necesita fallar a propósito para el test de atomicidad).
+ *
+ * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) — el tramo cierto
+ * (líneas ~107/125 de `createWindow()`, SIN TOCAR por este fix) sigue
+ * leyendo por `getActiveForResourceInRange()` (SIN lock, fuera de la
+ * transacción) — eso sigue registrado en `calls`. El tramo incierto
+ * (`toFlag`) ahora se lee DENTRO de la transacción con
+ * `getActiveForResourceInRangeWithLock()` — implementado acá de verdad
+ * (ya no opcional en el tipo que exige `MaintenanceWindowService`,
+ * `Required<Pick<...>>`) y registrado por separado en `lockedCalls`
+ * (con el `client` recibido) y en el `callOrder` COMPARTIDO que también
+ * usa el spy de `saveWithClient` de la ventana en `beforeEach()` — así
+ * un test puede afirmar que el INSERT de la ventana ocurrió ANTES del
+ * relock de reservas (condición (b) del gate), no solo que ambos
+ * ocurrieron.
  */
-class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient'> {
+class FakeReservationRepository implements Required<Pick<
+  ReservationRepository,
+  'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'
+>> {
   calls: { start: Date; end: Date }[] = [];
+  lockedCalls: { client: SqlClient; start: Date; end: Date }[] = [];
   saved: Reservation[] = [];
   resolver: (start: Date, end: Date) => Reservation[] = () => [];
+  /** Orden compartido entre esta clase y el spy de `repo.saveWithClient` en `beforeEach()`. */
+  callOrder: string[] = [];
 
   async getActiveForResourceInRange(_resourceId: string, start: Date, end: Date): Promise<Reservation[]> {
     this.calls.push({ start, end });
+    return this.resolver(start, end);
+  }
+
+  async getActiveForResourceInRangeWithLock(client: SqlClient, _resourceId: string, start: Date, end: Date): Promise<Reservation[]> {
+    this.lockedCalls.push({ client, start, end });
+    this.callOrder.push('reservations.getActiveForResourceInRangeWithLock');
     return this.resolver(start, end);
   }
 
@@ -88,6 +114,8 @@ describe('MaintenanceWindowService', () => {
   let businessProfileRepo: FakeBusinessProfileRepository;
   let txManager: InMemoryTransactionManager;
   let service: MaintenanceWindowService;
+  /** Cliente que recibió `repo.saveWithClient()` (INSERT de la ventana) -- capturado por el spy de más abajo. */
+  let windowSaveClient: SqlClient | undefined;
 
   beforeEach(() => {
     repo = new InMemoryMaintenanceWindowRepository();
@@ -96,6 +124,20 @@ describe('MaintenanceWindowService', () => {
     businessProfileRepo = new FakeBusinessProfileRepository();
     txManager = new InMemoryTransactionManager();
     service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, businessProfileRepo, txManager, FROZEN_TODAY);
+
+    // MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) -- spy que preserva el
+    // comportamiento real de InMemoryMaintenanceWindowRepository.saveWithClient()
+    // pero además registra el `client` recibido y empuja al `callOrder`
+    // COMPARTIDO de `reservationRepo` (condición (b) del gate: el INSERT
+    // de la ventana tiene que quedar ANTES del relock de reservas en ese
+    // orden).
+    windowSaveClient = undefined;
+    const originalSaveWithClient = repo.saveWithClient.bind(repo);
+    vi.spyOn(repo, 'saveWithClient').mockImplementation(async (client, window) => {
+      windowSaveClient = client;
+      reservationRepo.callOrder.push('window.saveWithClient');
+      return originalSaveWithClient(client, window);
+    });
   });
 
   describe('createWindow', () => {
@@ -205,6 +247,31 @@ describe('MaintenanceWindowService', () => {
       // conflicto) y la reserva se persistió dentro de la transacción.
       expect(farReservation.needsMaintenanceReview).toBe(true);
       expect(reservationRepo.saved).toContain(farReservation);
+
+      // MAINTENANCE-WINDOW-STALE-SAVE-001, condición (a) del gate -- el
+      // tramo incierto se leyó CON LOCK (getActiveForResourceInRangeWithLock,
+      // no getActiveForResourceInRange) y con el `client` TRANSACCIONAL
+      // (el mismo que recibió el INSERT de la ventana), no con un client
+      // suelto ni con el pool.
+      expect(reservationRepo.lockedCalls).toHaveLength(1);
+      expect(reservationRepo.lockedCalls[0]!.client).toBe(windowSaveClient);
+      expect(windowSaveClient).toBeDefined();
+
+      // Condición (b) del gate -- esa lectura con lock ocurrió DESPUÉS del
+      // INSERT de la ventana (orden de locks: ventana primero, relock de
+      // reservas después -- invertirlo reprodujo un deadlock real contra
+      // Postgres, ver el comentario en maintenance-window.service.ts).
+      expect(reservationRepo.callOrder).toEqual([
+        'window.saveWithClient',
+        'reservations.getActiveForResourceInRangeWithLock',
+      ]);
+
+      // Condición (c) del gate -- el tramo cierto (líneas ~107/125, sin
+      // tocar) sigue leyendo SIN lock: un solo `calls` (el tramo cierto),
+      // cero `lockedCalls` de más -- ya afirmado arriba -- y el rango del
+      // tramo cierto no lockeado sigue siendo el mismo de siempre.
+      expect(reservationRepo.calls).toHaveLength(1);
+      expect(reservationRepo.calls[0]!.start.toISOString().slice(0, 10)).toBe('2026-08-24');
     });
 
     it('startDate ya más allá del horizonte de entrada: todo el rango pedido es tramo incierto, nada bloquea', async () => {

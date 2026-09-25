@@ -50,7 +50,21 @@ export class MaintenanceWindowService {
   constructor(
     private readonly maintenanceWindowRepository: MaintenanceWindowRepository,
     private readonly resourceRepository: Pick<ResourceRepository, 'getById'>,
-    private readonly reservationRepository: Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient'>,
+    /**
+     * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026, gate
+     * `architecture-governor`) — `getActiveForResourceInRangeWithLock` pasa
+     * de opcional a OBLIGATORIO acá (`Required<Pick<...>>`, no
+     * `Pick<...> & { getActiveForResourceInRangeWithLock?: ... }`) a
+     * propósito: en `ReservationRepository` sigue siendo opcional (otros
+     * consumidores, p. ej. `ReservationAvailabilityService`, lo usan con
+     * guard), pero acá el fix DEPENDE de que exista — un fake de test viejo
+     * que no lo implemente tiene que romper la compilación, no "pasar por
+     * accidente" leyendo el tramo incierto sin lock.
+     */
+    private readonly reservationRepository: Required<Pick<
+      ReservationRepository,
+      'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'
+    >>,
     private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
     /**
      * D-03 (15/09/2026) — el INSERT de la ventana y el UPDATE de
@@ -97,7 +111,15 @@ export class MaintenanceWindowService {
     const rangeStart = combineDateAndTime(new Date(input.startDate), '00:00:00', profile.timezone);
     const isOpenEnded = input.endDate == null;
 
-    let toFlag: Reservation[] = [];
+    // MAINTENANCE-WINDOW-STALE-SAVE-001 -- esto NO se toca: sigue siendo
+    // solo aritmética de fechas + el chequeo de conflicto del tramo cierto
+    // (líneas ~107/125, MaintenanceWindowConflictError), que queda AFUERA
+    // de la transacción a propósito -- es una carrera adyacente pero
+    // DISTINTA (check-then-insert, clase A8.3), registrada aparte, no
+    // resuelta acá. Lo único que este fix cambia es CUÁNDO y CON QUÉ LOCK
+    // se lee el tramo incierto (`uncertainRange` de acá abajo) -- ver el
+    // comentario junto a `transactionManager.run()`.
+    let uncertainRange: { start: Date; end: Date } | null = null;
 
     if (!isOpenEnded) {
       // Ventana CON fecha de fin -- sin horizonte, rango completo tal cual
@@ -131,17 +153,13 @@ export class MaintenanceWindowService {
 
         const uncertainStart = new Date(horizonEnd.getTime() + 1000);
         if (uncertainStart.getTime() <= practicalInfinity.getTime()) {
-          toFlag = await this.reservationRepository.getActiveForResourceInRange(
-            input.resourceId, uncertainStart, practicalInfinity,
-          );
+          uncertainRange = { start: uncertainStart, end: practicalInfinity };
         }
       } else {
         // La ventana arranca MÁS ALLÁ del horizonte ya de entrada -- todo
         // el rango pedido es tramo incierto, no hay tramo cierto que
         // bloquee nada.
-        toFlag = await this.reservationRepository.getActiveForResourceInRange(
-          input.resourceId, rangeStart, practicalInfinity,
-        );
+        uncertainRange = { start: rangeStart, end: practicalInfinity };
       }
     }
 
@@ -157,8 +175,51 @@ export class MaintenanceWindowService {
     // atomic-state-mutation: el INSERT de la ventana y el UPDATE de
     // needs_maintenance_review de cada reserva del tramo incierto son una
     // sola operación lógica -- si cualquiera falla, ninguna queda creada.
+    //
+    // MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026, gate
+    // `architecture-governor`) -- hasta este fix, el tramo incierto se leía
+    // SIN LOCK y AFUERA de esta transacción (arriba, con
+    // `getActiveForResourceInRange`), y esas entidades en memoria se
+    // mutaban (`markNeedsMaintenanceReview()`) y grababan acá con
+    // `saveWithClient()`. El hallazgo ampliado del gate: `saveWithClient()`
+    // también corre `syncLines()` (DELETE+INSERT de `reservation_lines`),
+    // así que ese snapshot viejo no solo pisaba el flag de mantenimiento --
+    // pisaba CUALQUIER cambio concurrente (reasignación de recurso,
+    // cambio de `assignment_status`/`total_price`/líneas, cancelación)
+    // comiteado entre la lectura sin lock de arriba y el commit de acá.
+    //
+    // Fix: el tramo incierto se re-lee ACÁ, DENTRO de la transacción, con
+    // `getActiveForResourceInRangeWithLock()` (SELECT ... FOR UPDATE) --
+    // pero recién DESPUÉS de `saveWithClient(client, window)`. Orden de
+    // locks CRÍTICO, no cosmético: INSERT de la ventana primero, relock de
+    // reservas después -- invertir el orden (relockear reservas antes de
+    // insertar la ventana) reprodujo un deadlock real contra Postgres,
+    // verificado por el gate (ABBA -- dos transacciones que toman los
+    // mismos dos recursos en orden opuesto). El resto del servicio ya
+    // sigue esta misma convención (ventana antes que reservas) -- este fix
+    // no la introduce, la hace explícita también acá.
+    //
+    // Relock por RANGO (no por id de las `toFlag` calculadas arriba):
+    // `getActiveForResourceInRangeWithLock()` re-filtra por
+    // recurso/estado/rango en el momento mismo del lock, así que el set
+    // que devuelve ya viene naturalmente correcto -- una reserva que salió
+    // del rango o se canceló entre el cálculo de `uncertainRange` (arriba,
+    // sin lock) y este punto simplemente no vuelve a aparecer. Relockear
+    // por id en cambio seguiría trayendo esa reserva aunque ya no
+    // corresponda marcarla. Por eso no hace falta ningún guard de
+    // coherencia adicional acá ni lanzar
+    // `ReservationConcurrentlyModifiedError` -- el set fresco se usa y se
+    // devuelve en silencio (decisión del dueño, ver docs/resuelto.md).
+    let toFlag: Reservation[] = [];
     await this.transactionManager.run(async (client: SqlClient) => {
       await this.maintenanceWindowRepository.saveWithClient(client, window);
+
+      if (uncertainRange) {
+        toFlag = await this.reservationRepository.getActiveForResourceInRangeWithLock(
+          client, input.resourceId, uncertainRange.start, uncertainRange.end,
+        );
+      }
+
       for (const reservation of toFlag) {
         reservation.markNeedsMaintenanceReview();
         await this.reservationRepository.saveWithClient(client, reservation);
