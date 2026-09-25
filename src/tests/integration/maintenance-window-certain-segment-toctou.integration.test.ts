@@ -53,8 +53,9 @@
  * estado previo a este fix (`283bc4c`, chequeo del tramo cierto SIN lock y
  * AFUERA de la transacción): `createWindow()` SÍ queda bloqueada por
  * `connA` en este escenario — pero no por el mecanismo que este fix agrega.
- * `maintenance_windows.resource_id` tiene FK contra `resources`
- * (`schema.sql:3713`), así que el INSERT de la ventana toma un `FOR KEY
+ * `maintenance_windows.resource_id` tiene FK contra `resources` (columna
+ * inline en el `CREATE TABLE maintenance_windows` de `schema.sql`, sin
+ * `CONSTRAINT` nombrada), así que el INSERT de la ventana toma un `FOR KEY
  * SHARE` implícito sobre la fila del recurso, y ese sí espera el `FOR
  * UPDATE` que `connA` sostiene (mismo mecanismo ya documentado para
  * MAINTENANCE-WINDOW-STALE-SAVE-001, ver
