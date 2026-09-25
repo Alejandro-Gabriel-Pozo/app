@@ -329,10 +329,17 @@ const NO_CONSUMER_ROUTES: Record<string, string> = {
 
   // Fase 0 de "reserva por tipo de unidad con asignación diferida" (25/09/2026,
   // Wave 14 item 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) --
-  // endpoint de instrumentación construido para que el frontend, en Fase 2
-  // (todavía no implementada), pueda mostrar "quedan N libres" antes del
-  // alta por categoría. Backend-only por diseño en esta fase -- no abandonado.
-  '/api/reservations/availability-by-category': 'Construido 25/09/2026 (Fase 0 de reserva por tipo de unidad, Wave 14 item 4.3), UI pendiente -- Fase 2 (consumo real desde el frontend) todavía no implementada.',
+  // endpoint de instrumentación construido para que el frontend pueda mostrar
+  // "quedan N libres" antes del alta por categoría. Corregido (25/09/2026):
+  // Fase 2 (mecanismo real de asignación diferida, `assignDeferred()`) SÍ
+  // está implementada (commit 41b1ff9) y su propio wiring de frontend
+  // ya tiene consumidor real -- `RoomCalendar.tsx` (appfrontend) distingue
+  // los 3 casos de un PUT sobre una reserva `PENDING_ASSIGNMENT` y manda
+  // `resourceId` al confirmar el drag (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+  // §7, ítem 14). Ese wiring nunca incluyó a ESTE endpoint de solo lectura
+  // (no figura en la lista de §7) -- sigue sin UI que lo consuma. Backend-only
+  // por diseño -- no abandonado.
+  '/api/reservations/availability-by-category': 'Construido 25/09/2026 (Fase 0 de reserva por tipo de unidad, Wave 14 item 4.3). Fase 2 (asignación diferida, commit 41b1ff9) ya está implementada y consumida por RoomCalendar.tsx -- pero ese wiring nunca incluyó este endpoint de solo lectura; sigue sin UI propia que lo consuma.',
 
   // Hallazgo nuevo de esta cerca (16/09/2026, D-23(1)), no estaba en la lista
   // de 35 de F14-01 -- ese grep no distinguía /platform/businesses/:id (GET

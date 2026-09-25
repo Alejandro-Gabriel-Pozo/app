@@ -1732,7 +1732,9 @@ habitación provisoria (ej. "105") a la primera libre por alfabeto (ej.
 **Corregido (C-3, ronda de correcciones sobre el gate 19) — se retira la
 afirmación de que esto contradice "la lectura más natural" del
 documento: esta pregunta no tiene una inclinación correcta que el texto
-deba imponerle al dueño.** §4 Opción C (línea 254) ya declara
+deba imponerle al dueño.** §4 Opción C (citado por texto, no por línea —
+mismo criterio que SCHEMA-ANCHOR-DRIFT-001, la línea 254 citada en rondas
+anteriores cae dentro de Opción A, no de Opción C) ya declara
 explícitamente que la asignación provisoria "es reoptimizable, no
 definitiva" — así que "reoptimizar" es una lectura tan legítima de este
 mismo diseño como "confirmar la provisoria sin tocarla". Hay TRES
@@ -4091,8 +4093,9 @@ manera de plantearla tenía 3 problemas, encontrados por el gate 19 y
 corregidos en la Ronda 18 (C-3):** (1) "dos respuestas igualmente
 razonables" ya era, en rigor, una inclinación implícita — la versión de
 §6 llegó a decir explícitamente "la lectura más natural", que CONTRADICE
-§4 Opción C (línea 254: la asignación provisoria "es reoptimizable, no
-definitiva"); (2) "reoptimizar... pudiendo mover reservas ya confirmadas"
+§4 Opción C (citado por texto, no por línea — ver la corrección de esta
+misma cita más arriba, en la nota "C-3": la asignación provisoria "es
+reoptimizable, no definitiva"); (2) "reoptimizar... pudiendo mover reservas ya confirmadas"
 no distinguía `PENDING_ASSIGNMENT` de `ASSIGNED` — mover una `ASSIGNED`
 chocaría contra A6.4; (3) faltaba el comportamiento actual (greedy
 alfabético) como tercera opción real. Ver §6 (Fase 3) para el texto ya
@@ -4205,8 +4208,8 @@ Detalle de cada uno:
   (`reservation.service.ts:617-620`).
 - **C-3 (refina F3-4, sin resolverla).** Tres correcciones a cómo está
   planteada la pregunta, ninguna a la respuesta (sigue sin responderse):
-  se retira "la lectura más natural" (contradecía §4 Opción C, línea
-  254); la opción "reoptimizar" se acota a reservas `PENDING_ASSIGNMENT`
+  se retira "la lectura más natural" (contradecía §4 Opción C, "es
+  reoptimizable, no definitiva"); la opción "reoptimizar" se acota a reservas `PENDING_ASSIGNMENT`
   (nunca `ASSIGNED` — A6.4); se agrega el comportamiento greedy
   alfabético actual como tercera opción real, (c). Ver §6 Fase 3 y §9.
 - **C-4 (numeración de gates) — corregida OTRA VEZ por el gate 20, esta

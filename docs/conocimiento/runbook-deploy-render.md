@@ -573,10 +573,77 @@ autorice el push: `respaldo-pre-v60-a-v64-<fecha del push>` (no
 la versión real de producción).
 
 **La verificación post-deploy de ESTA sección cubre solo v64 (BLOQUE
-29).** No valida `3216849`/`2c9b423`/`061e1ed` (v61/v62/v63, facturación y
-Wave 15) ni los 2 cambios de `platform.schema.sql` — este runbook no
-tiene todavía una sección separada para esos commits; falta agregarla (o
-verificarlos a mano) antes de dar el deploy completo por confirmado.
+29).** No valida los 2 cambios de `platform.schema.sql` (`061e1ed`,
+`5e6d4a8`) — este runbook todavía no tiene una sección separada para
+esos; falta agregarla (o verificarlos a mano) antes de dar el deploy
+completo por confirmado. **v61/v62/v63 SÍ están desglosados ahora** (ver
+subsección inmediatamente debajo) — residuo cerrado el 25/09/2026.
+
+#### v61/v62/v63 — qué introdujo cada salto intermedio (desglose agregado 25/09/2026)
+
+Hasta acá el salto 60→64 estaba documentado en bloque, sin desglosar qué
+cambió en cada paso intermedio. Detalle por versión, mismo formato que
+usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
+
+- **v60 → v61 (`3216849`, "Bloque 2a — invoices.pending_since"), BLOQUE 26
+  de `schema.sql`.** `ISSUE-BEFORE-REVERSE-WINDOW-001`
+  (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6/§6).
+  Agrega `invoices.pending_since TIMESTAMPTZ` (nullable) + backfill directo
+  (`pending_since = created_at WHERE status = 'PENDING'`) — marca desde
+  cuándo una factura está "en vuelo" (el único indicador previo era
+  `status = 'PENDING'`, sin fecha). Deliberadamente **sin** el CHECK
+  estructural ni el backfill inverso todavía — ver v62, es el mismo split
+  2a/2b que ya evitó tumbar el build por escritores viejos sin la columna
+  durante la ventana de deploy — un CHECK en el mismo deploy que agrega la
+  columna rompe el código saliente que corre en paralelo mientras Render
+  rota instancias (R15, "el build que falla tumba el deploy entero" —
+  fail-loud, no la causa de este split; el split evita LLEGAR a ese
+  fail-loud por un motivo distinto: escritores viejos sin la columna).
+- **v61 → v62 (`2c9b423`, "Bloque 2b — CHECK
+  chk_invoices_pending_since"), BLOQUE 27 de `schema.sql`.** Mismo ADR,
+  §3.6/§6. Cierra la ventana que v61 dejó abierta a propósito: agrega el
+  backfill INVERSO (`pending_since = NULL WHERE status <> 'PENDING'`, limpia
+  el residuo que puede haber dejado una instancia vieja sirviendo tráfico
+  durante la ventana de v61) y el CHECK `chk_invoices_pending_since`
+  (`(status = 'PENDING') = (pending_since IS NOT NULL)`), con el guard
+  `DO $$ ... IF NOT EXISTS (pg_constraint) ...` habitual de este archivo
+  (sin `DROP` previo, para no revalidar la constraint contra toda la tabla
+  en cada deploy).
+- **v62 → v63 (`061e1ed`, "TTL de sesión configurable por negocio +
+  revocación real vía `token_version`, Wave 15 items 1+2"), BLOQUE 28 de
+  `schema.sql`.** `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
+  §2, D-04 opción A. Agrega `customers.token_version INTEGER NOT NULL
+  DEFAULT 0` — mismo mecanismo y mismo DEFAULT que
+  `identities.token_version` de `platform.schema.sql` (BLOQUE SESSION_TTL /
+  TOKEN_VERSION): rollout seguro porque la BD nace en 0 y un JWT viejo sin
+  el claim se coerciona a 0 en `auth.middleware.ts::authenticate()` —
+  matchean, ningún cliente logueado se cae al desplegar. A diferencia del
+  staff, el portal de clientes no pasa por
+  `resolveMembershipContext()`/`getMembershipContext()` — la comparación
+  la hace un middleware dedicado en `api/routes/customer.routes.ts`. Este
+  mismo commit también agrega, en `platform.schema.sql`, `identities.token_version`
+  (mismo mecanismo de arriba pero para staff, no solo el precedente que
+  cita el párrafo anterior) y `businesses.session_ttl_seconds` (item 1) —
+  las dos siguen sin verificación post-deploy propia en este runbook (ver
+  el párrafo de arriba, mismo hueco que `5e6d4a8`).
+
+Verificación puntual de los tres, si hace falta confirmarlos por
+separado en vez de solo el salto final a v64:
+
+```sql
+SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+ WHERE table_name = 'invoices' AND column_name = 'pending_since';
+-- esperado (post v61): is_nullable = 'YES' (nullable, no NOT NULL)
+
+SELECT conname FROM pg_constraint WHERE conname = 'chk_invoices_pending_since';
+-- esperado (post v62): una fila
+
+SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+ WHERE table_name = 'customers' AND column_name = 'token_version';
+-- esperado (post v63): is_nullable = 'NO', column_default = '0'
+```
 
 **Verificación post-deploy**, mismo patrón que "Verificación contra la
 base, no contra el log":
