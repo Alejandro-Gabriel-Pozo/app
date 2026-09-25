@@ -197,33 +197,6 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
-## 23/09/2026
-
-- **`ISSUE-BEFORE-REVERSE-WINDOW-001-BLOQUE-2C-SCOPE-SPLIT-001`** (condición 3
-  del gate `architecture-governor`, pre-commit sobre §3.5+§3.8 del ADR
-  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`). Origen:
-  `docs/pendientes-2026-09-12.md` (entrada agregada al commitear
-  `2db33f5`, cortada de ahí en este mismo movimiento). El criterio de
-  cierre que la propia entrada declaraba — "implementar (1) y (2) en el
-  mismo commit, con su propio pase por el gate" — se cumplió en el
-  commit `93ab083`: §3.5 (`sql.invoice.repository.ts::markFailedWithClient()`
-  resetea `uncertain_cleared_at` a `NULL`) y §3.8
-  (`accounts-receivable.service.ts::reverseTransfer()`, guard 8-bis,
-  respeta `uncertainClearedAt`) landearon juntos, verificados contra
-  Postgres real: `invoice-mark-failed-transactional.integration.test.ts`
-  prueba el escenario textual del ADR (crear→fallar→limpiar→re-fallar→
-  confirmar reset a `NULL`); `reverse-transfer.integration.test.ts`
-  prueba el end-to-end combinado (limpiada no bloquea; limpiada→
-  re-fallada→`reverseTransfer()` vuelve a bloquear, 0 filas `ADJUSTMENT`,
-  AR se mantiene `PENDIENTE_FACTURAR`). Con esto, "Bloque 2c" del ADR
-  queda completo (§3.2/§3.16 en `2db33f5` + §3.5/§3.8 en `93ab083`).
-  Push/deploy sin verificar — dato volátil, no registrado acá a propósito
-  (ver nota del encabezado de este documento): confirmar con
-  `git log origin/main --oneline | grep 93ab083` en el momento de la
-  lectura.
-
----
-
 ## 22/09/2026
 
 - **`WAVE13-ZONA2-DEADLOCK-REPRO-RESIDUE-001` (Wave 13, Zona 2, gate

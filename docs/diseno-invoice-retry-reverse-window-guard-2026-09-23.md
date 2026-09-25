@@ -3786,3 +3786,47 @@ revisar. 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implem
   `AR_REVERTED_INVOICE_LIVE`). Con esto, Bloque 6 no tiene decisiones de negocio pendientes — el
   diseño completo (candidatos 1 y 2, RBAC, ausencia de acción nueva, tests propuestos) queda listo
   para su propio gate `architecture-governor` de pre-implementación.
+
+- **25/09/2026, ronda 20 — Bloque 2c y Bloque 5 revertidos hacia adelante (variante R'), decisión
+  del dueño vía `AskUserQuestion`, gate `architecture-governor` completo con verificación contra
+  Postgres real. Pausa por dependencia, no descarte de diseño.** El código de Bloque 2c
+  (§3.2/§3.16 en `2db33f5`; §3.5/§3.8, residuo, en `93ab083`) y Bloque 5 (§3.11 en `a7d06be`)
+  quedó commiteado en `main` local en una sesión anterior -- no era ancestro de `origin/main` al
+  25/09/2026 -- y bloqueaba -- por estar en medio
+  de la historia lineal -- otros 16 commits detrás suyo que no formaban parte de este revert (Wave
+  15, Bloque 6 de este mismo ADR, toda la Wave 14 ítem 4.3, 2 fixes de ventanas de mantenimiento) --
+  `git rev-list --count 2db33f5..0c10512` da 18 al 25/09/2026, de los cuales 2 son los propios
+  `93ab083`/`a7d06be` que este movimiento revirtió, quedan 16 genuinamente destrabados -- porque los
+  tres dependen de un
+  "Bloque 4" (§3.7/§4, worker de expiración de facturas `PENDING`) que nunca se implementó en
+  `main` -- vive en una rama separada sin mergear, `bloque-4-invoice-pending-expiry` (commit
+  `b5ed4cd`, base `f9af82f`).
+
+  **Revertido, 4 commits, gateados (el estado de push se confirma con
+  `git log origin/main --oneline | grep <hash>` en el momento de la lectura -- no acá):**
+  `8940467` (revert completo de `a7d06be`, Bloque 5), `d43de3f` (revert parcial de `93ab083` --
+  solo §3.8, guard 8-bis de `reverseTransfer()`), `3818910` (revert completo de `2db33f5`, §3.2/
+  §3.16), `4c6bf77` (correcciones de comentarios/citas huérfanas resultantes de los 3 anteriores).
+
+  **Variante R' -- se conservó §3.5 de `93ab083`** (`sql.invoice.repository.ts::markFailedWithClient()`
+  resetea `uncertain_cleared_at` a `NULL`), en vez de revertir `93ab083` entero (variante R):
+  revertir §3.5 junto con §3.8 dejaba, probado contra Postgres real, una factura `CHARGE` limpiada
+  (`markUncertainClearedWithClient()`) y después reintentada sin ninguna salida visible, una vez
+  que el Bloque 3 de este mismo ADR (§3.9/§3.14, commit `548c432` -- estado de push verificable con
+  `git branch -r --contains 548c432`) esté sirviendo tráfico.
+
+  **Este ADR no queda descartado por este revert** -- sigue siendo el diseño de referencia para
+  cuándo Bloque 2c/5 se reapliquen: implementar y mergear el Bloque 4 (rama
+  `bloque-4-invoice-pending-expiry`) en `main`, y recién ahí reaplicar (o rehacer, si el diff viejo
+  ya no aplica limpio) los 3 commits revertidos, cada uno pasando de nuevo por su propio gate.
+
+  **Corrección de estado, este mismo movimiento:** ninguna ronda anterior de este documento afirma
+  que Bloque 3 (`548c432`) esté "en producción" -- las citas de "Bloque 3" del historial (rondas
+  14, 17, 18) hablan de código COMMITEADO y gate-aprobado, no de tráfico real sirviéndose. Se deja
+  constancia acá porque en la sesión que decidió este revert se llegó a afirmar en algún punto que
+  Bloque 3 "ya está en producción" -- verificado falso el 25/09/2026 con
+  `git branch -r --contains 548c432` (vacío en ese momento); el estado de push actual se confirma
+  de nuevo con ese mismo comando, no con esta nota.
+
+  Detalle completo (decisión, verificación contra Postgres real, registro anclado) en
+  `docs/pendientes-2026-09-12.md`, `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`.

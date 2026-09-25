@@ -1709,6 +1709,82 @@ anteriores.
   `lock-order.test.ts`/`accounts-receivable-lock-order.test.ts` para que lo confirme en código)
   que ninguno toma un lock sobre `accounts_receivable`/`orders`/`reservations` DESPUÉS de su
   `FOR UPDATE` sobre `invoices`.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`** (25/09/2026, decisión del dueño vía
+  `AskUserQuestion`, tras diseño y gate completos del `architecture-governor` con verificación
+  contra Postgres real -- variante **R'**. ADR de referencia:
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`.) **Reabre y reemplaza**
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-BLOQUE-2C-SCOPE-SPLIT-001`, que este mismo movimiento corta de
+  `docs/resuelto.md` (había sido cerrado ahí el 23/09/2026 en `694fb01`, sobre el commit
+  `93ab083`) -- el código que ese cierre certificaba como "Bloque 2c completo" quedó revertido, así
+  que la entrada de `resuelto.md` dejó de ser cierta y no puede seguir viviendo ahí sin decirlo.
+  **Qué se revirtió, con hash real de cada pieza (4 commits, gateados -- el estado de push
+  se confirma con `git log origin/main --oneline | grep <hash>` en el momento de la lectura, no
+  acá):**
+  - `8940467` -- revert COMPLETO de `a7d06be` (Bloque 5, §3.11: alcance NC en la toma exclusiva de
+    `retryExisting()`).
+  - `d43de3f` -- revert PARCIAL de `93ab083`: solo §3.8 (guard 8-bis de
+    `accounts-receivable.service.ts::reverseTransfer()`, que dejó de leer `uncertainClearedAt` y
+    volvió a su forma previa -- bloquea cualquier fila `FAILED_UNCERTAIN` con `afipContacted`,
+    limpiada o no, falla cerrado).
+  - `3818910` -- revert COMPLETO de `2db33f5` (Bloque 2c, §3.2/§3.16: toma exclusiva de
+    `retryExisting()` vía `takeRetryClaimWithClient()`, `RetryInvoiceInFlightError`, cerca
+    `AR-INVOICE-LOCK-ORDER-001`).
+  - `4c6bf77` -- correcciones de comentarios sobre los 3 reverts anteriores (un párrafo que había
+    quedado engañoso sobre el estado de §3.5 + 3 citas huérfanas a
+    `invoice-retry-exclusive-claim.integration.test.ts`, borrado por `3818910`).
+  **Lo que se CONSERVÓ a propósito, no revertido:** §3.5 de `93ab083`
+  (`sql.invoice.repository.ts::markFailedWithClient()` resetea `uncertain_cleared_at` a `NULL`).
+  Sigue vigente en el código hoy.
+  **Por qué (destrabe, no regresión de diseño):** los tres bloques revertidos dependen de un
+  "Bloque 4" (worker de expiración de facturas `PENDING`, §3.7/§4 del ADR) que nunca se implementó
+  en `main` -- vive en una rama separada sin mergear, `bloque-4-invoice-pending-expiry` (commit
+  `b5ed4cd`, base `f9af82f`). Por estar en medio de la historia lineal, bloqueaban otros 16 commits
+  detrás suyo que no formaban parte de este revert (Wave 15, Bloque 6, toda la Wave 14 ítem 4.3, 2
+  fixes de ventanas de mantenimiento) -- `git rev-list --count 2db33f5..0c10512` da 18 al
+  25/09/2026; de esos 18, 2 son los propios `93ab083`/`a7d06be` que este mismo movimiento revirtió,
+  quedan 16 genuinamente destrabados. (El "19" del mensaje de `8940467` contaba también los 3
+  commits revertidos dentro de ese total -- no se corrige ese mensaje, ya commiteado; esta es la
+  cifra correcta.)
+  **Por qué R' y no R (revertir `93ab083` entero):** revertir §3.5 junto con §3.8 dejaba, probado
+  contra Postgres real, un hueco real: una factura `CHARGE` limpiada por un operador
+  (`markUncertainClearedWithClient()`) y después reintentada quedaba sin ninguna salida visible una
+  vez que el Bloque 3 de este ADR (§3.9/§3.14, guards de resolución manual + reconciliación AFIP,
+  commit `548c432` -- estado de push verificable con `git branch -r --contains 548c432`; ver
+  también la ronda 20 del ADR `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`) esté
+  sirviendo tráfico. Conservar §3.5 sostiene hoy el comportamiento real
+  de `retryExisting()` y de `GET /api/invoices/uncertain` sin ese hueco -- detalle completo en el
+  comentario "Revert R'" de `markFailedWithClient()` (`sql.invoice.repository.ts`, corregido por
+  `4c6bf77`).
+  **Qué hace falta para reaplicar 2c/5 en el futuro:** implementar y mergear el Bloque 4 (rama
+  `bloque-4-invoice-pending-expiry`) en `main`, y recién ahí reaplicar (o rehacer, si el merge de
+  Bloque 4 diverge demasiado del diff original) los 3 commits revertidos: `a7d06be`, `2db33f5`, y
+  la mitad §3.8 de `93ab083` -- cada uno pasando de nuevo por su propio gate de pre-commit, no
+  asumir que el diff viejo sigue aplicando limpio.
+  **El ADR no está descartado** -- `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`
+  sigue siendo el diseño de referencia para cuándo se reaplique; ver la nota agregada ahí en este
+  mismo movimiento.
+  **Evidencia de que nada en producción dependía de lo revertido (verificado el 25/09/2026, antes
+  del push):** los 3 símbolos que 2c/5/§3.8 introducían (`RetryInvoiceInFlightError`,
+  `takeRetryClaimWithClient`, `RETRY_INVOICE_IN_FLIGHT`) dan 0 resultados en `origin/main` al
+  25/09/2026, y `2db33f5`/`93ab083`/`a7d06be` no eran ancestros de `origin/main` ese día
+  (`git merge-base --is-ancestor <hash> origin/main` falso para los 3) -- producción nunca corrió
+  ese código. Al pushearse, esos 3 commits llegan al remoto solo como historia intermedia junto con
+  sus reverts; el tip desplegado no los contiene (inferido del deploy por tip, no verificado contra
+  un deploy real).
+  `accounts-receivable.service.ts` es byte a byte idéntico entre `origin/main` y `HEAD`. Tampoco hay
+  consumidores en `appfrontend/src`. Por eso este ítem no necesita, ni puede tener, una verificación
+  post-deploy sobre "algo que dejó de funcionar" -- nada dependía de código que nunca estuvo en
+  producción.
+  **Consecuencia real que el revert vuelve a abrir (no introduce, reabre el comportamiento que ya
+  tenía `origin/main`):** una AR cuyo `CHARGE` tiene una factura `FAILED_UNCERTAIN` con
+  `afipContacted`, que un operador marcó como no emitida
+  (`POST /api/invoices/:id/mark-not-issued` → `markInvoiceNotIssued()` →
+  `markUncertainClearedWithClient()`; el resolve de `credit_note_request` no aplica acá: su
+  `invoice_id` es la factura-intento de la NC, no la del CHARGE), sigue sin poder revertirse --
+  `reverseTransfer()` la rechaza con `ArReversalRequiresCreditNoteError`. Verificado leyendo
+  `sql.invoice.repository.ts` (el UPDATE de `markUncertainClearedWithClient()` solo toca
+  `uncertain_cleared_at`/`_by`, nunca `status`/`afip_contacted`) -- no probado en ejecución. La
+  única salida es reintentar la emisión (o que se reaplique §3.8 en el futuro).
 - **`ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001` (23/09/2026, condición 2
   del gate `architecture-governor`, pre-commit sobre §3.5+§3.8 del ADR
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` — commit `93ab083`.)** Hallazgo
@@ -1726,6 +1802,14 @@ anteriores.
   `resolveInvoiceLinkage()`/`InvoiceLinkage` directamente (unificando el chequeo para los 4
   caminos) o si cada uno de los 3 necesita su propia ampliación puntual como hizo §3.8 — pasar
   por su propio gate de diseño antes de tocar código.
+  **Nota (25/09/2026, revert R'):** `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001` (arriba)
+  revirtió el propio §3.8 (`d43de3f`) -- `guard 8-bis` de `reverseTransfer()` ya NO lee
+  `uncertainClearedAt` tampoco, así que la premisa de este ítem ("la limpieza manual solo
+  'funciona' hoy contra `reverseTransfer()`") quedó desactualizada: hoy NINGUNO de los 4 caminos
+  (ni `reverseTransfer()` ni los 3 de acá) respeta `uncertainClearedAt` -- los 4 fallan cerrado por
+  igual. El hallazgo de fondo (4 lectores potenciales, un solo método ampliado) sigue siendo válido
+  como diseño para cuándo se reaplique §3.8 -- no se borra, pero no re-derivar la decisión de
+  diseño de este ítem hasta que 2c/§3.8 vuelva a estar en el código.
 - **Verificaciones pendientes -- dos gates de producción distintos del
   ADR reintento-vs-reversa (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`),
   necesarios los dos, no alternativos (corregido en ronda 5 del gate,
