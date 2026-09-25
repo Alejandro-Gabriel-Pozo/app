@@ -79,7 +79,12 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // POST /link-requests/:id/reject (estas dos últimas con guard de
 // pertenencia adicional, assertEligibleApprover(), que no es un
 // authorize() y por eso no suma al conteo).
-const EXPECTED_AUTHORIZE_CALL_SITES = 221;
+// Fase 0 de "reserva por tipo de unidad con asignación diferida" (25/09/2026,
+// Wave 14 item 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) --
+// 222, no 221: reservations.routes.ts suma
+// GET /availability-by-category, authorize(Roles.FRONT_DESK) -- cupo
+// restante de una categoría en un rango, de solo lectura.
+const EXPECTED_AUTHORIZE_CALL_SITES = 222;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

@@ -21,6 +21,7 @@ export interface SeededCategory {
   fields: unknown[];
   active: boolean;
   isExclusive: boolean;
+  isLodging: boolean;
 }
 
 export interface SeededResource {
@@ -61,7 +62,7 @@ export interface SeededReservation {
 
 export async function seedCategory(
   db: SqlClient,
-  overrides: Partial<{ id: string; name: string; description: string; fields: unknown[]; isExclusive: boolean }> = {},
+  overrides: Partial<{ id: string; name: string; description: string; fields: unknown[]; isExclusive: boolean; isLodging: boolean }> = {},
 ): Promise<SeededCategory> {
   const id = overrides.id ?? randomUUID();
   const name = overrides.name ?? 'Habitación';
@@ -72,13 +73,22 @@ export async function seedCategory(
   // capacity=1 por default (seedResource): 1 ocupado + 1 pedido ya supera
   // capacity=1, mismo resultado práctico que "exclusivo".
   const isExclusive = overrides.isExclusive ?? false;
+  // Default FALSE (mismo default que la columna is_lodging de
+  // resource_categories, schema.sql) -- los
+  // tests que no lo pasan siguen creando categorías no-alojamiento, como
+  // hasta ahora. Override explícito a TRUE para los tests que ejercitan
+  // GET /reservations/availability-by-category (Fase 0, C1 del gate
+  // architecture-governor sobre docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+  // §5 punto 1 -- ese endpoint es 422 CATEGORY_NOT_LODGING si isLodging
+  // es false, así que sus tests necesitan poder pasarlo en true).
+  const isLodging = overrides.isLodging ?? false;
 
   await db.query(
-    `INSERT INTO resource_categories (id, name, description, fields, is_exclusive)
-     VALUES ($1, $2, $3, $4::jsonb, $5)`,
-    [id, name, description, JSON.stringify(fields), isExclusive],
+    `INSERT INTO resource_categories (id, name, description, fields, is_exclusive, is_lodging)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+    [id, name, description, JSON.stringify(fields), isExclusive, isLodging],
   );
-  return { id, name, description, fields, active: true, isExclusive };
+  return { id, name, description, fields, active: true, isExclusive, isLodging };
 }
 
 export async function seedResource(

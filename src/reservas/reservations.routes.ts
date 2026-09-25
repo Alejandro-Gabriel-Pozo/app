@@ -6,6 +6,12 @@
  * GET  /reservations                  — FRONT_DESK (OWNER, ADMIN, RECEPTIONIST)
  * POST /reservations/search           — FRONT_DESK (A7.2, 23/08/2026: `search`
  *      es PII, va en el body — reemplaza el `?search=` que tenía GET arriba)
+ * GET  /reservations/availability-by-category — FRONT_DESK (Fase 0,
+ *      docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6 — instrumentación
+ *      de solo lectura, cupo restante por categoría; montada ANTES de
+ *      GET /:id, ver comentario en la ruta. SOLO categorías
+ *      is_lodging = TRUE — 422 CATEGORY_NOT_LODGING si no lo es, §5/§6 del
+ *      diseño)
  * GET  /reservations/:id              — FRONT_DESK
  * POST /reservations                  — BOOKING (empleados + CUSTOMER desde portal)
  * PUT  /reservations/:id              — FRONT_DESK
@@ -83,6 +89,7 @@ import { requireModule }                 from '../security/module.middleware.js'
 import { ModuleKey }                     from '../types/enums.js';
 import type { AppContainer }             from '../container.js';
 import { ReservationService }            from './reservation.service.js';
+import { ReservationAvailabilityService } from './reservation-availability.service.js';
 import type { ReservationCustomer }      from './reservation-customer.entities.js';
 import { SqlReservationRepository }      from './sql.reservation.repository.js';
 import { SqlResourceRepository }         from './sql.resource.repository.js';
@@ -106,7 +113,7 @@ import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repos
 import { CancellationRefundService }     from './cancellation-refund.service.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema } from '../api/schemas/request.schemas.js';
+import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema, AvailabilityByCategoryQuerySchema } from '../api/schemas/request.schemas.js';
 import { resolveReservationsLimit } from './reservation.repository.js';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
@@ -163,6 +170,29 @@ function buildReservationService(req: Request): ReservationService {
     numberSequenceRepo,
     cancellationPolicyRepo,
     auditLogRepo,
+  );
+}
+
+/**
+ * Fase 0 (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) —
+ * `GET /reservations/availability-by-category` es de solo lectura: no
+ * necesita `TransactionManager` ni los repos de facturación/auditoría que
+ * carga `buildReservationService()` para el alta/edición completa. Servicio
+ * propio, más chico, en vez de reusar `ReservationService` entero solo para
+ * llegar a `ReservationAvailabilityService` (que hoy no es público ahí).
+ */
+function buildReservationAvailabilityService(req: Request): ReservationAvailabilityService {
+  const db = req.db;
+  const resourceRepo = new SqlResourceRepository(db);
+  return new ReservationAvailabilityService(
+    resourceRepo,
+    new SqlResourceLockRepository(db),
+    new SqlReservationRepository(db, resourceRepo),
+    new SqlMaintenanceWindowRepository(db),
+    new SqlOccupancyRepository(db),
+    new SqlBookableServiceRepository(db),
+    new SqlBusinessProfileRepository(db),
+    new SqlCategoryRepository(db),
   );
 }
 
@@ -333,6 +363,70 @@ export function createReservationsRouter(container: AppContainer): Router {
           ...(body.offset     !== undefined && { offset: body.offset }),
         };
         await respondWithReservationsList(repo, filters, res);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /reservations/availability-by-category ──────────────────────────
+  // Fase 0 (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) —
+  // instrumentación de solo lectura: cupo restante (unidades libres) de una
+  // categoría para un rango de fechas. No marca ni asigna nada — sirve para
+  // que el frontend muestre "quedan N libres" antes del alta por categoría
+  // (Fase 2, todavía no implementada). Montada ANTES de GET /:id a
+  // propósito (obligatorio, ver §6 del diseño): Express matchea rutas en el
+  // orden en que se registran, así que "availability-by-category" montada
+  // después de GET /:id quedaría tapada por ella (interpretada como un
+  // :id literal).
+  //
+  // SOLO categorías is_lodging = TRUE (diseño §5 punto 1, decisión real
+  // del dueño vía AskUserQuestion: "solo alojamiento" — Turnos queda
+  // explícitamente fuera de las fases de 4.3, §6). 422
+  // CATEGORY_NOT_LODGING si la categoría no es de alojamiento.
+  router.get(
+    '/availability-by-category',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const { categoryId, startDate, endDate, serviceId } = AvailabilityByCategoryQuerySchema.parse(req.query);
+
+        const categoryRepo = new SqlCategoryRepository(req.db);
+        const category = await categoryRepo.findById(categoryId);
+        if (!category) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Categoría no encontrada' });
+          return;
+        }
+
+        // Fase 0 aplica ÚNICAMENTE a categorías is_lodging = TRUE (diseño
+        // §5 punto 1 — decisión real del dueño vía AskUserQuestion: "solo
+        // alojamiento"; §6 lo repite como alcance de TODAS las fases). No
+        // es una clase de DomainError nueva a propósito — mismo patrón
+        // inline que el 404 de arriba, no toca errors.ts/error.middleware.ts.
+        if (!category.isLodging) {
+          res.status(422).json({
+            code:    'CATEGORY_NOT_LODGING',
+            message: 'La categoría no es de alojamiento — este endpoint solo aplica a categorías de alojamiento',
+          });
+          return;
+        }
+
+        const availabilityService = buildReservationAvailabilityService(req);
+        const { total, available } = await availabilityService.countAvailableInCategory({
+          categoryId,
+          startTime: startDate,
+          endTime: endDate,
+          ...(serviceId !== undefined && { serviceId }),
+        });
+
+        res.json({
+          categoryId,
+          categoryName: category.name,
+          isLodging: category.isLodging,
+          startDate: startDate.toISOString().slice(0, 10),
+          endDate: endDate.toISOString().slice(0, 10),
+          ...(serviceId !== undefined && { serviceId }),
+          totalResources: total,
+          availableResources: available,
+        });
       } catch (err) { next(err); }
     },
   );

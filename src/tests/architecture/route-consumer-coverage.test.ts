@@ -327,6 +327,13 @@ const NO_CONSUMER_ROUTES: Record<string, string> = {
   '/api/companies/link-requests/:p/approve': 'Ídem.',
   '/api/companies/link-requests/:p/reject': 'Ídem.',
 
+  // Fase 0 de "reserva por tipo de unidad con asignación diferida" (25/09/2026,
+  // Wave 14 item 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) --
+  // endpoint de instrumentación construido para que el frontend, en Fase 2
+  // (todavía no implementada), pueda mostrar "quedan N libres" antes del
+  // alta por categoría. Backend-only por diseño en esta fase -- no abandonado.
+  '/api/reservations/availability-by-category': 'Construido 25/09/2026 (Fase 0 de reserva por tipo de unidad, Wave 14 item 4.3), UI pendiente -- Fase 2 (consumo real desde el frontend) todavía no implementada.',
+
   // Hallazgo nuevo de esta cerca (16/09/2026, D-23(1)), no estaba en la lista
   // de 35 de F14-01 -- ese grep no distinguía /platform/businesses/:id (GET
   // de un negocio puntual) de sus 3 hermanos con sufijo (status/provision/

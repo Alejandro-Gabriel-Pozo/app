@@ -26,7 +26,7 @@
  */
 
 import { z } from 'zod';
-import { TIME_ONLY_REGEX, timeOnlySchema, cuitSchema } from './common.schemas.js';
+import { TIME_ONLY_REGEX, timeOnlySchema, cuitSchema, dateOnlySchema } from './common.schemas.js';
 
 const CustomerSchema = z.object({
   id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
@@ -165,6 +165,37 @@ export const GetReservationsQuerySchema = z.object({
     });
   }
 });
+
+/**
+ * GET /api/reservations/availability-by-category (Fase 0,
+ * docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6) — cupo restante de
+ * una categoría de recursos en un rango de fechas. SOLO aplica a
+ * categorías `is_lodging = TRUE` (diseño §5 punto 1, decisión del dueño
+ * vía `AskUserQuestion`: "solo alojamiento") — este schema no lo valida
+ * (no tiene acceso a la categoría todavía), el handler responde 422
+ * `CATEGORY_NOT_LODGING` después de resolverla
+ * (`reservations.routes.ts`). `startDate`/`endDate`
+ * usan `dateOnlySchema` (mismo criterio que `startDate` de maintenance
+ * windows, A4.1/A4.2 de criterios-negocio.md: la fecha es un día de
+ * negocio, no un instante con huso propio) — no `.datetime()` como
+ * `CreateReservationSchema`, porque este endpoint pregunta por NOCHES
+ * completas del rango, no por un horario puntual de turno.
+ * `endDate` tiene que ser posterior a `startDate` (al menos 1 noche) —
+ * mismo criterio que el refine de `endTime > startTime` en
+ * `CreateReservationSchema`.
+ * `serviceId` es opcional (C-5, Ronda 14 del gate `architecture-governor`
+ * sobre el diseño) — mismo parámetro y mismo comportamiento-por-omisión
+ * que ya acepta `findAvailableResourceInCategory()`.
+ */
+export const AvailabilityByCategoryQuerySchema = z.object({
+  categoryId: z.string().min(1, 'categoryId es obligatorio'),
+  startDate:  dateOnlySchema,
+  endDate:    dateOnlySchema,
+  serviceId:  z.string().min(1).optional(),
+}).refine(
+  (data) => data.endDate > data.startDate,
+  { message: 'endDate debe ser posterior a startDate', path: ['endDate'] },
+);
 
 // ---------------------------------------------------------------------------
 // Schemas de Órdenes

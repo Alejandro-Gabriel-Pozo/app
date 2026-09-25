@@ -260,6 +260,67 @@ export class ReservationAvailabilityService {
   }
 
   /**
+   * Fase 0 (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6, "reserva
+   * por tipo de unidad con asignación diferida") — cuenta cuántos recursos
+   * de una categoría están libres para el RANGO COMPLETO pedido, no día por
+   * día. SOLO para categorías `is_lodging = TRUE` (diseño §5 punto 1,
+   * decisión del dueño vía `AskUserQuestion`: "solo alojamiento") — este
+   * método no lo valida (no tiene acceso a la categoría, solo a
+   * `categoryId`); el chequeo de 422 `CATEGORY_NOT_LODGING` vive en el
+   * handler (`reservations.routes.ts`), antes de llamar acá.
+   * N4 (decisión del dueño vía `AskUserQuestion`, 24/09/2026): "unidades
+   * libres para TODO el rango" — la MISMA noción de disponibilidad que
+   * `findAvailableResourceInCategory()` (`checkAvailability()` evalúa
+   * `[startTime, endTime)` de una sola vez, no un mínimo por noche) — sin
+   * esa equivalencia, este número podría "mentir" respecto de si el alta
+   * por categoría (`POST /reservations` con `categoryId`) va a poder
+   * resolver un recurso para ese mismo rango.
+   *
+   * Reusa `checkAvailability()` por cada candidato de la categoría (mismas
+   * reglas que create/update: resource_locks del servicio si se pasa
+   * `serviceId`, OUT_OF_SERVICE, cupo compartido) en vez de reimplementar
+   * el chequeo — recorre TODOS los candidatos y cuenta, a diferencia de
+   * `findAvailableResourceInCategory()`, que se detiene en el primero.
+   *
+   * Solo lectura — no marca, no asigna, no escribe nada. A diferencia de
+   * `findAvailableResourceInCategory()` (que sí es un paso de escritura
+   * aguas abajo, dentro de `createReservation()`), este método no participa
+   * de ningún flujo de alta: lo llama únicamente
+   * `GET /reservations/availability-by-category` (instrumentación, sin
+   * cambio de comportamiento).
+   *
+   * @param serviceId - Opcional (C-5, Ronda 14 del gate) — mismo
+   *   comportamiento-por-omisión que `checkAvailability()`: sin él, el
+   *   conteo no filtra por los recursos que un servicio bloquea vía
+   *   `resource_locks`.
+   */
+  async countAvailableInCategory(params: {
+    categoryId: string;
+    startTime: Date;
+    endTime: Date;
+    serviceId?: string;
+    /** Ver docblock de checkAvailability(). Default 1. */
+    partySize?: number;
+  }): Promise<{ total: number; available: number }> {
+    assertValidTimeRange(params.startTime, params.endTime);
+
+    const candidates = await this.resourceRepository.getByCategory(params.categoryId);
+    let available = 0;
+    for (const resource of candidates) {
+      const isAvailable = await this.checkAvailability(
+        resource.id,
+        params.startTime,
+        params.endTime,
+        undefined,
+        params.serviceId,
+        params.partySize,
+      );
+      if (isAvailable) available++;
+    }
+    return { total: candidates.length, available };
+  }
+
+  /**
    * Devuelve el conjunto de resourceIds a verificar: el recurso principal
    * más los recursos bloqueados por el servicio (si existe serviceId).
    * Usa un Set para evitar duplicados si el lock apunta al mismo recurso
