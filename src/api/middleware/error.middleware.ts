@@ -371,6 +371,19 @@ function domainErrorStatus(error: DomainError): number {
     // quedó obsoleta contra lo que el lock real encontró después. 409
     // reintentable, no se reintenta solo (mismo criterio A8.6 que
     // REFUND_BASE_CHANGED).
+    //
+    // v11/Fase 2 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+    // §6 Fase 2 ítem 8) -- 4 errores tipados genuinamente nuevos de la
+    // asignación diferida, los 4 al mismo grupo 409 (precondición de
+    // estado/conflicto de concurrencia, request bien formado):
+    // ASSIGNMENT_CATEGORY_MISMATCH (A6.3, reasignar a otra categoría),
+    // ASSIGNMENT_COMBINED_CHANGE (D-2, PUT combina resourceId con otro
+    // cambio real), RESERVATION_ALREADY_ASSIGNED (A6.1 paso 2, chequeo de
+    // concurrencia real de assignDeferred()),
+    // SCHEDULE_CHANGE_ASSIGNMENT_PENDING (§7 fila de approveScheduleChange(),
+    // mismo grupo que NEXT_ARRIVAL_CONFLICT). RESOURCE_OCCUPIED (arriba,
+    // ya mapeado) y RESERVATION_CONCURRENTLY_MODIFIED (acá abajo, ya
+    // mapeado) se reusan tal cual -- ninguno de los dos es nuevo de Fase 2.
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -451,6 +464,10 @@ function domainErrorStatus(error: DomainError): number {
     case 'COMPANY_LINK_REQUEST_INVALID_TRANSITION':
     case 'COMPANY_HAS_NO_ELIGIBLE_APPROVER':
     case 'RESERVATION_CONCURRENTLY_MODIFIED':
+    case 'ASSIGNMENT_CATEGORY_MISMATCH':
+    case 'ASSIGNMENT_COMBINED_CHANGE':
+    case 'RESERVATION_ALREADY_ASSIGNED':
+    case 'SCHEDULE_CHANGE_ASSIGNMENT_PENDING':
       return 409;
 
     // --- 503 Service Unavailable ---

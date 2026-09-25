@@ -30,6 +30,7 @@ import type { DomainEvent } from '../../repositories/domain-event.repository.js'
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
 import { StayService, StayBalanceOwedError } from '../../pms-estadias/stay.service.js';
+import type { ReservationService } from '../../reservas/reservation.service.js';
 import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { InMemoryHousekeepingRepository } from '../../pms-estadias/in-memory.housekeeping.repository.js';
 import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
@@ -64,11 +65,23 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
     financialRepo = new SqlFinancialTransactionRepository(db);
     businessProfileRepo = new SqlBusinessProfileRepository(db);
     stayRepo = new SqlStayRepository(db);
-    const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+    const resourceRepo = new SqlResourceRepository(db);
+    const reservationRepo = new SqlReservationRepository(db, resourceRepo);
+
+    // v11 (Fase 2) -- este archivo ejercita reservas ya ASSIGNED (Fase 1
+    // por defecto), así que el discriminador H1 de checkIn() nunca invoca
+    // assignDeferred() -- un stub que tira si se llama alcanza.
+    const reservationServiceStub: Pick<ReservationService, 'assignDeferred' | 'recordOccupancy'> = {
+      async assignDeferred(): Promise<never> {
+        throw new Error('assignDeferred() no debería invocarse en este archivo (reservas ASSIGNED).');
+      },
+      async recordOccupancy(): Promise<void> {},
+    };
 
     stayService = new StayService(
       stayRepo, reservationRepo, new InMemoryHousekeepingRepository(),
       financialRepo, businessProfileRepo, pgTxManager,
+      reservationServiceStub, resourceRepo,
     );
   }, 60_000);
 

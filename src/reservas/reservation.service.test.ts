@@ -17,13 +17,19 @@ import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.numb
 import { InMemoryCancellationPolicyRepository } from './in-memory.cancellation-policy.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
-import { InvalidReservationError, ResourceNotFoundError, ReservationNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
+import {
+  InvalidReservationError, ResourceNotFoundError, ReservationNotFoundError, RatePlanNotAvailableError,
+  NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError,
+  AssignmentCategoryMismatchError, AssignmentCombinedChangeError, ReservationAlreadyAssignedError,
+  ResourceOccupiedError, ReservationConcurrentlyModifiedError,
+} from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { InvoiceLinkage } from '../facturacion/invoice.repository.js';
+import type { Stay } from '../pms-estadias/stay.js';
 
 // ---------------------------------------------------------------------------
 // Mocks mínimos para dependencias de infraestructura
@@ -70,6 +76,27 @@ class InMemoryTransactionManager implements TransactionManager {
   }
 }
 
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1
+ * paso 7) — fake mínimo de `Pick<StayRepository, 'findActiveByResource'>`.
+ * `null` por default (sin ninguna Stay activa en el recurso candidato) —
+ * `seedActiveStay()` simula un huésped ya en check-in, para los tests del
+ * guard de `assignDeferred()`.
+ */
+class FakeStayRepositoryForAssignment {
+  private active: { resourceId: string; reservationId: string } | null = null;
+  seedActiveStay(resourceId: string, reservationId: string): void {
+    this.active = { resourceId, reservationId };
+  }
+  async findActiveByResource(resourceId: string): Promise<Stay | null> {
+    if (this.active && this.active.resourceId === resourceId) {
+      // Fake mínimo -- assignDeferred() solo lee `.reservationId`.
+      return { reservationId: this.active.reservationId } as unknown as Stay;
+    }
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Suite principal
 // ---------------------------------------------------------------------------
@@ -106,6 +133,7 @@ describe('ReservationService', () => {
   let numberSequenceRepo: InMemoryNumberSequenceRepository;
   let cancellationPolicyRepo: InMemoryCancellationPolicyRepository;
   let auditLogRepo: InMemoryAuditLogRepository;
+  let stayRepo: FakeStayRepositoryForAssignment;
   let service: ReservationService;
 
   /** Sin política de seña -- comportamiento default (deposit_amount = 0, gate nunca se activa). */
@@ -202,6 +230,7 @@ describe('ReservationService', () => {
     numberSequenceRepo    = new InMemoryNumberSequenceRepository();
     cancellationPolicyRepo = new InMemoryCancellationPolicyRepository();
     auditLogRepo          = new InMemoryAuditLogRepository();
+    stayRepo              = new FakeStayRepositoryForAssignment();
 
     service = new ReservationService(
       reservationRepo,
@@ -222,6 +251,7 @@ describe('ReservationService', () => {
       numberSequenceRepo,
       cancellationPolicyRepo,
       auditLogRepo,
+      stayRepo,
       FROZEN_TEST_NOW,
     );
 
@@ -398,7 +428,7 @@ describe('ReservationService', () => {
       });
 
       await expect(
-        service.updateReservation('res-move-past', { startTime: new Date('2019-01-01T20:00:00Z') }),
+        service.updateReservation('res-move-past', { startTime: new Date('2019-01-01T20:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
   });
@@ -486,7 +516,7 @@ describe('ReservationService', () => {
         details: {}, adultos: 2, ninos: 0,
       });
 
-      const updated = await service.updateReservation('res-guests-7', { adultos: 3, ninos: 1 });
+      const updated = await service.updateReservation('res-guests-7', { adultos: 3, ninos: 1 }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.adultos).toBe(3);
       expect(updated.ninos).toBe(1);
     });
@@ -498,7 +528,7 @@ describe('ReservationService', () => {
         details: {},
       });
 
-      const updated = await service.updateReservation('res-guests-8', { adultos: 1 });
+      const updated = await service.updateReservation('res-guests-8', { adultos: 1 }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.adultos).toBe(1);
       expect(updated.startTime).toEqual(created.startTime);
       expect(updated.resource.id).toBe(created.resource.id);
@@ -701,6 +731,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -755,6 +786,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -982,6 +1014,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1003,6 +1036,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1029,6 +1063,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1047,6 +1082,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1172,7 +1208,7 @@ describe('ReservationService', () => {
       await createBase();
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.startTime).toEqual(new Date('2026-08-01T18:00:00Z'));
       expect(updated.endTime).toEqual(new Date('2026-08-01T21:00:00Z'));
       expect(updated.status).toBe(ReservationStatus.PENDING);
@@ -1188,7 +1224,7 @@ describe('ReservationService', () => {
 
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(updated.appliedCustomerRateId).toBe('rate-update-1');
       expect(updated.totalPrice).toBe(30);
@@ -1198,7 +1234,7 @@ describe('ReservationService', () => {
       await createBase();
       const updated = await service.updateReservation('res-1', {
         endTime: new Date('2026-08-01T22:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.startTime).toEqual(new Date('2026-08-01T19:00:00Z'));
       expect(updated.endTime).toEqual(new Date('2026-08-01T22:00:00Z'));
     });
@@ -1208,7 +1244,7 @@ describe('ReservationService', () => {
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T17:00:00Z'),
         endTime:   new Date('2026-08-01T19:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.startTime).toEqual(new Date('2026-08-01T17:00:00Z'));
       expect(updated.endTime).toEqual(new Date('2026-08-01T19:00:00Z'));
     });
@@ -1217,7 +1253,7 @@ describe('ReservationService', () => {
       const created = await createBase();
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.lines).toEqual(created.lines);
     });
 
@@ -1226,7 +1262,7 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-1', {
           startTime: new Date('2026-08-01T22:00:00Z'),
-        }),
+        }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
@@ -1235,7 +1271,7 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-1', {
           endTime: new Date('2026-08-01T18:00:00Z'),
-        }),
+        }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
@@ -1244,7 +1280,7 @@ describe('ReservationService', () => {
       await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.status).toBe('CONFIRMED');
     });
 
@@ -1265,7 +1301,7 @@ describe('ReservationService', () => {
 
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(updated.cancellationPolicySnapshot).toEqual(confirmed.cancellationPolicySnapshot);
     });
@@ -1276,7 +1312,7 @@ describe('ReservationService', () => {
       await createBase();
       const updated = await service.updateReservation('res-1', {
         resourceId: 't-drag-target',
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.resource.id).toBe('t-drag-target');
       // El recurso original queda libre para esas horas.
       const stillAvailable = await service.checkAvailability(
@@ -1300,7 +1336,7 @@ describe('ReservationService', () => {
         details: {},
       });
       await expect(
-        service.updateReservation('res-1', { resourceId: 't-drag-busy' }),
+        service.updateReservation('res-1', { resourceId: 't-drag-busy' }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
@@ -1311,14 +1347,14 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-1', {
           startTime: new Date('2026-08-01T18:00:00Z'),
-        }),
+        }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
     it('debe rechazar si no se envía ningún campo', async () => {
       await createBase();
       await expect(
-        service.updateReservation('res-1', {}),
+        service.updateReservation('res-1', {}, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
@@ -1333,13 +1369,13 @@ describe('ReservationService', () => {
     // forma después de `requireReservation()`, este test lo detectaría.
     it('con un id inexistente y body vacío, rechaza por forma (InvalidReservationError) antes de buscar la reserva', async () => {
       await expect(
-        service.updateReservation('id-inexistente', {}),
+        service.updateReservation('id-inexistente', {}, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
     it('lanza ReservationNotFoundError si la reserva no existe y el body sí trae campos', async () => {
       await expect(
-        service.updateReservation('id-inexistente', { startTime: new Date('2026-08-01T18:00:00Z') }),
+        service.updateReservation('id-inexistente', { startTime: new Date('2026-08-01T18:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(ReservationNotFoundError);
     });
 
@@ -1372,7 +1408,7 @@ describe('ReservationService', () => {
 
         const updated = await service.updateReservation('res-extend', {
           endTime: new Date('2026-09-05T10:00:00Z'), // 4 noches = 400
-        });
+        }, TEST_BUSINESS_ID, TEST_USER_ID);
 
         expect(updated.totalPrice).toBe(400);
         expect(updated.lines).toHaveLength(4);
@@ -1391,7 +1427,7 @@ describe('ReservationService', () => {
 
         const updated = await service.updateReservation('res-shrink', {
           endTime: new Date('2026-09-02T10:00:00Z'), // 1 noche = 100
-        });
+        }, TEST_BUSINESS_ID, TEST_USER_ID);
 
         expect(updated.totalPrice).toBe(100);
         expect(updated.lines).toHaveLength(1);
@@ -1411,7 +1447,7 @@ describe('ReservationService', () => {
 
         const updated = await service.updateReservation('res-confirmed-noprice', {
           endTime: new Date('2026-09-05T10:00:00Z'), // sería 4 noches = 400 si recotizara
-        });
+        }, TEST_BUSINESS_ID, TEST_USER_ID);
 
         expect(updated.status).toBe('CONFIRMED');
         expect(updated.totalPrice).toBe(200); // congelado, no 400
@@ -1450,7 +1486,7 @@ describe('ReservationService', () => {
 
       const updated = await service.updateReservation('res-schedule-preserve', {
         resourceId: 't1', // mismo recurso, pero fuerza el camino de reasignación/restore
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(updated.requestedCheckOutTime).toBe('13:00');
       expect(updated.scheduleApprovalStatus).toBe('APPROVED');
@@ -1489,7 +1525,7 @@ describe('ReservationService', () => {
 
       const updated = await service.updateReservation('res-deposit-preserve', {
         resourceId: 't1', // fuerza el camino de restore, igual que el test de horario especial
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(updated.depositAmount).toBe(50);
       expect(updated.depositDueBy).toEqual(dueBy);
@@ -1534,7 +1570,7 @@ describe('ReservationService', () => {
       });
       await service.confirmReservation('res-preview-extend', TEST_BUSINESS_ID, TEST_USER_ID);
       // totalPrice sigue congelado en 200 -- solo cambian fechas/lo que costaría hoy.
-      await service.updateReservation('res-preview-extend', { endTime: new Date('2026-09-05T10:00:00Z') }); // 4 noches
+      await service.updateReservation('res-preview-extend', { endTime: new Date('2026-09-05T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID); // 4 noches
 
       const preview = await service.previewPriceAdjustment('res-preview-extend');
       expect(preview).toEqual({ currentTotalPrice: 200, recalculatedTotalPrice: 400, difference: 200 });
@@ -1547,7 +1583,7 @@ describe('ReservationService', () => {
         details: {},
       });
       await service.confirmReservation('res-preview-shrink', TEST_BUSINESS_ID, TEST_USER_ID);
-      await service.updateReservation('res-preview-shrink', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
+      await service.updateReservation('res-preview-shrink', { endTime: new Date('2026-09-02T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID); // 1 noche
 
       const preview = await service.previewPriceAdjustment('res-preview-shrink');
       expect(preview).toEqual({ currentTotalPrice: 400, recalculatedTotalPrice: 100, difference: -300 });
@@ -1561,7 +1597,7 @@ describe('ReservationService', () => {
       });
       await service.confirmReservation('res-confirm-adjust', TEST_BUSINESS_ID, TEST_USER_ID);
       eventRepo.events = []; // solo nos interesa el evento del ajuste, no el de confirmación
-      await service.updateReservation('res-confirm-adjust', { endTime: new Date('2026-09-05T10:00:00Z') });
+      await service.updateReservation('res-confirm-adjust', { endTime: new Date('2026-09-05T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       const updated = await service.confirmPriceAdjustment('res-confirm-adjust', TEST_BUSINESS_ID, 'user-manager-1');
 
@@ -1598,7 +1634,7 @@ describe('ReservationService', () => {
       const confirmed = await service.confirmReservation('res-confirm-adjust-snapshot', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
 
-      await service.updateReservation('res-confirm-adjust-snapshot', { endTime: new Date('2026-09-05T10:00:00Z') });
+      await service.updateReservation('res-confirm-adjust-snapshot', { endTime: new Date('2026-09-05T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID);
       const adjusted = await service.confirmPriceAdjustment('res-confirm-adjust-snapshot', TEST_BUSINESS_ID, 'user-manager-1');
 
       expect(adjusted.cancellationPolicySnapshot).toEqual(confirmed.cancellationPolicySnapshot);
@@ -1611,7 +1647,7 @@ describe('ReservationService', () => {
         details: {},
       });
       await service.confirmReservation('res-confirm-noattr', TEST_BUSINESS_ID, TEST_USER_ID);
-      await service.updateReservation('res-confirm-noattr', { endTime: new Date('2026-09-05T10:00:00Z') });
+      await service.updateReservation('res-confirm-noattr', { endTime: new Date('2026-09-05T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID);
 
       await expect(service.confirmPriceAdjustment('res-confirm-noattr', TEST_BUSINESS_ID, ''))
         .rejects.toThrow('confirmedByUserId es obligatorio');
@@ -1625,7 +1661,7 @@ describe('ReservationService', () => {
       });
       await service.confirmReservation('res-confirm-credit', TEST_BUSINESS_ID, TEST_USER_ID);
       eventRepo.events = [];
-      await service.updateReservation('res-confirm-credit', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
+      await service.updateReservation('res-confirm-credit', { endTime: new Date('2026-09-02T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID); // 1 noche
 
       const updated = await service.confirmPriceAdjustment('res-confirm-credit', TEST_BUSINESS_ID, 'user-manager-1');
 
@@ -1716,13 +1752,13 @@ describe('ReservationService', () => {
       // Cambio que no toca recurso ni precio directamente -- solo details.
       const updated = await service.updateReservation('res-assignment-survive', {
         details: { nota: 'actualizado' },
-      });
+      }, TEST_BUSINESS_ID, TEST_USER_ID);
       expect(updated.assignmentStatus).toBe('PENDING_ASSIGNMENT');
 
       // Estira la reserva para generar una diferencia de precio pendiente,
       // y confirma el ajuste -- ninguna de las dos operaciones reasigna
       // recurso, así que assignmentStatus tiene que seguir intacto.
-      await service.updateReservation('res-assignment-survive', { endTime: new Date('2026-09-05T10:00:00Z') }); // 4 noches
+      await service.updateReservation('res-assignment-survive', { endTime: new Date('2026-09-05T10:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID); // 4 noches
       const adjusted = await service.confirmPriceAdjustment('res-assignment-survive', TEST_BUSINESS_ID, 'user-manager-1');
 
       expect(adjusted.totalPrice).toBe(400); // el ajuste se aplicó de verdad
@@ -2041,6 +2077,7 @@ describe('ReservationService', () => {
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         auditLogRepo,
+        stayRepo,
         FROZEN_TEST_NOW,
       );
       // 27/08/2026 — decisión del dueño, docs/diseno-precio-servicio-vs-
@@ -2601,6 +2638,419 @@ describe('ReservationService', () => {
         '2024-11-03T06:15:00.000Z',
         '2024-11-03T06:30:00.000Z',
       ]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8) —
+  // asignación diferida: activación real del marcado, assignDeferred(), el
+  // discriminador de updateReservation(), y completar.
+  // ---------------------------------------------------------------------------
+  describe('Fase 2 — asignación diferida', () => {
+    /** Igual que NullCategoryRepository, pero con más de una categoría sembrada. */
+    class MultiCategoryRepository implements ICategoryRepository {
+      private categories = new Map<string, {
+        id: string; name: string; fields: []; active: boolean;
+        isLodging: boolean; isExclusive: boolean; createdAt: Date; updatedAt: Date;
+      }>();
+      seed(category: { id: string; name: string; fields: []; active: boolean; isLodging: boolean; isExclusive: boolean; createdAt: Date; updatedAt: Date }) {
+        this.categories.set(category.id, category);
+      }
+      async findById(id: string) { return this.categories.get(id) ?? null; }
+      async findAll() { return [...this.categories.values()]; }
+      async countActive() { return 0; }
+      async create(): Promise<never> { throw new Error('no usado en estos tests'); }
+      async update(): Promise<never> { throw new Error('no usado en estos tests'); }
+      async deactivate() {}
+    }
+
+    let lodgingCategoryRepo: MultiCategoryRepository;
+    let lodgingService: ReservationService;
+    let room2: BookableResource;
+    let roomOtherCategory: BookableResource;
+
+    beforeEach(async () => {
+      lodgingCategoryRepo = new MultiCategoryRepository();
+      lodgingCategoryRepo.seed({
+        id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
+        isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      lodgingCategoryRepo.seed({
+        id: 'cat-other', name: 'Otra categoría', fields: [], active: true,
+        isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      lodgingService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
+        stayRepo,
+        FROZEN_TEST_NOW,
+      );
+
+      room2 = new BookableResource('t2', 'Habitación 2', 50, 'cat-table', undefined, 4);
+      roomOtherCategory = new BookableResource('t3', 'Otra categoría recurso', 50, 'cat-other', undefined, 4);
+      await resourceRepo.save(room2);
+      await resourceRepo.save(roomOtherCategory);
+
+      bookableServiceRepo.seed({
+        id: 'svc-estadia-fase2', categoryId: 'cat-table', name: 'Estadía',
+        bookingMode: 'slot', durationMinutes: null, price: 50,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+
+    /** El route handler ya resolvió `resourceId` (candidato provisorio, t1 por default). */
+    async function createPendingReservation(id: string, resourceId = 't1'): Promise<Reservation> {
+      return lodgingService.createReservation({
+        id, resourceId, serviceId: 'svc-estadia-fase2', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+        enteredByCategory: true,
+      });
+    }
+
+    /** Reconstruye `r` con otro `resource`/`assignmentStatus` -- para simular un snapshot "stale". */
+    function withResourceAndStatus(r: Reservation, resource: BookableResource, assignmentStatus: 'ASSIGNED' | 'PENDING_ASSIGNMENT'): Reservation {
+      return Reservation.restore({
+        id: r.id, customer: r.customer, resource, startTime: r.startTime, endTime: r.endTime,
+        details: r.details as Record<string, unknown>, initialStatus: r.status, serviceId: r.serviceId,
+        partySize: r.partySize, notes: r.notes, orderItemId: r.orderItemId, totalPrice: r.totalPrice,
+        lines: r.lines, adultos: r.adultos, ninos: r.ninos, ratePlanId: r.ratePlanId,
+        requestedCheckInTime: r.requestedCheckInTime, requestedCheckOutTime: r.requestedCheckOutTime,
+        scheduleApprovalStatus: r.scheduleApprovalStatus, scheduleApprovedBy: r.scheduleApprovedBy,
+        scheduleChargeAmount: r.scheduleChargeAmount, depositAmount: r.depositAmount, depositDueBy: r.depositDueBy,
+        reservationNumber: r.reservationNumber, appliedCustomerRateId: r.appliedCustomerRateId,
+        needsMaintenanceReview: r.needsMaintenanceReview, isExclusiveResource: r.isExclusiveResource,
+        cancellationPolicySnapshot: r.cancellationPolicySnapshot, assignmentStatus,
+      });
+    }
+
+    // -------------------------------------------------------------------
+    describe('createReservation() — activación real del marcado (B2)', () => {
+      it('nace PENDING_ASSIGNMENT si enteredByCategory=true y la categoría es lodging', async () => {
+        const reservation = await createPendingReservation('res-fase2-1');
+        expect(reservation.assignmentStatus).toBe('PENDING_ASSIGNMENT');
+      });
+
+      it('nace ASSIGNED si enteredByCategory=false (resourceId explícito), aunque la categoría sea lodging', async () => {
+        const reservation = await lodgingService.createReservation({
+          id: 'res-fase2-2', resourceId: 't1', serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+          enteredByCategory: false,
+        });
+        expect(reservation.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      it('nace ASSIGNED si la categoría no es lodging, aunque enteredByCategory=true (turnos sin cambios)', async () => {
+        // `service` default usa NullCategoryRepository -- category undefined -> isLodging falsy.
+        const reservation = await service.createReservation({
+          id: 'res-fase2-3', resourceId: 't1', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+          enteredByCategory: true,
+        });
+        expect(reservation.assignmentStatus).toBe('ASSIGNED');
+      });
+    });
+
+    // -------------------------------------------------------------------
+    describe('assignDeferred()', () => {
+      it('lanza ReservationAlreadyAssignedError si la reserva ya está ASSIGNED (paso 2, chequeo de concurrencia real)', async () => {
+        const reservation = await lodgingService.createReservation({
+          id: 'res-already', resourceId: 't1', serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+          enteredByCategory: false,
+        });
+        expect(reservation.assignmentStatus).toBe('ASSIGNED');
+
+        await expect(
+          txManager.run((client) =>
+            lodgingService.assignDeferred(client, 'res-already', 't1', TEST_BUSINESS_ID, TEST_USER_ID),
+          ),
+        ).rejects.toThrow(ReservationAlreadyAssignedError);
+      });
+
+      it('confirma la MISMA unidad provisoria (isSameResource) sin reclamar disponibilidad nueva', async () => {
+        const reservation = await createPendingReservation('res-same');
+
+        const updated = await txManager.run((client) =>
+          lodgingService.assignDeferred(client, 'res-same', reservation.resource.id, TEST_BUSINESS_ID, TEST_USER_ID),
+        );
+
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+        expect(updated.resource.id).toBe(reservation.resource.id);
+      });
+
+      it('reasigna a OTRO recurso de la MISMA categoría', async () => {
+        await createPendingReservation('res-reassign');
+
+        const updated = await txManager.run((client) =>
+          lodgingService.assignDeferred(client, 'res-reassign', 't2', TEST_BUSINESS_ID, TEST_USER_ID),
+        );
+
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+        expect(updated.resource.id).toBe('t2');
+      });
+
+      it('rechaza con AssignmentCategoryMismatchError si el candidato es de OTRA categoría (A6.3)', async () => {
+        await createPendingReservation('res-mismatch');
+
+        await expect(
+          txManager.run((client) =>
+            lodgingService.assignDeferred(client, 'res-mismatch', 't3', TEST_BUSINESS_ID, TEST_USER_ID),
+          ),
+        ).rejects.toThrow(AssignmentCategoryMismatchError);
+      });
+
+      it('rechaza con ResourceOccupiedError si el candidato tiene una Stay activa de OTRA reserva (paso 7)', async () => {
+        await createPendingReservation('res-occupied');
+        stayRepo.seedActiveStay('t2', 'otra-reserva');
+
+        await expect(
+          txManager.run((client) =>
+            lodgingService.assignDeferred(client, 'res-occupied', 't2', TEST_BUSINESS_ID, TEST_USER_ID),
+          ),
+        ).rejects.toThrow(ResourceOccupiedError);
+      });
+
+      it('NO rechaza si la Stay activa del candidato pertenece a la MISMA reserva que se asigna (exclusión explícita)', async () => {
+        await createPendingReservation('res-own-stay');
+        stayRepo.seedActiveStay('t2', 'res-own-stay');
+
+        const updated = await txManager.run((client) =>
+          lodgingService.assignDeferred(client, 'res-own-stay', 't2', TEST_BUSINESS_ID, TEST_USER_ID),
+        );
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      it('rechaza si el candidato ya está ocupado por OTRA reserva superpuesta (paso 8, re-chequeo de disponibilidad)', async () => {
+        await createPendingReservation('res-conflict');
+        // Otra reserva ASSIGNED, ya ocupando t2 en el MISMO rango.
+        await lodgingService.createReservation({
+          id: 'res-conflict-other', resourceId: 't2', serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+          enteredByCategory: false,
+        });
+
+        await expect(
+          txManager.run((client) =>
+            lodgingService.assignDeferred(client, 'res-conflict', 't2', TEST_BUSINESS_ID, TEST_USER_ID),
+          ),
+        ).rejects.toThrow(InvalidReservationError);
+      });
+
+      it('audita la transición (assignmentStatus + resourceId) dentro de la misma transacción (A6.5)', async () => {
+        await createPendingReservation('res-audit');
+
+        await txManager.run((client) =>
+          lodgingService.assignDeferred(client, 'res-audit', 't2', TEST_BUSINESS_ID, TEST_USER_ID),
+        );
+
+        const entries = await auditLogRepo.findByEntity('reservations', 'res-audit');
+        const fields = entries.map((e) => e.field).sort();
+        expect(fields).toEqual(['assignmentStatus', 'resourceId']);
+        const assignmentEntry = entries.find((e) => e.field === 'assignmentStatus')!;
+        expect(assignmentEntry.oldValue).toBe('PENDING_ASSIGNMENT');
+        expect(assignmentEntry.newValue).toBe('ASSIGNED');
+        const resourceEntry = entries.find((e) => e.field === 'resourceId')!;
+        expect(resourceEntry.oldValue).toBe('t1');
+        expect(resourceEntry.newValue).toBe('t2');
+      });
+
+      it('audita SOLO assignmentStatus (SIN resourceId) cuando confirma el MISMO recurso que ya tenía (C-1, caso complementario del test de arriba)', async () => {
+        await createPendingReservation('res-audit-same');
+
+        await txManager.run((client) =>
+          // 't1' es el recurso provisorio con el que createPendingReservation()
+          // arma la reserva (default del parámetro) — confirmar sobre ese
+          // mismo recurso es el caso más común (completar, check-in a la
+          // habitación provisoria, confirmación por PUT sin reasignar).
+          lodgingService.assignDeferred(client, 'res-audit-same', 't1', TEST_BUSINESS_ID, TEST_USER_ID),
+        );
+
+        const entries = await auditLogRepo.findByEntity('reservations', 'res-audit-same');
+        const fields = entries.map((e) => e.field).sort();
+        // Si la corrección de C-1 se revirtiera por error (volviera a
+        // auditar resourceId siempre, incluso "de X a X"), este test lo
+        // detecta: acá no debe aparecer ninguna entrada de resourceId.
+        expect(fields).toEqual(['assignmentStatus']);
+        const assignmentEntry = entries.find((e) => e.field === 'assignmentStatus')!;
+        expect(assignmentEntry.oldValue).toBe('PENDING_ASSIGNMENT');
+        expect(assignmentEntry.newValue).toBe('ASSIGNED');
+      });
+    });
+
+    // -------------------------------------------------------------------
+    describe('updateReservation() — discriminador de asignación diferida (D-2)', () => {
+      it('PUT con SOLO resourceId sobre PENDING_ASSIGNMENT confirma vía assignDeferred()', async () => {
+        await createPendingReservation('res-put-confirm');
+
+        const updated = await lodgingService.updateReservation(
+          'res-put-confirm', { resourceId: 't2' }, TEST_BUSINESS_ID, TEST_USER_ID,
+        );
+
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+        expect(updated.resource.id).toBe('t2');
+      });
+
+      it('rechaza con AssignmentCombinedChangeError si resourceId viene combinado con un cambio REAL de fechas', async () => {
+        const reservation = await createPendingReservation('res-put-combo-dates');
+
+        await expect(
+          lodgingService.updateReservation(
+            'res-put-combo-dates',
+            { resourceId: 't2', startTime: new Date(reservation.startTime.getTime() + 60 * 60 * 1000) },
+            TEST_BUSINESS_ID, TEST_USER_ID,
+          ),
+        ).rejects.toThrow(AssignmentCombinedChangeError);
+      });
+
+      it('rechaza con AssignmentCombinedChangeError si resourceId viene combinado con un cambio REAL de adultos', async () => {
+        await createPendingReservation('res-put-combo-adultos');
+
+        await expect(
+          lodgingService.updateReservation(
+            'res-put-combo-adultos', { resourceId: 't2', adultos: 3 }, TEST_BUSINESS_ID, TEST_USER_ID,
+          ),
+        ).rejects.toThrow(AssignmentCombinedChangeError);
+      });
+
+      it('rechaza con AssignmentCombinedChangeError si resourceId viene combinado con un cambio REAL de details', async () => {
+        await createPendingReservation('res-put-combo-details');
+
+        await expect(
+          lodgingService.updateReservation(
+            'res-put-combo-details', { resourceId: 't2', details: { nota: 'nueva' } }, TEST_BUSINESS_ID, TEST_USER_ID,
+          ),
+        ).rejects.toThrow(AssignmentCombinedChangeError);
+      });
+
+      it('NO rechaza si adultos viene en el body pero con el MISMO valor que ya tenía (comparación por VALOR, no por presencia)', async () => {
+        const reservation = await createPendingReservation('res-put-same-adultos');
+        expect(reservation.adultos).toBeNull();
+
+        // adultos: null (explícito) === existing.adultos (null) -- no es un cambio real.
+        const updated = await lodgingService.updateReservation(
+          'res-put-same-adultos', { resourceId: 't2', adultos: null }, TEST_BUSINESS_ID, TEST_USER_ID,
+        );
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      it('NO rechaza si details viene en el body estructuralmente IGUAL, con las claves en otro orden (stableStringify, B-3)', async () => {
+        await lodgingService.createReservation({
+          id: 'res-put-reorder-details', resourceId: 't1', serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+          details: { a: 1, b: 2 },
+          enteredByCategory: true,
+        });
+
+        // Mismas claves/valores, orden invertido -- no es un cambio real.
+        const updated = await lodgingService.updateReservation(
+          'res-put-reorder-details', { resourceId: 't2', details: { b: 2, a: 1 } }, TEST_BUSINESS_ID, TEST_USER_ID,
+        );
+        expect(updated.assignmentStatus).toBe('ASSIGNED');
+        expect(updated.resource.id).toBe('t2');
+      });
+
+      it('camino de hoy sin cambios: PENDING_ASSIGNMENT sin resourceId en el PUT no invoca assignDeferred()', async () => {
+        const reservation = await createPendingReservation('res-put-no-resource');
+
+        const updated = await lodgingService.updateReservation(
+          'res-put-no-resource', { adultos: 2 }, TEST_BUSINESS_ID, TEST_USER_ID,
+        );
+
+        expect(updated.assignmentStatus).toBe('PENDING_ASSIGNMENT');
+        expect(updated.resource.id).toBe(reservation.resource.id);
+      });
+    });
+
+    // -------------------------------------------------------------------
+    describe('completeReservation() — confirma la asignación (§6 sub-alcance "completar")', () => {
+      async function createAndConfirmPending(id: string): Promise<void> {
+        await createPendingReservation(id);
+        await lodgingService.confirmReservation(id, TEST_BUSINESS_ID, TEST_USER_ID);
+      }
+
+      it('reserva PENDING_ASSIGNMENT + CONFIRMED: completar confirma la asignación Y completa, en un solo paso', async () => {
+        await createAndConfirmPending('res-complete-pending');
+
+        const completed = await lodgingService.completeReservation('res-complete-pending', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(completed.assignmentStatus).toBe('ASSIGNED');
+        expect(completed.status).toBe(ReservationStatus.COMPLETED);
+        expect(completed.resource.id).toBe('t1');
+      });
+
+      it('registra ocupación sobre la entidad que efectivamente transicionó (recordOccupancy post-commit) — conteo exacto, no doble (B-1/B-2/B-3)', async () => {
+        // B-3: este test pasaba antes por la razón EQUIVOCADA -- la fila de
+        // 't1' ya la había escrito confirmReservation() (que llamaba a
+        // recordOccupancy() sobre la reserva TODAVÍA PENDING_ASSIGNMENT,
+        // sin el salteo de B-1) -- así que "existe alguna fila" quedaba
+        // verde aunque completeReservation() nunca hubiera registrado nada
+        // por su cuenta. Con B-1 (recordOccupancy() saltea mientras
+        // PENDING_ASSIGNMENT), confirmReservation() ya NO escribe nada acá
+        // -- la única escritura real tiene que venir de completeReservation()
+        // después de que assignDeferred() confirme la asignación. El
+        // aserto ahora exige el conteo EXACTO de minutos (120 = 20:00-22:00,
+        // una sola vez) para que una regresión de B-1 (doble conteo, 240)
+        // o de B-2/completeReservation (0, sin ninguna fila) hagan fallar
+        // el test de verdad.
+        await createAndConfirmPending('res-complete-occupancy');
+
+        await lodgingService.completeReservation('res-complete-occupancy', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        const snapshots = await occupancyRepo.getAllSnapshots();
+        const forT1 = snapshots.filter((s) => s.resourceId === 't1');
+        expect(forT1).toHaveLength(1);
+        expect(forT1[0]!.bookedMinutes).toBe(120);
+      });
+
+      it('reserva ya ASSIGNED: completar sigue como hoy, sin invocar assignDeferred() ni ningún error', async () => {
+        const reservation = await lodgingService.createReservation({
+          id: 'res-complete-assigned', resourceId: 't1', serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+          enteredByCategory: false,
+        });
+        expect(reservation.assignmentStatus).toBe('ASSIGNED');
+        await lodgingService.confirmReservation('res-complete-assigned', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        const completed = await lodgingService.completeReservation('res-complete-assigned', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(completed.status).toBe(ReservationStatus.COMPLETED);
+        expect(completed.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      // N-2 (Ronda 14/15) — guard acotado: si el recurso bajo lock no
+      // coincide con el que `preCheck` pre-lockeó, el candidato correcto
+      // nunca se lockeó -- abortar y pedir reintento, no invocar
+      // assignDeferred() con un lock parcial/equivocado. Simulado acá
+      // mockeando `getById()` para que la segunda lectura (la que hace de
+      // `locked`, ya que `InMemoryReservationRepository` no implementa
+      // `getByIdWithLock` y cae a `getById()`) vea un snapshot "stale"
+      // distinto del que vio `preCheck` -- mismo efecto observable que una
+      // carrera real, sin depender de un lock de Postgres real.
+      it('guard: aborta con ReservationConcurrentlyModifiedError si el recurso bajo lock no coincide con el que preCheck pre-lockeó (N-2, fila 6)', async () => {
+        const reservation = await createAndConfirmPending2('res-complete-guard');
+        const staleWithOtherResource = withResourceAndStatus(reservation!, room2, 'PENDING_ASSIGNMENT');
+
+        const getByIdSpy = vi.spyOn(reservationRepo, 'getById');
+        getByIdSpy
+          .mockResolvedValueOnce(reservation!)              // preCheck: ve t1
+          .mockResolvedValueOnce(staleWithOtherResource);    // "locked": ve t2 (otra operación reasignó el candidato)
+
+        await expect(
+          lodgingService.completeReservation('res-complete-guard', TEST_BUSINESS_ID, TEST_USER_ID),
+        ).rejects.toThrow(ReservationConcurrentlyModifiedError);
+
+        getByIdSpy.mockRestore();
+      });
+
+      async function createAndConfirmPending2(id: string): Promise<Reservation | undefined> {
+        await createPendingReservation(id);
+        await lodgingService.confirmReservation(id, TEST_BUSINESS_ID, TEST_USER_ID);
+        return reservationRepo.getById(id);
+      }
     });
   });
 });

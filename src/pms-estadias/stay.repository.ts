@@ -13,6 +13,14 @@ import { Stay } from './stay.js';
 
 export interface StayRepository {
   save(stay: Stay): Promise<void>;
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§7
+   * ítem 8) — igual que `save()` pero corre sobre un `SqlClient` de una
+   * transacción ya abierta. `StayService.checkIn()` pasa a componer el
+   * `INSERT` de `Stay` con `assignDeferred()`/`linkStayToReservationCharges()`
+   * en una sola operación atómica.
+   */
+  saveWithClient(client: SqlClient, stay: Stay): Promise<void>;
   update(stay: Stay): Promise<void>;
   findById(id: string, businessId: string): Promise<Stay | null>;
   findByReservation(reservationId: string, businessId: string): Promise<Stay | null>;
@@ -63,7 +71,18 @@ export class SqlStayRepository implements StayRepository {
   constructor(private readonly db: SqlClient) {}
 
   async save(stay: Stay): Promise<void> {
-    await this.db.query(
+    await this.saveWithClient(this.db, stay);
+  }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§7
+   * ítem 8) — igual que `save()`, pero corre sobre el `client` que se le
+   * pasa (dentro de una transacción de `TransactionManager.run()`) en vez
+   * de `this.db`. `save()` delega acá con `this.db` para no duplicar el
+   * SQL.
+   */
+  async saveWithClient(client: SqlClient, stay: Stay): Promise<void> {
+    await client.query(
       `INSERT INTO stays
          (id, business_id, reservation_id, resource_id, customer_id,
           assigned_by, status, checked_in_at, checked_out_at,

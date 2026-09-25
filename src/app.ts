@@ -45,7 +45,7 @@ import { logger, redactedReqSerializer } from './logger.js';
 
 import { createResourcesRouter }         from './reservas/resources.routes.js';
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
-import { createReservationsRouter }      from './reservas/reservations.routes.js';
+import { createReservationsRouter, buildStayService } from './reservas/reservations.routes.js';
 import { createReportsRouter }           from './api/routes/reports.routes.js';
 import { createSystemRouter }            from './api/routes/system.routes.js';
 import { createAuthRouter }              from './api/routes/auth.routes.js';
@@ -105,7 +105,6 @@ import { SqlMaintenanceWindowRepository } from './pms-estadias/sql.maintenance-w
 import { SqlStayRepository }             from './pms-estadias/stay.repository.js';
 import { HousekeepingService }           from './pms-estadias/housekeeping.service.js';
 import { MaintenanceWindowService }      from './pms-estadias/maintenance-window.service.js';
-import { StayService }                   from './pms-estadias/stay.service.js';
 import { SqlResourceRepository }         from './reservas/sql.resource.repository.js';
 import { SqlReservationRepository }      from './reservas/sql.reservation.repository.js';
 import { SqlOccupancyRepository }        from './reservas/sql.occupancy.repository.js';
@@ -486,26 +485,30 @@ export async function createApp(): Promise<{
     '/api/stays',
     requireModule(container, ModuleKey.ALOJAMIENTO),
     (req: Request, _res: Response, next: NextFunction) => {
-      const stayRepo        = new SqlStayRepository(req.db);
+      // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §7
+      // ítem 12) — este era el ÚNICO sitio que construía `StayService` a
+      // mano (montaje por closure, `CLOSURE_MOUNTS`); ahora reusa
+      // `buildStayService()` (exportada de `reservations.routes.ts`), que
+      // ya resuelve las 2 dependencias nuevas (`ReservationService` vía
+      // `buildReservationService()`, y `ResourceRepository` para el
+      // pre-lock puro de `checkIn()`) — evita un CUARTO composition root
+      // manual de `ReservationService` (D-10).
+      const stayService = buildStayService(req);
+
+      // `arService` (mismo prefijo `/api/stays`) sigue necesitando sus
+      // propias instancias — `buildStayService()` no expone las suyas.
+      // Son wrappers sin estado sobre `req.db`/`buildTenantTransactionManager(req)`
+      // (envuelve el pool ya cacheado del tenant): dos instancias en vez
+      // de una compartida no cambia ningún comportamiento.
       const resourceRepo    = new SqlResourceRepository(req.db);
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
-      const housekeepingRepo = new SqlHousekeepingRepository(req.db);
       const financialRepo   = new SqlFinancialTransactionRepository(req.db);
       const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
-      // Bug 5 (11/09/2026) — TransactionManager del TENANT (A2.8: mismo
-      // pool cacheado que `req.db`, no el de plataforma), para que
-      // StayService pueda envolver sus 3 cambios de horario en una
-      // transacción real. Mismo builder que ya usa `arService` dos líneas
-      // más abajo.
-      const stayService = new StayService(
-        stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
-        buildTenantTransactionManager(req),
-      );
 
       const arService = new AccountsReceivableService(
         new SqlAccountsReceivableRepository(req.db),
         financialRepo,
-        stayRepo,
+        new SqlStayRepository(req.db),
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),
         businessProfileRepo,

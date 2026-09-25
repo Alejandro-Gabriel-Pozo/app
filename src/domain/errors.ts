@@ -1005,11 +1005,116 @@ export class ReservationCancelledCannotInvoiceError extends DomainError {
  * trabajo, y el lock real tomado después).
  */
 export class ReservationConcurrentlyModifiedError extends DomainError {
-  constructor(reservationId: string) {
+  /**
+   * `reason` (Ronda 15, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+   * §6 Fase 2 ítem 8) — parametrizado: el mensaje fijo original describe
+   * con precisión el único caso que esta clase cubría hasta Fase 2 (el
+   * guard de `updateReservation()`, resource.id/serviceId), pero deja de
+   * ser preciso para los usos nuevos que Fase 2 agrega (el guard de
+   * "completar", sobre un cambio de assignmentStatus/recurso candidato; el
+   * aborto de "Auto Assign All", sobre fechas). Default = el texto
+   * original, así que el único call-site preexistente (`updateReservation()`,
+   * `6178d70`) no necesita tocarse.
+   */
+  constructor(reservationId: string, reason: string = 'cambió de recurso o de servicio') {
     super(
-      `La reserva "${reservationId}" cambió de recurso o de servicio en paralelo antes de poder tomar su lock -- reintentá la operación con el estado actual.`,
+      `La reserva "${reservationId}" ${reason} en paralelo antes de poder tomar su lock -- reintentá la operación con el estado actual.`,
       'RESERVATION_CONCURRENTLY_MODIFIED',
     );
+  }
+}
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1,
+ * §8 A6.3) — reasignar una reserva `PENDING_ASSIGNMENT` (por cualquiera de
+ * los 4 caminos: PUT, "Auto Assign All", check-in, completar) a un recurso
+ * que NO pertenece a la MISMA categoría que el recurso provisorio actual.
+ * Un cambio real de categoría (upgrade/downgrade) queda explícitamente
+ * fuera de alcance de 4.3 — el staff lo resuelve por otra vía.
+ */
+export class AssignmentCategoryMismatchError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" no se puede asignar a un recurso de otra categoría -- un cambio real de tipo de unidad queda fuera de alcance.`,
+      'ASSIGNMENT_CATEGORY_MISMATCH',
+    );
+  }
+}
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+ * "`updateReservation()` en relación con `assignDeferred()`", D-2) — un
+ * `PUT /reservations/:id` que combina `resourceId` (confirmar/reasignar
+ * la asignación diferida) con un cambio real de fechas, `ratePlanId`,
+ * `details`, `adultos` o `ninos` se rechaza: "no combinar la confirmación
+ * de una asignación diferida con ningún otro cambio de la reserva" — se
+ * hace en dos pasos separados.
+ */
+export class AssignmentCombinedChangeError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" está PENDING_ASSIGNMENT -- no se puede combinar resourceId con otros cambios (fechas, tarifa, detalles, huéspedes) en el mismo PUT. Hacelo en dos pasos separados.`,
+      'ASSIGNMENT_COMBINED_CHANGE',
+    );
+  }
+}
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1
+ * paso 2) — `assignDeferred()` exige `assignmentStatus === 'PENDING_ASSIGNMENT'`
+ * bajo lock antes de aplicar la transición. Si alguien más ya la asignó
+ * entre que se armó la cola/se abrió el PUT y que esta operación tomó el
+ * lock, este es el chequeo de concurrencia real -- sin él, dos llamadas
+ * concurrentes sobre la misma reserva podrían ejecutar el resto de los
+ * pasos dos veces.
+ */
+export class ReservationAlreadyAssignedError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" ya tiene un recurso asignado de forma definitiva -- no admite una nueva asignación diferida.`,
+      'RESERVATION_ALREADY_ASSIGNED',
+    );
+  }
+}
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §7, fila
+ * de `approveScheduleChange()`) — el chequeo de conflicto de late-checkout
+ * (`findNextReservationOnResource()`) y el ajuste de la tarea de
+ * housekeeping asociada evalúan contra `reservation.resource.id`,
+ * asumiendo que es el recurso FINAL -- mientras la reserva sigue
+ * `PENDING_ASSIGNMENT`, ese recurso todavía puede cambiar. Se rechaza en
+ * firme (A6.3: "toda transición/operación inválida sobre un estado que no
+ * la soporta lanza error tipado, nunca se ignora en silencio"), no se
+ * degrada a "advertir y seguir".
+ */
+export class ScheduleChangeAssignmentPendingError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" todavía no tiene un recurso asignado de forma definitiva -- no se puede evaluar/aprobar un cambio de horario contra un recurso provisorio.`,
+      'SCHEDULE_CHANGE_ASSIGNMENT_PENDING',
+    );
+  }
+}
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1,
+ * riesgo de ciclo de imports) — relocada acá desde
+ * `pms-estadias/stay.service.ts` (donde vivía desde antes de este
+ * diseño): `assignDeferred()` (`reservas/reservation.service.ts`) necesita
+ * lanzarla para el mismo propósito que `StayService.checkIn()` ya la usa
+ * hoy (un recurso candidato ya tiene un huésped en check-in), y
+ * `stay.service.ts` ya importa `reservas/reservation.service.js`
+ * (`combineDateAndTime`) -- si `assignDeferred()` importara este error
+ * directo de `stay.service.ts`, se cerraría el ciclo
+ * `reservation.service.ts → stay.service.ts → reservation.service.ts`,
+ * bloqueado por `.dependency-cruiser.cjs` (`no-circular`). No es una
+ * decisión de diseño nueva -- alinea esta clase con la convención que el
+ * resto de los ~100 errores de dominio del repo ya sigue (vivir acá).
+ */
+export class ResourceOccupiedError extends DomainError {
+  constructor(resourceId: string) {
+    super(`La habitación ${resourceId} ya tiene un huésped en check-in.`, 'RESOURCE_OCCUPIED');
   }
 }
 

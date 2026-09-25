@@ -63,6 +63,7 @@ import { SqlBookableServiceRepository }       from '../../reservas/sql.bookable-
 import { SqlCustomerRateRepository }          from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }        from '../../platform/sql.operating-hours.repository.js';
 import { SqlMaintenanceWindowRepository }     from '../../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlStayRepository }                  from '../../pms-estadias/stay.repository.js';
 import { SqlDepositPolicyRepository }         from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository }       from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.financial-transaction.repository.js';
@@ -116,6 +117,7 @@ async function buildService() {
   const numberSequenceRepo = new SqlNumberSequenceRepository(db);
   const cancellationPolicyRepo = new SqlCancellationPolicyRepository(db);
   const auditLogRepo = new SqlAuditLogRepository(db);
+  const stayRepo = new SqlStayRepository(db);
 
   return new ReservationService(
     reservationRepo,
@@ -136,6 +138,7 @@ async function buildService() {
     numberSequenceRepo,
     cancellationPolicyRepo,
     auditLogRepo,
+    stayRepo,
   );
 }
 
@@ -620,7 +623,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       const updated = await service.updateReservation(seeded.id, {
         startTime: newStart,
         endTime:   newEnd,
-      });
+      }, BUSINESS_ID, USER_ID);
 
       expect(updated.startTime).toEqual(newStart);
       expect(updated.endTime).toEqual(newEnd);
@@ -641,7 +644,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       });
 
       await expect(
-        service.updateReservation(seeded.id, { startTime: new Date('2030-10-02T14:00:00Z') }),
+        service.updateReservation(seeded.id, { startTime: new Date('2030-10-02T14:00:00Z') }, BUSINESS_ID, USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
 
@@ -667,7 +670,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         service.updateReservation(seeded.id, {
           startTime: new Date('2030-10-03T13:00:00Z'),
           endTime:   new Date('2030-10-03T15:00:00Z'),
-        }),
+        }, BUSINESS_ID, USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
   });
@@ -731,10 +734,10 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
 
         blockedUpdate = service.updateReservation(seeded.id, {
           startTime: new Date('2031-02-10T11:00:00Z'),
-        });
+        }, BUSINESS_ID, USER_ID);
         controlUpdate = service.updateReservation(control.id, {
           startTime: new Date('2031-02-11T11:00:00Z'),
-        });
+        }, BUSINESS_ID, USER_ID);
 
         const [blocked, controlResult] = await Promise.all([
           settledWithin(blockedUpdate, 10_000),
@@ -843,7 +846,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         // tomado todavía el lock de la FILA de `reservations`.
         updatePromise = service.updateReservation(seeded.id, {
           startTime: new Date('2031-05-10T11:00:00Z'),
-        });
+        }, BUSINESS_ID, USER_ID);
 
         await new Promise((resolve) => setTimeout(resolve, 500));
 

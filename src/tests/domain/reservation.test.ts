@@ -108,3 +108,104 @@ describe('Reservation — constructor/restore(): assignmentStatus inválido (G-1
     ).toThrow(InvalidReservationError);
   });
 });
+
+// v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1) —
+// assignConcreteResource(): único punto de escritura que aplica la
+// transición PENDING_ASSIGNMENT → ASSIGNED dentro de la entidad.
+describe('Reservation — assignConcreteResource() (A6.1)', () => {
+  const newResource = new PhysicalResource('res-final', 'Habitación 102', 18000, 'cat-1', null, 3);
+
+  it('transiciona PENDING_ASSIGNMENT -> ASSIGNED, con el recurso e isExclusiveResource nuevos', () => {
+    const r = new Reservation(validProps({ assignmentStatus: 'PENDING_ASSIGNMENT', isExclusiveResource: false }));
+    const updated = r.assignConcreteResource(newResource, true);
+
+    expect(updated.assignmentStatus).toBe('ASSIGNED');
+    expect(updated.resource).toBe(newResource);
+    expect(updated.isExclusiveResource).toBe(true);
+  });
+
+  it('no muta la instancia original — devuelve una entidad NUEVA', () => {
+    const r = new Reservation(validProps({ assignmentStatus: 'PENDING_ASSIGNMENT' }));
+    const updated = r.assignConcreteResource(newResource, true);
+
+    expect(r).not.toBe(updated);
+    expect(r.assignmentStatus).toBe('PENDING_ASSIGNMENT');
+    expect(r.resource).not.toBe(newResource);
+  });
+
+  it('lanza InvalidReservationError si ya está ASSIGNED (A6.4 — terminal, sin arista de salida)', () => {
+    const r = new Reservation(validProps({ assignmentStatus: 'ASSIGNED' }));
+    expect(() => r.assignConcreteResource(newResource, true)).toThrow(InvalidReservationError);
+  });
+
+  // Test obligatorio de preservación de propiedades (A6.1, parte del
+  // diseño) — construye una reserva con TODOS los campos seteados a
+  // valores no-default, la pasa por assignConcreteResource(), y verifica
+  // que TODOS los campos EXCEPTO resource/isExclusiveResource/
+  // assignmentStatus quedaron IGUALES. Previene que un toProps() roto en
+  // el futuro reintroduzca en silencio la misma familia de bug ya
+  // documentada 4 veces en reservation.service.ts (requestedCheckInTime/
+  // isExclusiveResource/needsMaintenanceReview/cancellationPolicySnapshot).
+  it('preserva TODOS los demás campos (test de preservación de propiedades, A6.1)', () => {
+    const fullProps = validProps({
+      assignmentStatus: 'PENDING_ASSIGNMENT',
+      serviceId: 'svc-1',
+      partySize: 2,
+      notes: 'nota del huésped',
+      orderItemId: 'oi-1',
+      totalPrice: 500,
+      lines: [{ id: 'l1', reservationId: 'res-1', unitDate: new Date('2026-10-01'), price: 500 }],
+      adultos: 2,
+      ninos: 1,
+      ratePlanId: 'rp-1',
+      requestedCheckInTime: '15:00:00',
+      requestedCheckOutTime: '11:00:00',
+      scheduleApprovalStatus: 'APPROVED' as const,
+      scheduleApprovedBy: 'staff-1',
+      scheduleChargeAmount: 1000,
+      depositAmount: 50,
+      depositDueBy: new Date('2026-09-30T00:00:00Z'),
+      reservationNumber: 42,
+      appliedCustomerRateId: 'rate-1',
+      needsMaintenanceReview: true,
+      isExclusiveResource: false,
+      cancellationPolicySnapshot: { version: 1, frozenAt: new Date('2026-09-01T00:00:00Z').toISOString(), tiers: [] },
+    });
+    const original = Reservation.restore(fullProps);
+
+    const updated = original.assignConcreteResource(newResource, true);
+
+    // Campos que SÍ cambian.
+    expect(updated.resource).toBe(newResource);
+    expect(updated.isExclusiveResource).toBe(true);
+    expect(updated.assignmentStatus).toBe('ASSIGNED');
+
+    // TODOS los demás campos preservados.
+    expect(updated.id).toBe(original.id);
+    expect(updated.customer).toEqual(original.customer);
+    expect(updated.startTime).toEqual(original.startTime);
+    expect(updated.endTime).toEqual(original.endTime);
+    expect(updated.details).toEqual(original.details);
+    expect(updated.status).toBe(original.status);
+    expect(updated.serviceId).toBe(original.serviceId);
+    expect(updated.partySize).toBe(original.partySize);
+    expect(updated.notes).toBe(original.notes);
+    expect(updated.orderItemId).toBe(original.orderItemId);
+    expect(updated.totalPrice).toBe(original.totalPrice);
+    expect(updated.lines).toEqual(original.lines);
+    expect(updated.adultos).toBe(original.adultos);
+    expect(updated.ninos).toBe(original.ninos);
+    expect(updated.ratePlanId).toBe(original.ratePlanId);
+    expect(updated.requestedCheckInTime).toBe(original.requestedCheckInTime);
+    expect(updated.requestedCheckOutTime).toBe(original.requestedCheckOutTime);
+    expect(updated.scheduleApprovalStatus).toBe(original.scheduleApprovalStatus);
+    expect(updated.scheduleApprovedBy).toBe(original.scheduleApprovedBy);
+    expect(updated.scheduleChargeAmount).toBe(original.scheduleChargeAmount);
+    expect(updated.depositAmount).toBe(original.depositAmount);
+    expect(updated.depositDueBy).toEqual(original.depositDueBy);
+    expect(updated.reservationNumber).toBe(original.reservationNumber);
+    expect(updated.appliedCustomerRateId).toBe(original.appliedCustomerRateId);
+    expect(updated.needsMaintenanceReview).toBe(original.needsMaintenanceReview);
+    expect(updated.cancellationPolicySnapshot).toEqual(original.cancellationPolicySnapshot);
+  });
+});

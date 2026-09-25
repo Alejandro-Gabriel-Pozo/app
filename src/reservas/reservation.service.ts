@@ -64,7 +64,12 @@ import {
   LodgingRequiresServiceError,
   ReservationChargeInvoicedError,
   ReservationConcurrentlyModifiedError,
+  AssignmentCategoryMismatchError,
+  AssignmentCombinedChangeError,
+  ReservationAlreadyAssignedError,
+  ResourceOccupiedError,
 } from '../domain/errors.js';
+import { recordFieldChangesWithClient } from '../domain/audit.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 import { BookableServiceNotFoundError } from './bookable-service.service.js';
 import type { ReservationLine } from './reservation.types.js';
@@ -81,6 +86,16 @@ import type { IBookableServiceRepository } from './bookable-service.repository.j
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
 import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1
+ * paso 7) — `assignDeferred()` necesita filtrar contra `Stay`s activas del
+ * recurso candidato. Import de TIPO desde `stay.repository.ts` (no de
+ * `stay.service.ts`, que sí importa de este archivo -- ver
+ * `ResourceOccupiedError` en `domain/errors.ts` para el riesgo de ciclo que
+ * esto evita). Mismo precedente que `MaintenanceWindowRepository` arriba:
+ * `stay.repository.ts` no importa nada de `reservas`.
+ */
+import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
 import type { CancellationPolicyRepository } from './cancellation-policy.repository.js';
 import { buildCancellationPolicySnapshot } from './cancellation-policy.repository.js';
@@ -108,6 +123,31 @@ export { combineDateAndTime } from './reservation-time.utils.js';
  * confirmado con el dueño (AskUserQuestion).
  */
 const PAST_START_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+ * "`updateReservation()` en relación con `assignDeferred()`", B-3 Ronda
+ * 15) — comparación estructural de `details` (JSONB, Postgres puede
+ * reordenar las claves al persistir) para el discriminador de
+ * `updateReservation()`. NO usa `JSON.stringify()` liso (falso positivo
+ * si el orden de claves difiere) ni `diffFields()` (`domain/audit.ts`,
+ * misma fragilidad — corregirla ahí queda fuera de alcance de 4.3).
+ * Serializa cada valor con las claves de cada objeto ORDENADAS
+ * alfabéticamente en cualquier nivel de anidamiento, insensible al orden
+ * en que Postgres las haya persistido. No existe ningún `deepEqual`
+ * compartido en este repo (verificado) — local a este punto.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`).join(',')}}`;
+}
 
 export class ReservationService {
   private readonly pricing:      ReservationPricingService;
@@ -175,6 +215,17 @@ export class ReservationService {
      */
     private readonly auditLogRepo: Pick<AuditLogRepository, 'recordWithClient'>,
     /**
+     * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+     * A6.1 paso 7) — `assignDeferred()` filtra el recurso candidato contra
+     * `Stay`s activas (el chequeo de disponibilidad de `reservations` no ve
+     * `stays`). `Pick<..., 'findActiveByResource'>` — mismo recorte que ya
+     * usa `auditLogRepo` arriba, no la interfaz completa. 20º parámetro,
+     * obligatorio y sin default, mismo criterio que `auditLogRepo`: sin
+     * esta dependencia, `assignDeferred()` no puede protegerse contra un
+     * upgrade que le quite la habitación a un huésped ya en check-in.
+     */
+    private readonly stayRepository: Pick<StayRepository, 'findActiveByResource'>,
+    /**
      * J1 (23/08/2026) — reloj inyectable para el guard de "no crear/mover
      * una reserva al pasado". Opcional con default real: los ~101
      * call-sites de producción no necesitan tocarse. Los tests que
@@ -222,6 +273,19 @@ export class ReservationService {
     ninos?: number | null;
     /** K3 (23/08/2026) — explícito para negocios de recurso 1:1 (barbería/spa). Alojamiento lo deriva de adultos+ninos, ver más abajo. */
     partySize?: number;
+    /**
+     * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6
+     * Fase 2 ítem 1, B2) — señal explícita de que esta alta entró por
+     * `categoryId` (sin `resourceId`), reenviada TAL CUAL desde
+     * `reservations.routes.ts` (`!body.resourceId && !!body.categoryId`,
+     * el mismo booleano que ya decide la rama de
+     * `findAvailableResourceInCategory()` ahí — no se recalcula acá).
+     * `resourceId` sigue siendo obligatorio en este método (la ruta ya lo
+     * resolvió a un recurso concreto, provisorio o no) — esta señal solo
+     * decide el `assignmentStatus` inicial, no cambia la resolución del
+     * recurso.
+     */
+    enteredByCategory?: boolean;
   }): Promise<Reservation> {
     const resource = await this.resourceRepository.getById(params.resourceId);
     if (!resource) {
@@ -395,13 +459,15 @@ export class ReservationService {
           unitDate:      line.unitDate,
           price:         line.price,
         })),
-        // v11/Fase 1 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
-        // §6) — el alta sigue asignando recurso de forma inmediata, como
-        // hoy: `categoryId` ya se resolvió a `resource` (un recurso
-        // concreto) más arriba en este mismo método. Fase 2, no Fase 1, es
-        // la que introduce el alta por categoría sin recurso concreto
-        // (`PENDING_ASSIGNMENT`) — no existe todavía.
-        assignmentStatus: 'ASSIGNED',
+        // v11/Fase 2 (25/09/2026, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+        // §6 Fase 2 ítem 1) — activación real del marcado: el alta por
+        // `categoryId` de una categoría `is_lodging = TRUE` nace
+        // `PENDING_ASSIGNMENT` (el recurso resuelto arriba es un candidato
+        // PROVISORIO, reoptimizable) -- cualquier otro camino (resourceId
+        // explícito, o categoryId de una categoría que no es alojamiento,
+        // ej. turnos) sigue naciendo `ASSIGNED`, comportamiento idéntico a
+        // Fase 1.
+        assignmentStatus: params.enteredByCategory && category?.isLodging ? 'PENDING_ASSIGNMENT' : 'ASSIGNED',
       });
 
       await this.reservationRepository.saveWithClient(client, reservation);
@@ -410,6 +476,21 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * `businessId`/`changedBy` (v11, Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md
+   * §8 "`updateReservation()` en relación con `assignDeferred()`",
+   * Requisito de implementación, consecuencia directa de C1) — nuevos,
+   * necesarios para poder llamar a `assignDeferred(client, id,
+   * changes.resourceId, businessId, changedBy)` en el discriminador de
+   * abajo, que `assignDeferred()` exige (filtro de `Stay` activa por
+   * `businessId`, auditoría A6.5 por `changedBy`). El diseño solo declara
+   * `businessId` como parámetro nuevo explícito -- `changedBy` no estaba
+   * nombrado ahí, pero `assignDeferred()` lo exige igual para su paso 11
+   * (auditoría de la transición); se agrega con el mismo criterio
+   * (sourceado en la ruta desde `req.user!.id`, mismo patrón que
+   * `confirmReservation()`/`completeReservation()`) -- ver el reporte de
+   * implementación para el detalle de esta desviación.
+   */
   async updateReservation(
     id: string,
     changes: {
@@ -423,6 +504,8 @@ export class ReservationService {
       /** Tarifa elegida (spec de mejoras PMS, 18/08/2026) — recotiza si sigue PENDING, ver más abajo. */
       ratePlanId?: string | null;
     },
+    businessId: string,
+    changedBy: string,
   ): Promise<Reservation> {
     // Guard de forma, no depende del estado de la fila -- no hace falta
     // leer ni lockear nada para saber que no vino ningún campo.
@@ -434,6 +517,13 @@ export class ReservationService {
         'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos, ninos o ratePlanId',
       );
     }
+    // v11 (Fase 2) — businessId/changedBy son obligatorios desde acá
+    // (necesarios para el discriminador que puede invocar assignDeferred(),
+    // ver docblock de arriba) — mismo criterio fail-loud que el resto de
+    // los métodos de este archivo (confirmReservation()/cancelReservation()/
+    // completeReservation()).
+    if (!businessId) throw new Error('businessId es obligatorio en updateReservation');
+    if (!changedBy) throw new Error('changedBy es obligatorio en updateReservation (A6.5)');
 
     // Pre-chequeo FUERA de la transacción, mismo criterio que el `preCheck`
     // de confirmReservation() (más abajo en este archivo): NO es la
@@ -446,6 +536,15 @@ export class ReservationService {
     const preCheck = await this.requireReservation(id);
 
     let updated!: Reservation;
+    // (B-2, corrección post-gate sobre Fase 2 de 4.3) — `true` solo si esta
+    // llamada pasó por `assignDeferred()` (rama de arriba, D-2): distingue
+    // "esta invocación confirmó una asignación diferida" de una
+    // reasignación normal de una reserva ya `ASSIGNED` (drag-to-move), que
+    // NO necesita registrar ocupación acá porque nunca la salteó (B-1 solo
+    // saltea mientras `PENDING_ASSIGNMENT`). Se fija DENTRO del callback,
+    // en el mismo `if` que decide la rama — no se recalcula después, para
+    // no depender de comparar `updated`/`existing` fuera de la transacción.
+    let wentThroughAssignDeferred = false;
 
     await this.transactionManager.run(async (client: SqlClient) => {
       // UPDATE-RESERVATION-LOCK-ORDER-001 (24/09/2026, corrección del gate
@@ -546,6 +645,50 @@ export class ReservationService {
       const newRatePlanId = changes.ratePlanId !== undefined ? changes.ratePlanId : existing.ratePlanId;
       const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;
       const newNinos     = changes.ninos   !== undefined ? changes.ninos   : existing.ninos;
+
+      // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+      // "updateReservation() en relación con assignDeferred()") --
+      // discriminador de asignación diferida. Se evalúa ACÁ, entre el
+      // guard de status (arriba) y la resolución de recurso/categoría/
+      // precio (abajo) -- la condición usa `existing` (la lectura BAJO
+      // lock), nunca `preCheck`.
+      if (existing.assignmentStatus === 'PENDING_ASSIGNMENT' && changes.resourceId) {
+        // D-2 (decisión del dueño, Ronda 14) -- combinar resourceId con un
+        // cambio REAL (por VALOR, no por mera presencia del campo) de
+        // fechas/ratePlanId/details/adultos/ninos se rechaza: "no combinar
+        // la confirmación de una asignación diferida con ningún otro
+        // cambio de la reserva". `undefined` (campo ausente del body)
+        // nunca es un "cambio real" -- no hay valor nuevo que comparar.
+        const hasRealOtherChange =
+          (changes.startTime !== undefined && changes.startTime.getTime() !== existing.startTime.getTime())
+          || (changes.endTime !== undefined && changes.endTime.getTime() !== existing.endTime.getTime())
+          || (changes.ratePlanId !== undefined && changes.ratePlanId !== existing.ratePlanId)
+          || (changes.details !== undefined && stableStringify(changes.details) !== stableStringify(existing.details))
+          || (changes.adultos !== undefined && changes.adultos !== existing.adultos)
+          || (changes.ninos !== undefined && changes.ninos !== existing.ninos);
+
+        if (hasRealOtherChange) {
+          throw new AssignmentCombinedChangeError(id);
+        }
+
+        // Confirma (mismo resourceId) o reasigna (distinto) -- assignDeferred()
+        // resuelve `isSameResource` por su cuenta (su propio paso 4). El
+        // recurso candidato YA está lockeado desde el paso 2 real de este
+        // método (`effectiveResourceId` es exactamente `changes.resourceId`
+        // en esta rama), así que `assignDeferred()` no necesita ningún
+        // pre-lock propio acá -- su paso 1 (lock de fila) y, si corresponde
+        // reasignación real, su paso 8 (re-chequeo de disponibilidad, que
+        // re-lockea el recurso) son no-ops sobre locks que esta transacción
+        // ya tiene. `assignDeferred()` ya persistió esta reserva (su propio
+        // paso 10) -- el resto del método (resolución de recurso/categoría/
+        // precio/disponibilidad, restore(), saveWithClient()) se saltea por
+        // completo: no queda ningún caso real en que se necesite un
+        // recálculo posterior dentro de este mismo PUT (D-2 ya intercepta
+        // arriba cualquier combinación con otro cambio real).
+        updated = await this.assignDeferred(client, id, changes.resourceId, businessId, changedBy);
+        wentThroughAssignDeferred = true;
+        return;
+      }
 
       // Reasignación de recurso (drag-to-move) — resuelve el recurso NUEVO
       // antes de validar detalles/disponibilidad, para que todo lo demás
@@ -717,6 +860,16 @@ export class ReservationService {
 
       await this.reservationRepository.saveWithClient(client, updated);
     });
+
+    // (B-2) — §8 del diseño: "después de que la transacción haga commit",
+    // registrar ocupación sobre la entidad que `assignDeferred()` devolvió.
+    // Sin esto, una reasignación por PUT de una `PENDING_ASSIGNMENT` a un
+    // recurso concreto confirmaba la asignación pero nunca dejaba ninguna
+    // fila en `occupancy_records` (B-1 la saltea mientras estaba
+    // PENDING_ASSIGNMENT, y nada más la registraba después).
+    if (wentThroughAssignDeferred) {
+      await this.availability.recordOccupancy(updated);
+    }
 
     return updated;
   }
@@ -1113,18 +1266,78 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8,
+   * sub-alcance "completar confirma la asignación") — `preCheck` (SIN
+   * lock, patrón NUEVO — este método antes entraba directo a
+   * `requireReservationWithLock()`) decide ÚNICAMENTE qué recurso
+   * pre-lockear, ANTES de la fila (H2: la optimización de FK de un
+   * `UPDATE` que no cambia el valor no aplica si la MISMA transacción ya
+   * escribió la fila antes — el UPSERT de `assignDeferred()` seguido del
+   * propio `.complete()`/`saveWithClient()` de este método es exactamente
+   * ese caso). La DECISIÓN de invocar `assignDeferred()` — y el guard de
+   * coherencia — se toman SIEMPRE con `locked` (la lectura BAJO lock),
+   * nunca con `preCheck` (evita un 409 espurio si otra operación ya
+   * asignó la reserva entre `preCheck` y el lock de fila).
+   */
   async completeReservation(id: string, businessId: string, changedBy: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en completeReservation');
     if (!changedBy) throw new Error('changedBy es obligatorio en completeReservation (A6.5)');
+
+    const preCheck = await this.requireReservation(id);
 
     let reservation!: Reservation;
 
     // Bug 3 (25/08/2026) — mismo criterio que cancelReservation()/
     // confirmReservation(), ver docblock de arriba.
     await this.transactionManager.run(async (client: SqlClient) => {
-      reservation = await this.requireReservationWithLock(client, id);
-      const previousStatus = reservation.status;
-      reservation.complete();
+      // v11/Fase 2 (C-4, Ronda 15) — el lock del recurso, si corresponde,
+      // es la PRIMERA sentencia DENTRO de la transacción, nunca antes de
+      // abrirla (`lockByIds()` recibe el `client` transaccional). Si
+      // `preCheck` ya ve ASSIGNED, no se lockea ningún recurso nuevo acá.
+      if (preCheck.assignmentStatus === 'PENDING_ASSIGNMENT') {
+        await this.resourceRepository.lockByIds(client, [preCheck.resource.id]);
+      }
+
+      let locked = await this.requireReservationWithLock(client, id);
+
+      // v11/Fase 2 (N-2, Ronda 14/15) — tabla de 6 casos completa en el
+      // diseño. La decisión SIEMPRE se toma con `locked`, nunca con
+      // `preCheck`.
+      if (locked.assignmentStatus === 'PENDING_ASSIGNMENT') {
+        // Guard acotado (2 campos): si `preCheck` no vio PENDING_ASSIGNMENT,
+        // o si el recurso bajo lock no coincide con el que `preCheck`
+        // pre-lockeó, el recurso correcto nunca se lockeó -- invocar
+        // assignDeferred() acá violaría N1 (recurso SIEMPRE lockeado ANTES
+        // que la fila). Aborta y pide reintento.
+        const guardTriggers =
+          preCheck.assignmentStatus !== 'PENDING_ASSIGNMENT'
+          || locked.resource.id !== preCheck.resource.id;
+        if (guardTriggers) {
+          throw new ReservationConcurrentlyModifiedError(id, 'cambió de estado de asignación o de recurso candidato');
+        }
+        // Caso normal: mismo recurso que ya tenía ("completar" nunca
+        // reasigna) -- isSameResource siempre verdadero en esta rama, por
+        // construcción. El recurso ya está lockeado desde arriba, así que
+        // el paso 1 de assignDeferred() (lock de fila) es un no-op y sus
+        // pasos 5-8 se saltean por completo.
+        locked = await this.assignDeferred(client, id, locked.resource.id, businessId, changedBy);
+      }
+      // Si `locked.assignmentStatus === 'ASSIGNED'` (incluido el caso de
+      // carrera donde `preCheck` vio PENDING_ASSIGNMENT pero otra
+      // operación ya asignó la reserva antes de que "completar" tomara su
+      // lock de fila) -- NO invoca assignDeferred(): sigue por la rama
+      // ASSIGNED normal, sin ningún error de conflicto. El lock del
+      // recurso tomado de más (si lo hubo) es inocuo.
+
+      // B4 -- encadenamiento obligatorio: si assignDeferred() corrió, TODO
+      // lo que sigue (.complete(), saveWithClient(), y post-commit
+      // recordOccupancy()) usa la entidad NUEVA que devolvió (`locked`,
+      // reasignada arriba), nunca la lectura original -- de lo contrario el
+      // UPSERT final pisaría la transición recién hecha.
+      const previousStatus = locked.status;
+      locked.complete();
+      reservation = locked;
 
       await this.reservationRepository.saveWithClient(client, reservation);
       // D-10 -- misma transacción que el UPDATE de arriba (atomic-state-mutation).
@@ -1147,6 +1360,152 @@ export class ReservationService {
 
     await this.availability.recordOccupancy(reservation);
     return reservation;
+  }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+   * A6.1) — operación de aplicación única que confirma una asignación
+   * provisoria (`PENDING_ASSIGNMENT`) sobre un recurso concreto. Los
+   * CUATRO caminos (`PUT /reservations/:id`, "Auto Assign All" (Fase 3,
+   * no implementada), check-in, completar) la invocan en vez de
+   * reimplementarla cada uno por su lado.
+   *
+   * Recibe el `client` de la transacción del CALLER — no abre su propia
+   * transacción, porque `checkIn()`/`updateReservation()`/`completeReservation()`
+   * necesitan componerla dentro de la suya. El CALLER es responsable de
+   * lockear el recurso candidato (`resourceId`) ANTES de invocar esta
+   * operación, cuando corresponda (N1: nunca se toma el lock de un
+   * recurso mientras ya se tiene tomada una fila de `reservations`) — ver
+   * la tabla de orden de locks por caller en el diseño (§8 A6.1).
+   *
+   * `recordOccupancy()` NO se llama acá — cada caller lo hace por su
+   * cuenta, DESPUÉS de que su propia transacción haga commit exitosamente
+   * (`SqlOccupancyRepository` no tiene variante `WithClient`).
+   */
+  async assignDeferred(
+    client: SqlClient,
+    reservationId: string,
+    resourceId: string,
+    businessId: string,
+    changedBy: string,
+  ): Promise<Reservation> {
+    // Paso 1 — lock de la reserva (no-op si el caller ya la tenía
+    // lockeada). Única fuente de verdad para el resto de los pasos.
+    const locked = await this.requireReservationWithLock(client, reservationId);
+
+    // Paso 2 — re-chequeo de estado bajo lock: el chequeo de concurrencia
+    // real. Sin esto, dos llamadas concurrentes sobre la misma reserva
+    // podrían ejecutar el resto de los pasos dos veces.
+    if (locked.assignmentStatus !== 'PENDING_ASSIGNMENT') {
+      throw new ReservationAlreadyAssignedError(reservationId);
+    }
+
+    // Paso 3 — allowlist de status.
+    if (locked.status !== 'PENDING' && locked.status !== 'CONFIRMED') {
+      throw new InvalidReservationError(
+        `Solo se puede confirmar la asignación de reservas en estado PENDING o CONFIRMED. Estado actual: ${locked.status}`,
+      );
+    }
+
+    // Paso 4 — ¿es la MISMA unidad, bajo lock? Relectura autoritativa,
+    // recalculada acá, no asumida.
+    const isSameResource = resourceId === locked.resource.id;
+
+    let resource: PhysicalResource = locked.resource;
+    let isExclusiveResourceValue = locked.isExclusiveResource;
+    let shouldClearMaintenanceReview = false;
+
+    if (!isSameResource) {
+      // Paso 5 — carga y validación del recurso nuevo. Ya está lockeado
+      // por el pre-lock que el caller tomó antes de invocar esta
+      // operación (contrato de N1) — esta carga es una lectura normal
+      // sobre una fila que la propia transacción ya tiene tomada.
+      const newResource = await this.resourceRepository.getById(resourceId);
+      if (!newResource) {
+        throw new ResourceNotFoundError(resourceId);
+      }
+      if (!newResource.active) {
+        throw new InvalidReservationError(`El recurso ${resourceId} está desactivado.`);
+      }
+      const newCategory = await this.categoryRepository.findById(newResource.categoryId);
+
+      // Paso 6 — restricción de categoría. La categoría "original" se
+      // deriva EN VIVO de `locked.resource.categoryId`.
+      if (newResource.categoryId !== locked.resource.categoryId) {
+        throw new AssignmentCategoryMismatchError(reservationId);
+      }
+
+      // Paso 7 — filtro de Stay activa en el recurso candidato. La tabla
+      // `stays` no tiene columnas de rango de fechas -- se usa el
+      // predicado que el check-in YA usa hoy para este mismo propósito.
+      // Excluye explícitamente una Stay de la propia reserva que se está
+      // asignando (para no rechazarla contra su propio check-in).
+      const activeStay = await this.stayRepository.findActiveByResource(resourceId, businessId);
+      if (activeStay && activeStay.reservationId !== locked.id) {
+        throw new ResourceOccupiedError(resourceId);
+      }
+
+      // Paso 8 — re-chequeo de disponibilidad + snapshot condicional. Esta
+      // llamada vuelve a lockear `resourceId` vía su propio `lockByIds()`
+      // interno -- el MISMO recurso que el pre-lock del caller ya lockeó,
+      // o, si llegó sin ese pre-lock, lo lockea acá por primera vez, sin
+      // diferencia funcional (Postgres permite `FOR UPDATE` repetido sobre
+      // la misma fila dentro de la misma transacción, no-op).
+      await this.availability.assertAllResourcesAvailable(
+        client, [resourceId], locked.startTime, locked.endTime, locked.id, locked.partySize,
+      );
+
+      resource = newResource;
+      isExclusiveResourceValue = newCategory?.isExclusive ?? false;
+      shouldClearMaintenanceReview = true;
+    }
+
+    // Paso 9 — no-recotización: puramente declarativo, nada que calcular
+    // ni saltear acá. Si la llamada intentó combinar fechas/ratePlanId con
+    // la confirmación, eso ya se rechazó ANTES de llegar acá
+    // (responsabilidad del caller, ver el discriminador de
+    // `updateReservation()`).
+
+    // Paso 10 — la escritura real. Único punto donde `assignment_status`
+    // cambia de valor de verdad.
+    const updated = locked.assignConcreteResource(resource, isExclusiveResourceValue);
+    if (shouldClearMaintenanceReview) {
+      updated.clearNeedsMaintenanceReview();
+    }
+    await this.reservationRepository.saveWithClient(client, updated);
+
+    // Paso 11 — auditoría de la transición (A6.5), dentro de la misma
+    // transacción. (C-1, corrección post-gate sobre Fase 2 de 4.3) — solo
+    // se registra `resourceId` si el recurso REALMENTE cambió
+    // (`!isSameResource`, paso 4 de acá arriba): completar/check-in sobre
+    // el mismo recurso provisorio (el caso más común) no pasa por acá, así
+    // que no queda un cambio "de X a X" ruidoso en la auditoría (A6.5,
+    // mismo criterio que `diffFields()` de `domain/audit.ts` — no aplica
+    // literal porque `resourceId` no es un campo plano de `Reservation`,
+    // vive anidado en `resource.id`).
+    const fieldChanges: Array<{ field: string; oldValue: unknown; newValue: unknown }> = [
+      { field: 'assignmentStatus', oldValue: 'PENDING_ASSIGNMENT', newValue: 'ASSIGNED' },
+    ];
+    if (!isSameResource) {
+      fieldChanges.push({ field: 'resourceId', oldValue: locked.resource.id, newValue: updated.resource.id });
+    }
+    await recordFieldChangesWithClient(client, this.auditLogRepo, 'reservations', reservationId, fieldChanges, changedBy);
+
+    return updated;
+  }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6
+   * sub-alcance "check-in confirma la asignación", B-2 Ronda 13) —
+   * expuesto para que `StayService.checkIn()` (que no tiene, ni va a
+   * tener, ningún acceso directo a `this.availability`) pueda registrar
+   * ocupación DESPUÉS de que su propia transacción haga commit, sobre la
+   * entidad que devolvió `assignDeferred()`. Delega internamente a la
+   * misma implementación que ya usan `confirmReservation()`/
+   * `completeReservation()` desde DENTRO de esta clase.
+   */
+  async recordOccupancy(reservation: Reservation): Promise<void> {
+    return this.availability.recordOccupancy(reservation);
   }
 
   /**

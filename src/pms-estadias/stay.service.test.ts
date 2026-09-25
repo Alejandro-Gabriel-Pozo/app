@@ -1,20 +1,27 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { StayService, StayBalanceOwedError, ResourceOccupiedError, ResourceNotReadyForCheckInError } from './stay.service.js';
+import { StayService, StayBalanceOwedError, ResourceNotReadyForCheckInError } from './stay.service.js';
 import { DateTime } from 'luxon';
 import type { Stay } from './stay.js';
 import { Reservation } from '../reservas/Reservation.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
 import { PhysicalResource } from '../reservas/resource.entities.js';
+import type { ResourceRepository } from '../reservas/resource.repository.js';
 import { ReservationStatus } from '../types/enums.js';
 import { InMemoryReservationRepository } from '../reservas/in-memory.reservation.repository.js';
 import { InMemoryHousekeepingRepository } from './in-memory.housekeeping.repository.js';
 import type { StayRepository } from './stay.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { ReservationService } from '../reservas/reservation.service.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
-import { NextArrivalConflictError, InvalidReservationError } from '../domain/errors.js';
+import {
+  NextArrivalConflictError,
+  InvalidReservationError,
+  ResourceOccupiedError,
+  ScheduleChangeAssignmentPendingError,
+} from '../domain/errors.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
@@ -59,6 +66,7 @@ class LockTrackingReservationRepository extends InMemoryReservationRepository {
 class FakeStayRepository implements StayRepository {
   private stays = new Map<string, Stay>();
   async save(stay: Stay): Promise<void> { this.stays.set(stay.id, stay); }
+  async saveWithClient(_client: SqlClient, stay: Stay): Promise<void> { this.stays.set(stay.id, stay); }
   async update(stay: Stay): Promise<void> { this.stays.set(stay.id, stay); }
   async findById(id: string): Promise<Stay | null> { return this.stays.get(id) ?? null; }
   async findByReservation(reservationId: string): Promise<Stay | null> {
@@ -69,6 +77,47 @@ class FakeStayRepository implements StayRepository {
   }
   async findActiveByCustomer(): Promise<Stay[]> { return []; }
   async findByStatus(): Promise<Stay[]> { return []; }
+}
+
+/**
+ * v11 (Fase 2) — fake mínimo de `ReservationService`, acotado a
+ * `assignDeferred()`/`recordOccupancy()` (el `Pick<>` que `StayService`
+ * exige). No reimplementa el mecanismo real (eso lo cubre
+ * `reservation.service.test.ts`) — solo registra las llamadas para que los
+ * tests de `checkIn()` puedan verificar el discriminador H1 (¿se invocó o
+ * no?, ¿con qué entidad se llamó a `recordOccupancy()`?).
+ */
+class FakeReservationServiceForCheckIn implements Pick<ReservationService, 'assignDeferred' | 'recordOccupancy'> {
+  public assignDeferredCalls: { client: SqlClient; reservationId: string; resourceId: string; businessId: string; changedBy: string }[] = [];
+  public recordOccupancyCalls: Reservation[] = [];
+  /** La entidad que `assignDeferred()` "devuelve" — configurable por test. */
+  public assignDeferredResult: Reservation | null = null;
+
+  async assignDeferred(
+    client: SqlClient, reservationId: string, resourceId: string, businessId: string, changedBy: string,
+  ): Promise<Reservation> {
+    this.assignDeferredCalls.push({ client, reservationId, resourceId, businessId, changedBy });
+    if (!this.assignDeferredResult) {
+      throw new Error('FakeReservationServiceForCheckIn.assignDeferredResult no configurado');
+    }
+    return this.assignDeferredResult;
+  }
+
+  async recordOccupancy(reservation: Reservation): Promise<void> {
+    this.recordOccupancyCalls.push(reservation);
+  }
+}
+
+/**
+ * v11 (Fase 2) — fake mínimo de `Pick<ResourceRepository, 'lockByIds'>`
+ * (el pre-lock puro de `checkIn()`, H2). Registra las llamadas para
+ * verificar el orden de locks (recurso ANTES que la fila de la reserva).
+ */
+class FakeResourceLockRepository implements Pick<ResourceRepository, 'lockByIds'> {
+  public lockCalls: string[][] = [];
+  async lockByIds(_client: SqlClient, ids: string[]): Promise<void> {
+    this.lockCalls.push(ids);
+  }
 }
 
 /** Fake mínimo — expone linkStayToReservationCharges/getNetBalanceByStayId de forma inspeccionable. */
@@ -105,6 +154,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
     this.linkedCalls.push({ stayId, reservationId });
     return 1;
   }
+  async linkStayToReservationChargesWithClient(_client: SqlClient, stayId: string, reservationId: string): Promise<number> {
+    this.linkedCalls.push({ stayId, reservationId });
+    return 1;
+  }
 }
 
 /** Fake mínimo — devuelve un perfil fijo. */
@@ -137,6 +190,8 @@ describe('StayService — ledger (A1, paso 3)', () => {
   let housekeepingRepo: InMemoryHousekeepingRepository;
   let financialRepo: FakeFinancialTransactionRepository;
   let businessProfileRepo: FakeBusinessProfileRepository;
+  let reservationServiceFake: FakeReservationServiceForCheckIn;
+  let resourceLockRepo: FakeResourceLockRepository;
   let service: StayService;
 
   beforeEach(async () => {
@@ -145,7 +200,12 @@ describe('StayService — ledger (A1, paso 3)', () => {
     housekeepingRepo = new InMemoryHousekeepingRepository();
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager());
+    reservationServiceFake = new FakeReservationServiceForCheckIn();
+    resourceLockRepo = new FakeResourceLockRepository();
+    service = new StayService(
+      stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+      new InMemoryTransactionManager(), reservationServiceFake, resourceLockRepo,
+    );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -258,6 +318,83 @@ describe('StayService — ledger (A1, paso 3)', () => {
     ).rejects.toThrow(ResourceOccupiedError);
   });
 
+  // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8,
+  // H1/H2) — el mecanismo nuevo de 4.3 es estrictamente ADITIVO: una
+  // reserva ASSIGNED (el 100% de los check-ins de hoy) no invoca
+  // assignDeferred() en absoluto.
+  it('checkIn() de una reserva ASSIGNED NO invoca assignDeferred() ni recordOccupancy() (H1)', async () => {
+    await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+
+    expect(reservationServiceFake.assignDeferredCalls).toHaveLength(0);
+    expect(reservationServiceFake.recordOccupancyCalls).toHaveLength(0);
+  });
+
+  // H2 — el candidato se lockea SIEMPRE, antes que la fila de la reserva,
+  // incluso en el camino ASSIGNED (el INSERT de Stay toma FOR KEY SHARE
+  // sobre resources sin excepción para un INSERT).
+  it('checkIn() lockea el recurso candidato (pre-lock puro, H2)', async () => {
+    await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+
+    expect(resourceLockRepo.lockCalls).toEqual([[TEST_RESOURCE_ID]]);
+  });
+
+  // H1 — una reserva PENDING_ASSIGNMENT SÍ invoca assignDeferred(), y
+  // recordOccupancy() post-commit se llama con la entidad que ESA
+  // operación devolvió, nunca con una lectura previa (G-3, gate 18).
+  it('checkIn() de una reserva PENDING_ASSIGNMENT invoca assignDeferred() y recordOccupancy() con la entidad devuelta', async () => {
+    const pendingResource = new PhysicalResource('room-pending', 'Habitación pendiente', 15000, 'cat-1');
+    const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
+    const pendingReservation = new Reservation({
+      id: 'res-pending',
+      customer,
+      resource: pendingResource,
+      startTime: new Date('2026-08-13T15:00:00Z'),
+      endTime: new Date('2026-08-14T11:00:00Z'),
+      details: {},
+      initialStatus: ReservationStatus.CONFIRMED,
+      totalPrice: 15000,
+      reservationNumber: 2,
+      appliedCustomerRateId: null,
+      assignmentStatus: 'PENDING_ASSIGNMENT',
+    });
+    await reservationRepo.save(pendingReservation);
+
+    // La entidad que "devuelve" assignDeferred() -- ya ASSIGNED, con el
+    // recurso definitivo (puede ser otro distinto del provisorio).
+    const assignedResource = new PhysicalResource('room-final', 'Habitación final', 15000, 'cat-1');
+    const assignedReservation = pendingReservation.assignConcreteResource(assignedResource, false);
+    reservationServiceFake.assignDeferredResult = assignedReservation;
+
+    const stay = await service.checkIn({
+      reservationId: 'res-pending',
+      resourceId: 'room-final',
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+
+    expect(reservationServiceFake.assignDeferredCalls).toHaveLength(1);
+    expect(reservationServiceFake.assignDeferredCalls[0]).toMatchObject({
+      reservationId: 'res-pending',
+      resourceId: 'room-final',
+      businessId: TEST_BUSINESS_ID,
+      changedBy: 'user-1',
+    });
+    // recordOccupancy() se llama con la entidad DEVUELTA por
+    // assignDeferred() -- nunca con la lectura sin lock original.
+    expect(reservationServiceFake.recordOccupancyCalls).toEqual([assignedReservation]);
+    expect(stay.resourceId).toBe('room-final');
+  });
+
   it('getFolio() devuelve saldo + transacciones de la estadía (A1, paso 6)', async () => {
     const stay = await service.checkIn({
       reservationId: TEST_RESERVATION_ID,
@@ -293,7 +430,10 @@ describe('StayService — gating de check-in por limpieza', () => {
     housekeepingRepo = new InMemoryHousekeepingRepository();
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager());
+    service = new StayService(
+      stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+      new InMemoryTransactionManager(), new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
+    );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -420,7 +560,10 @@ describe('StayService — horario de check-in/check-out', () => {
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
     txManager = new InMemoryTransactionManager();
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, txManager);
+    service = new StayService(
+      stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+      txManager, new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
+    );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -483,6 +626,47 @@ describe('StayService — horario de check-in/check-out', () => {
 
     expect(approved.scheduleApprovalStatus).toBe('APPROVED');
     expect(approved.scheduleApprovedBy).toBe('staff-1');
+  });
+
+  // v11 (Fase 2, §7 fila de approveScheduleChange()) — el chequeo de
+  // conflicto de late-checkout evalúa contra `reservation.resource.id`,
+  // asumiendo que es el recurso FINAL. Mientras la reserva sigue
+  // PENDING_ASSIGNMENT ese recurso todavía puede cambiar -- se rechaza en
+  // firme (A6.3), no se evalúa contra el provisorio.
+  it('approveScheduleChange() rechaza con ScheduleChangeAssignmentPendingError si la reserva sigue PENDING_ASSIGNMENT', async () => {
+    const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
+    const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
+    const pendingReservation = new Reservation({
+      id: 'res-pending-schedule',
+      customer,
+      resource,
+      startTime: new Date('2026-08-13T15:00:00Z'),
+      endTime: new Date('2026-08-14T11:00:00Z'),
+      details: {},
+      initialStatus: ReservationStatus.CONFIRMED,
+      totalPrice: 15000,
+      reservationNumber: 3,
+      appliedCustomerRateId: null,
+      assignmentStatus: 'PENDING_ASSIGNMENT',
+    });
+    await reservationRepo.save(pendingReservation);
+
+    await service.requestScheduleChange({
+      reservationId: 'res-pending-schedule',
+      requestedCheckOutTime: '13:00:00',
+    });
+
+    await expect(
+      service.approveScheduleChange({
+        reservationId: 'res-pending-schedule',
+        businessId: TEST_BUSINESS_ID,
+        approvedBy: 'staff-1',
+      }),
+    ).rejects.toThrow(ScheduleChangeAssignmentPendingError);
+
+    // No debe haber quedado aprobado tras el rechazo.
+    const reservation = await reservationRepo.getById('res-pending-schedule');
+    expect(reservation!.scheduleApprovalStatus).toBe('PENDING');
   });
 
   it('approveScheduleChange() rechaza con NextArrivalConflictError si la próxima llegada es antes del checkout pedido', async () => {
@@ -644,6 +828,7 @@ describe('StayService — horario de check-in/check-out', () => {
     await lockingRepo.save(seeded!);
     const lockingService = new StayService(
       stayRepo, lockingRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager(),
+      new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
     );
 
     await lockingService.requestScheduleChange({

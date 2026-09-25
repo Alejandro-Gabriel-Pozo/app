@@ -151,6 +151,10 @@ function buildReservationService(req: Request): ReservationService {
   // confirmReservation()/cancelReservation()/completeReservation() ahora
   // auditan (A6.5), ver reservation-audit.ts.
   const auditLogRepo = new SqlAuditLogRepository(db);
+  // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1
+  // paso 7) -- assignDeferred() filtra el recurso candidato contra Stays
+  // activas.
+  const stayRepo = new SqlStayRepository(db);
   return new ReservationService(
     reservationRepo,
     resourceRepo,
@@ -170,6 +174,7 @@ function buildReservationService(req: Request): ReservationService {
     numberSequenceRepo,
     cancellationPolicyRepo,
     auditLogRepo,
+    stayRepo,
   );
 }
 
@@ -250,7 +255,17 @@ function buildCancelReservationWithCreditNoteService(req: Request): CancelReserv
  * los 3 endpoints nuevos toman un `reservationId`, no un `stayId`: un pedido
  * de horario puede hacerse ANTES del check-in (todavía no existe la Stay).
  */
-function buildStayService(req: Request): StayService {
+/**
+ * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §7 ítem
+ * 12) — exportada para que `app.ts` (el segundo composition root real de
+ * `StayService`, montaje por closure de `/api/stays`) la llame en vez de
+ * reconstruir `StayService` a mano — evita un CUARTO sitio de construcción
+ * directa de `ReservationService` (D-10). `buildReservationService()` de
+ * este mismo archivo resuelve la primera dependencia nueva sin wiring
+ * adicional (ya vive en este módulo); `resourceRepo` se pasa tal cual para
+ * el pre-lock puro de `checkIn()` (Hallazgo 2/Ronda 12).
+ */
+export function buildStayService(req: Request): StayService {
   const db              = req.db;
   const stayRepo         = new SqlStayRepository(db);
   const resourceRepo     = new SqlResourceRepository(db);
@@ -264,6 +279,8 @@ function buildStayService(req: Request): StayService {
   return new StayService(
     stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
     buildTenantTransactionManager(req),
+    buildReservationService(req),
+    resourceRepo,
   );
 }
 
@@ -475,6 +492,10 @@ export function createReservationsRouter(container: AppContainer): Router {
 
         // resourceId directo (flujo de siempre) o resuelto por categoría
         // (asignación diferida — ver findAvailableResourceInCategory).
+        // v11 (Fase 2, §6 Fase 2 ítem 1, B2) -- misma señal que decide esta
+        // rama, reenviada sin recalcular a createReservation() para que
+        // decida el assignmentStatus inicial.
+        const enteredByCategory = !body.resourceId && !!body.categoryId;
         let resourceId = body.resourceId;
         if (!resourceId && body.categoryId) {
           const available = await service.findAvailableResourceInCategory({
@@ -504,6 +525,7 @@ export function createReservationsRouter(container: AppContainer): Router {
           ...(body.adultos   !== undefined && { adultos: body.adultos }),
           ...(body.ninos     !== undefined && { ninos: body.ninos }),
           ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
+          enteredByCategory,
         });
         res.status(201).json(toReservationDto(reservation));
       } catch (err) { next(err); }
@@ -518,15 +540,23 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const body = UpdateReservationSchema.parse(req.body);
         const service = buildReservationService(req);
-        const updated = await service.updateReservation(req.params['id']!, {
-          ...(body.startTime  !== undefined && { startTime: new Date(body.startTime) }),
-          ...(body.endTime    !== undefined && { endTime: new Date(body.endTime) }),
-          ...(body.details    !== undefined && { details: body.details }),
-          ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
-          ...(body.adultos    !== undefined && { adultos: body.adultos }),
-          ...(body.ninos      !== undefined && { ninos: body.ninos }),
-          ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
-        });
+        const updated = await service.updateReservation(
+          req.params['id']!,
+          {
+            ...(body.startTime  !== undefined && { startTime: new Date(body.startTime) }),
+            ...(body.endTime    !== undefined && { endTime: new Date(body.endTime) }),
+            ...(body.details    !== undefined && { details: body.details }),
+            ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
+            ...(body.adultos    !== undefined && { adultos: body.adultos }),
+            ...(body.ninos      !== undefined && { ninos: body.ninos }),
+            ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
+          },
+          // v11 (Fase 2, §8 "updateReservation() en relación con
+          // assignDeferred()") -- businessId/changedBy, para el
+          // discriminador que puede invocar assignDeferred().
+          req.user!.businessId as string,
+          req.user!.id,
+        );
         res.json(toReservationDto(updated));
       } catch (err) { next(err); }
     },

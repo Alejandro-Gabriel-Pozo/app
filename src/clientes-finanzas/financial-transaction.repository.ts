@@ -561,4 +561,20 @@ export interface FinancialTransactionRepository {
    * de los ADJUSTMENT de Nota de Crédito, que siguen siendo adoptables).
    */
   linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number>;
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§7
+   * ítem 10) — igual que `linkStayToReservationCharges()`, pero corre
+   * sobre un `SqlClient` de una transacción ya abierta.
+   * `StayService.checkIn()` pasa a componer esta escritura con el `INSERT`
+   * de `Stay` y la transición de `Reservation` (vía `assignDeferred()`
+   * cuando corresponde) en una sola operación atómica.
+   *
+   * Opcional (mismo criterio que `settleByIdsWithClient?`/`getByIdWithLock?`,
+   * ver sus docblocks arriba): varios fakes de test de otros módulos
+   * implementan esta interfaz sin necesitarla — obligatoria los rompe sin
+   * motivo. El caller (`StayService.checkIn()`) hace
+   * `if (!repo.linkStayToReservationChargesWithClient) throw`.
+   */
+  linkStayToReservationChargesWithClient?(client: SqlClient, stayId: string, reservationId: string): Promise<number>;
 }

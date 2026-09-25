@@ -36,6 +36,7 @@ import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
 import { StayService, StayBalanceOwedError } from '../../pms-estadias/stay.service.js';
+import type { ReservationService } from '../../reservas/reservation.service.js';
 import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { InMemoryHousekeepingRepository } from '../../pms-estadias/in-memory.housekeeping.repository.js';
 import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
@@ -684,6 +685,15 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
     }
 
     function buildStayService(): StayService {
+      // v11 (Fase 2) -- este describe ejercita reservas ya ASSIGNED (seedReservation()
+      // nace ASSIGNED, Fase 1), así que el discriminador H1 nunca invoca
+      // assignDeferred() -- un stub que tira si se llama alcanza.
+      const reservationServiceStub: Pick<ReservationService, 'assignDeferred' | 'recordOccupancy'> = {
+        async assignDeferred(): Promise<never> {
+          throw new Error('assignDeferred() no debería invocarse en este describe (reservas ASSIGNED).');
+        },
+        async recordOccupancy(): Promise<void> {},
+      };
       return new StayService(
         new SqlStayRepository(db),
         new SqlReservationRepository(db, new SqlResourceRepository(db)),
@@ -691,6 +701,8 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         financialRepo,
         businessProfileRepo,
         pgTxManager,
+        reservationServiceStub,
+        new SqlResourceRepository(db),
       );
     }
 

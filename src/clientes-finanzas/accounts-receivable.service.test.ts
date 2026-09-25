@@ -182,6 +182,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
 class FakeStayRepository implements StayRepository {
   constructor(private readonly stay: Stay | null) {}
   async save(): Promise<void> {}
+  async saveWithClient(): Promise<void> {}
   async update(): Promise<void> {}
   async findById(): Promise<Stay | null> { return this.stay; }
   async findByReservation(): Promise<Stay | null> { return this.stay; }

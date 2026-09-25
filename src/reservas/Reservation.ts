@@ -596,4 +596,80 @@ export class Reservation {
     }
     this._status = nextStatus;
   }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1)
+   * — serializa TODOS los campos actuales a un objeto plano, para que
+   * `assignConcreteResource()` de abajo pueda reconstruir la entidad sin
+   * listar cada campo a mano (el bug ya conocido 4 veces en este repo:
+   * `requestedCheckInTime`/`isExclusiveResource`/`needsMaintenanceReview`/
+   * `cancellationPolicySnapshot`, ver `reservation.service.ts`). Distinto
+   * de `toSnapshot()` (arriba), que es parcial (solo lo que
+   * `ReservationAvailabilityService` necesita) — `toProps()` es el espejo
+   * completo de `ReservationProps`.
+   */
+  private toProps(): ReservationProps {
+    return {
+      id: this.id,
+      customer: this.customer,
+      resource: this.resource,
+      startTime: this.startTime,
+      endTime: this.endTime,
+      details: this.details,
+      initialStatus: this._status,
+      serviceId: this.serviceId,
+      partySize: this.partySize,
+      notes: this.notes,
+      orderItemId: this.orderItemId,
+      totalPrice: this.totalPrice,
+      lines: this.lines,
+      adultos: this.adultos,
+      ninos: this.ninos,
+      ratePlanId: this.ratePlanId,
+      requestedCheckInTime: this._requestedCheckInTime,
+      requestedCheckOutTime: this._requestedCheckOutTime,
+      scheduleApprovalStatus: this._scheduleApprovalStatus,
+      scheduleApprovedBy: this._scheduleApprovedBy,
+      scheduleChargeAmount: this._scheduleChargeAmount,
+      depositAmount: this.depositAmount,
+      depositDueBy: this.depositDueBy,
+      reservationNumber: this.reservationNumber,
+      appliedCustomerRateId: this.appliedCustomerRateId,
+      needsMaintenanceReview: this._needsMaintenanceReview,
+      isExclusiveResource: this.isExclusiveResource,
+      cancellationPolicySnapshot: this._cancellationPolicySnapshot,
+      assignmentStatus: this.assignmentStatus,
+    };
+  }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1)
+   * — único punto de escritura que aplica la transición
+   * `PENDING_ASSIGNMENT → ASSIGNED`. Ni el service ni las rutas escriben
+   * `assignment_status` directo — todo pasa por acá. Reusa
+   * `Reservation.restore()` (no `new Reservation()` directo) para validar
+   * `partySize` contra `resource.capacity` gratis, mismo chequeo que ya
+   * hace el constructor.
+   *
+   * La validación de la ARISTA (¿puede este estado pasar a ASSIGNED?) sale
+   * de `ASSIGNMENT_STATUS_TRANSITIONS` — misma fuente que la validación de
+   * FORMA del constructor (arriba). `ReservationService.assignDeferred()`
+   * es quien orquesta el resto (lock, re-chequeo de concurrencia,
+   * restricción de categoría, disponibilidad, auditoría) — este método
+   * solo aplica el cambio dentro del agregado.
+   */
+  assignConcreteResource(resource: BookableResource, isExclusiveResource: boolean): Reservation {
+    const allowed = ASSIGNMENT_STATUS_TRANSITIONS[this.assignmentStatus];
+    if (!allowed.includes('ASSIGNED')) {
+      throw new InvalidReservationError(
+        `Transición de asignación inválida: ${this.assignmentStatus} → ASSIGNED`,
+      );
+    }
+    return Reservation.restore({
+      ...this.toProps(),
+      resource,
+      isExclusiveResource,
+      assignmentStatus: 'ASSIGNED',
+    });
+  }
 }

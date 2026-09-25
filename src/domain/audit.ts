@@ -92,7 +92,7 @@ export async function recordFieldChanges(
  */
 export async function recordFieldChangesWithClient(
   client: SqlClient,
-  auditLogRepo: AuditLogRepository,
+  auditLogRepo: Pick<AuditLogRepository, 'recordWithClient'>,
   entity: string,
   entityId: string,
   changes: FieldChange[],

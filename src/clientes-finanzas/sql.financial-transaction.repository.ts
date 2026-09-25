@@ -973,6 +973,17 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   }
 
   async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
+    return this.linkStayToReservationChargesWithClient(this.sqlClient, stayId, reservationId);
+  }
+
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§7
+   * ítem 10) — igual que `linkStayToReservationCharges()`, corre sobre el
+   * `client` que se le pasa. `linkStayToReservationCharges()` delega acá
+   * con `this.sqlClient` para no duplicar el SQL/los comentarios de las
+   * dos condiciones (alfa/beta) de abajo.
+   */
+  async linkStayToReservationChargesWithClient(client: SqlClient, stayId: string, reservationId: string): Promise<number> {
     // `CITY-LEDGER-AR-DOUBLE-TRANSFER-001` (Wave 13, 18/09/2026, gate
     // `architecture-governor`, docs/diseno-city-ledger-double-transfer-2026-09-18.md)
     // -- predicado alfa AND beta. Sin esto, esta adopción type-agnóstica
@@ -1005,7 +1016,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // revertido -- correcto, porque alfa ya excluye la pata ADJUSTMENT
     // compensatoria, y las dos filas netean a cero en el ledger de la
     // empresa sin que ninguna de las dos vuelva a moverse de estadía.
-    const result = await this.sqlClient.query(
+    const result = await client.query(
       `UPDATE financial_transactions
        SET stay_id = $1
        WHERE reservation_id = $2

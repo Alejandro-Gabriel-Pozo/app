@@ -43,7 +43,9 @@ import { Stay } from './stay.js';
 import type { StayRepository } from './stay.repository.js';
 import type { Reservation } from '../reservas/Reservation.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import type { ReservationService } from '../reservas/reservation.service.js';
 import { combineDateAndTime } from '../reservas/reservation.service.js';
+import type { ResourceRepository } from '../reservas/resource.repository.js';
 import type { HousekeepingRepository } from './housekeeping.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
@@ -51,7 +53,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 import type { HousekeepingStatus } from './housekeeping-task.js';
-import { DomainError, ReservationNotFoundError, NextArrivalConflictError } from '../domain/errors.js';
+import { DomainError, ReservationNotFoundError, NextArrivalConflictError, ResourceOccupiedError, ScheduleChangeAssignmentPendingError } from '../domain/errors.js';
 
 export class StayNotFoundError extends DomainError {
   constructor(stayId: string) {
@@ -65,12 +67,6 @@ export class ReservationNotConfirmedError extends DomainError {
       `La reserva debe estar CONFIRMED para hacer check-in. Estado actual: ${status}`,
       'RESERVATION_NOT_CONFIRMED',
     );
-  }
-}
-
-export class ResourceOccupiedError extends DomainError {
-  constructor(resourceId: string) {
-    super(`La habitación ${resourceId} ya tiene un huésped en check-in.`, 'RESOURCE_OCCUPIED');
   }
 }
 
@@ -170,21 +166,94 @@ export class StayService {
      * sin lock. Ver docblock de cada método para el detalle.
      */
     private readonly transactionManager: TransactionManager,
+    /**
+     * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8,
+     * B-2 Ronda 13) — `StayService` no tiene, ni va a tener, ningún acceso
+     * directo a `this.availability`: `checkIn()` necesita `assignDeferred()`
+     * (confirmar la asignación diferida cuando corresponde) y el método
+     * público nuevo `recordOccupancy()` (post-commit, solo si corrió el
+     * camino `PENDING_ASSIGNMENT`) — las dos viven en `ReservationService`,
+     * ver `reservas/reservations.routes.ts::buildStayService()` para el
+     * wiring real (reusa `buildReservationService()`, no un composition
+     * root nuevo).
+     */
+    private readonly reservationService: Pick<ReservationService, 'assignDeferred' | 'recordOccupancy'>,
+    /**
+     * v11 (Fase 2, Hallazgo 2/Ronda 12) — pre-lock PURO del recurso
+     * candidato de `checkIn()` (H2: el `INSERT` de `Stay` toma un lock
+     * implícito `FOR KEY SHARE` sobre `resources`, sin excepción para un
+     * `INSERT`, así que el candidato se lockea SIEMPRE, antes que la fila
+     * de la reserva). Solo `lockByIds` — no `assertAllResourcesAvailable()`
+     * completo, que además de lockear valida disponibilidad y rechazaría de
+     * más el check-in de una reserva `ASSIGNED` (Hallazgo 2, ver el diseño).
+     */
+    private readonly resourceRepository: Pick<ResourceRepository, 'lockByIds'>,
   ) {}
 
   // ---------------------------------------------------------------------------
   // Check-in
   // ---------------------------------------------------------------------------
 
+  /**
+   * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6/§8,
+   * sub-alcance "check-in confirma la asignación") — reescrito para correr
+   * dentro de una transacción (antes no tenía ninguna). Orden de locks (H2,
+   * invariante único, sin excepciones): el recurso candidato
+   * (`input.resourceId`) se lockea SIEMPRE, ANTES que la fila de la
+   * reserva — el `INSERT` de `Stay` toma un lock implícito `FOR KEY SHARE`
+   * sobre `resources` sin la optimización de "no cambió el valor" que sí
+   * existe para un `UPDATE` (no hay fila vieja contra la cual comparar en
+   * un `INSERT`). El pre-lock es PURO (`lockByIds()`, sin validación de
+   * disponibilidad) — a diferencia de `assertAllResourcesAvailable()`, no
+   * rechaza de más el check-in de hoy sobre una reserva `ASSIGNED`.
+   *
+   * Discriminador H1: la decisión de invocar `assignDeferred()` se toma
+   * con `locked.assignmentStatus` (bajo lock), NUNCA con una lectura
+   * previa. `ASSIGNED` (el 100% de los check-ins de hoy) sigue
+   * exactamente igual, sin ninguna validación nueva de 4.3.
+   */
   async checkIn(input: CheckInInput): Promise<Stay> {
-    const reservation = await this.reservationRepository.getById(
-      input.reservationId,
-    );
-    if (!reservation) {
+    // (C-2, corrección post-gate sobre Fase 2 de 4.3) — pre-check de
+    // EXISTENCIA únicamente, sin lock, restaurado ACÁ (posición original,
+    // antes de `activeStay`/housekeeping) porque el diseño (§6, "la
+    // lectura inicial sin lock ... pasa a usarse, de acá en más,
+    // únicamente para el chequeo barato de existencia — mismo idioma que
+    // el paso 1 de `updateReservation()`") lo pedía conservar y una
+    // versión anterior de este método lo había sacado por completo — sin
+    // esto, un `reservationId` inexistente recién fallaba DENTRO de la
+    // transacción (después de lockear el recurso), en vez de con un 404
+    // barato de entrada. No es la protección real contra la carrera (eso
+    // lo da `requireReservationWithLock()` de más abajo) — solo evita
+    // abrir la transacción para un id que ni siquiera existe.
+    //
+    // El chequeo de `status === 'CONFIRMED'` SIGUE sin evaluarse acá, a
+    // propósito (C-7 del diseño, ver el docblock de arriba de este
+    // método): se mueve a la lectura BAJO lock, junto con el resto de la
+    // decisión. Consecuencia declarada de ese movimiento, no un bug: el
+    // ORDEN de precedencia de errores cambió respecto de antes de este
+    // diseño — un check-in sobre una reserva PENDING/CANCELLED contra una
+    // habitación YA ocupada ahora da `ResourceOccupiedError` (el chequeo
+    // de `activeStay`, más abajo, sigue corriendo antes que el lock de
+    // fila) en vez de `ReservationNotConfirmedError` (que antes corría
+    // primero, sobre la lectura sin lock). Se acepta esta desviación
+    // porque el status real solo puede conocerse con certeza bajo lock, y
+    // H1 (el discriminador de `assignmentStatus`) ya necesita esa misma
+    // lectura lockeada — evaluar el status ANTES, sobre un dato que
+    // podría quedar obsoleto para cuando la transacción toma el lock,
+    // reintroduciría la misma clase de carrera que B-3/H1 cierran del
+    // otro lado. Por el mismo motivo, `ResourceNotReadyForCheckInError`
+    // (rechazo por limpieza/housekeeping pendiente, el gating de más
+    // abajo) TAMBIÉN cambió de precedencia: corre antes del lock de fila,
+    // así que un check-in sobre una reserva PENDING/CANCELLED contra un
+    // recurso con housekeeping pendiente ahora da
+    // `ResourceNotReadyForCheckInError` en vez de
+    // `ReservationNotConfirmedError` — no es un caso aparte, es la misma
+    // desviación declarada arriba, aplicada al segundo chequeo que
+    // también corre fuera de la transacción (gate `architecture-governor`,
+    // condición 4 sobre Fase 2, 25/09/2026).
+    const preCheck = await this.reservationRepository.getById(input.reservationId);
+    if (!preCheck) {
       throw new ReservationNotFoundError(input.reservationId);
-    }
-    if (reservation.status !== 'CONFIRMED') {
-      throw new ReservationNotConfirmedError(reservation.status);
     }
 
     const activeStay = await this.stayRepository.findActiveByResource(
@@ -216,26 +285,82 @@ export class StayService {
       housekeepingOverride = { by: input.assignedBy, taskStatus: housekeepingTask.status };
     }
 
-    // exactOptionalPropertyTypes: solo pasamos notes/housekeepingOverride si están definidos
-    const stay = Stay.checkIn({
-      businessId:    input.businessId,
-      reservationId: input.reservationId,
-      resourceId:    input.resourceId,
-      customerId:    reservation.customer.id,
-      assignedBy:    input.assignedBy,
-      ...(input.notes !== undefined && { notes: input.notes }),
-      ...(housekeepingOverride !== undefined && { housekeepingOverride }),
+    let stay!: Stay;
+    // Solo se pobla si el camino PENDING_ASSIGNMENT corrió (H1) — la
+    // entidad que DEVOLVIÓ `assignDeferred()`, nunca la lectura sin lock
+    // (G-3, gate 18): `recordOccupancy()` post-commit se llama con ESTA
+    // variable, nunca con ninguna lectura previa.
+    let assigned: Reservation | undefined;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      // H2 — recurso candidato SIEMPRE primero, sin excepción.
+      await this.resourceRepository.lockByIds(client, [input.resourceId]);
+
+      // Fila de la reserva SEGUNDA — acá se lee assignmentStatus (H1) y,
+      // con el chequeo movido acá (C-7), status.
+      const locked = await this.requireReservationWithLock(client, input.reservationId);
+
+      // C-7 (Ronda 14) — el chequeo de CONFIRMED se mueve CON el resto del
+      // método a la lectura bajo lock (antes corría sobre
+      // `reservation.status`, la lectura sin lock de arriba).
+      if (locked.status !== 'CONFIRMED') {
+        throw new ReservationNotConfirmedError(locked.status);
+      }
+
+      // exactOptionalPropertyTypes: solo pasamos notes/housekeepingOverride si están definidos
+      stay = Stay.checkIn({
+        businessId:    input.businessId,
+        reservationId: input.reservationId,
+        resourceId:    input.resourceId,
+        customerId:    locked.customer.id,
+        assignedBy:    input.assignedBy,
+        ...(input.notes !== undefined && { notes: input.notes }),
+        ...(housekeepingOverride !== undefined && { housekeepingOverride }),
+      });
+
+      await this.stayRepository.saveWithClient(client, stay);
+
+      // H1 — discriminador, decidido con `locked` (bajo lock), nunca con
+      // una lectura previa. `ASSIGNED`: no se invoca `assignDeferred()` en
+      // absoluto — sin la restricción de categoría ni el guard de `Stay`
+      // activa que trae `assignDeferred()` como paso propio (§8 A6.1, paso
+      // 7) — el check-in de una reserva `ASSIGNED` no gana ninguna
+      // validación nueva de 4.3.
+      if (locked.assignmentStatus === 'PENDING_ASSIGNMENT') {
+        assigned = await this.reservationService.assignDeferred(
+          client,
+          input.reservationId,
+          input.resourceId,
+          input.businessId,
+          input.assignedBy,
+        );
+      }
+
+      // Adopta el CHARGE que ya se creó en reservation.confirmed (antes de
+      // que esta Stay existiera) — sin esto, getNetBalanceByStayId lo
+      // subestimaría porque nunca quedó con stay_id. Tercera escritura de
+      // esta transacción (junto con el INSERT de Stay y la transición de
+      // Reservation vía assignDeferred() cuando corresponde) —
+      // atomic-state-mutation.
+      if (!this.financialRepository.linkStayToReservationChargesWithClient) {
+        throw new Error(
+          'FinancialTransactionRepository requiere linkStayToReservationChargesWithClient para check-in transaccional.',
+        );
+      }
+      await this.financialRepository.linkStayToReservationChargesWithClient(
+        client,
+        stay.id,
+        input.reservationId,
+      );
     });
 
-    await this.stayRepository.save(stay);
-
-    // Adopta el CHARGE que ya se creó en reservation.confirmed (antes de
-    // que esta Stay existiera) — sin esto, getNetBalanceByStayId lo
-    // subestimaría porque nunca quedó con stay_id.
-    await this.financialRepository.linkStayToReservationCharges(
-      stay.id,
-      input.reservationId,
-    );
+    // Post-commit, SOLO si el camino PENDING_ASSIGNMENT corrió — nunca se
+    // llama para una reserva que ya estaba ASSIGNED (esa ocupación ya se
+    // registró al confirmarse; llamarlo de nuevo acá la contaría dos
+    // veces).
+    if (assigned) {
+      await this.reservationService.recordOccupancy(assigned);
+    }
 
     return stay;
   }
@@ -434,6 +559,19 @@ export class StayService {
     const businessProfile = await this.businessProfileRepository.get();
 
     if (preCheck.requestedCheckOutTime) {
+      // v11 (Fase 2, §7 fila de approveScheduleChange()) — el chequeo de
+      // conflicto de abajo (findNextReservationOnResource()) y el ajuste
+      // de housekeeping de más abajo evalúan contra `preCheck.resource.id`,
+      // asumiendo que es el recurso FINAL. Mientras la reserva sigue
+      // PENDING_ASSIGNMENT ese recurso todavía puede cambiar — se rechaza
+      // en firme (A6.3), no se evalúa contra un recurso provisorio. Leer
+      // `assignmentStatus` acá es seguro sin lock: la transición
+      // PENDING_ASSIGNMENT → ASSIGNED es de una sola vía, así que en el
+      // peor caso (dato levemente viejo) este guard rechaza de más, nunca
+      // aprueba de menos.
+      if (preCheck.assignmentStatus === 'PENDING_ASSIGNMENT') {
+        throw new ScheduleChangeAssignmentPendingError(preCheck.id);
+      }
       const next = await this.findNextReservationOnResource(preCheck);
       if (next) {
         const nextArrivalTime =

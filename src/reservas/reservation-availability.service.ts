@@ -414,6 +414,16 @@ export class ReservationAvailabilityService {
   }
 
   async recordOccupancy(reservation: Reservation): Promise<void> {
+    // (B-1, corrección post-gate sobre Fase 2 de 4.3) Mientras la reserva
+    // sigue `PENDING_ASSIGNMENT`, `reservation.resource` es un recurso
+    // PROVISORIO — registrar ocupación acá dejaría una fila fantasma que
+    // `occupancy_records` (contador agregado, sin resta) no puede
+    // deshacer cuando `assignDeferred()` confirme el recurso definitivo.
+    // Diseño: docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6 ítem 6,
+    // §6.1, §7 (fila de `recordOccupancy()`).
+    if (reservation.assignmentStatus === 'PENDING_ASSIGNMENT') {
+      return;
+    }
     await this.occupancyRepository.recordReservation(
       reservation.resource.id,
       reservation.resource.name,

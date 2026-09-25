@@ -55,6 +55,7 @@ import { SqlDomainEventRepository }     from '../repositories/sql.domain-event.r
 import { SqlCustomerRateRepository }    from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }  from '../platform/sql.operating-hours.repository.js';
 import { SqlMaintenanceWindowRepository } from '../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlStayRepository } from '../pms-estadias/stay.repository.js';
 import { SqlAuditLogRepository }        from '../repositories/audit-log.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlDepositPolicyRepository } from './sql.deposit-policy.repository.js';
@@ -119,6 +120,11 @@ function buildReservationService(req: Request): ReservationService {
     // constructor lo exige igual -- los 3 composition roots quedan
     // consistentes por construcción (F2-12), no a ojo.
     new SqlAuditLogRepository(db),
+    // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
+    // A6.1 paso 7) -- mismo criterio que auditLogRepo arriba: este
+    // composition root no llama a assignDeferred()/checkIn() hoy, pero el
+    // constructor lo exige igual (3 composition roots consistentes).
+    new SqlStayRepository(db),
   );
 }
 

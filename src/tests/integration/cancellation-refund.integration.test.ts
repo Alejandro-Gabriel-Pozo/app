@@ -97,6 +97,7 @@ function buildReservationService(): ReservationService {
     new SqlNumberSequenceRepository(db),
     new SqlCancellationPolicyRepository(db),
     new SqlAuditLogRepository(db),
+    new SqlStayRepository(db),
   );
 }
 

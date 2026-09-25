@@ -39,6 +39,7 @@ import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-servic
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
 import { SqlMaintenanceWindowRepository } from '../../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlDepositPolicyRepository } from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
@@ -174,6 +175,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
       new SqlNumberSequenceRepository(db),
       new SqlCancellationPolicyRepository(db),
       new SqlAuditLogRepository(db),
+      new SqlStayRepository(db),
     );
 
     invoiceService = new InvoiceService(

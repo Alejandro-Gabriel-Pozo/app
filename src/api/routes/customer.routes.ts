@@ -120,6 +120,7 @@ import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-servic
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
 import { SqlMaintenanceWindowRepository } from '../../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { ReservationService }        from '../../reservas/reservation.service.js';
 
@@ -251,6 +252,10 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   // (el SqlClient del tenant resuelto por slug), no `req.db` -- mismo
   // patrón que el resto de los repos de esta función.
   const auditLogRepo = new SqlAuditLogRepository(client);
+  // v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8 A6.1
+  // paso 7) -- assignDeferred() filtra el recurso candidato contra Stays
+  // activas.
+  const stayRepo = new SqlStayRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -271,6 +276,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     numberSequenceRepo,
     cancellationPolicyRepo,
     auditLogRepo,
+    stayRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo, numberSequenceRepo };
@@ -901,6 +907,13 @@ export function createCustomerRouter(
           return;
         }
 
+        // v11 (Fase 2, §8 "updateReservation() en relación con
+        // assignDeferred()") -- businessId/changedBy nuevos, mismo patrón
+        // que ya usa POST /me/reservations/:id/cancel más abajo en este
+        // archivo. El portal nunca manda resourceId (UpdateCustomerReservationSchema
+        // no lo acepta) -- el discriminador de asignación diferida nunca
+        // se activa por este camino, pero la firma los exige igual.
+        const businessId = req.user!.businessId!;
         const updated = await reservationService.updateReservation(
           reservationId,
           {
@@ -908,6 +921,8 @@ export function createCustomerRouter(
             ...(body.endTime   !== undefined && { endTime:   new Date(body.endTime) }),
             ...(body.details   !== undefined && { details:   body.details }),
           },
+          businessId,
+          customerId,
         );
 
         res.json(toCustomerReservationDto(updated));
