@@ -1,6 +1,6 @@
 # Runbook — deploy Render (Node pin + migraciones con EXCLUDE)
 
-- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito) · **actualizado 2026-09-25** (Procedimiento 3 — rollback de Wave 14 ítem 4.3, schema v64; 39 commits locales sin pushear medido con `git log --oneline origin/main..HEAD | wc -l`, re-verificar con ese comando en el momento en vez de confiar en el número)
+- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito) · **actualizado 2026-09-25** (Procedimiento 3 — rollback de Wave 14 ítem 4.3, schema v64; 39 commits locales sin pushear medido con `git log --oneline origin/main..HEAD | wc -l`, re-verificar con ese comando en el momento en vez de confiar en el número) · **actualizado 2026-09-25 (continuación de sesión)** (D1 y D2 del split de push, más abajo, ya se ejecutaron y verificaron contra producción — la cifra de "39 commits sin pushear"/`f9be209` de la entrada anterior quedó stale en cuanto se pushearon; re-correr `git log --oneline origin/main..HEAD | wc -l` antes de confiar en cualquier número de este documento, incluido el de esta misma entrada)
 - **Estado:** implementado (`engines.node` acotado; incidente del día resuelto)
 - **Categoría:** Runbook + Incidente
 - **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `v64` `rollback` `neon` `4.3`
@@ -304,7 +304,7 @@ restauración** — reservas, órdenes, pagos, estadías de la jornada. Es una o
 |---|---|
 | El build falla | **Nada.** Render no despliega; sigue sirviendo la versión anterior (fail-loud intencional, R15) |
 | El proceso no arranca (`platform.schema.sql` reventó al boot) | El **archivo de schema**: arreglarlo y redeployar. La BD de plataforma quedó a medias solo si el bloque no era idempotente |
-| Bug funcional con el schema nuevo aplicado | **Solo el código**: `git revert` de los commits de app + redeploy. Las columnas y tablas nuevas quedan sin uso, inertes |
+| Bug funcional con el schema nuevo aplicado | **Solo el código**: `git revert` de los commits de app + redeploy. Las columnas y tablas nuevas quedan sin uso, inertes — **excepto si ya se agregó un CHECK después del commit al que se vuelve** (caso real: CHECK `chk_invoices_pending_since` de D3/Bloque 2b sobre la columna de D2/Bloque 2a — ver "Split de push del ADR reintento-vs-reversa — estado real" más abajo, apartado "Rollback de D2, específicamente"): ahí "sin uso, inertes" no aplica — un CHECK ya puesto no es inerte para el código anterior |
 | Corrupción o pérdida de datos comprobada | Recién acá, restaurar la base (abajo) — **con OK explícito del dueño** |
 
 ### Puntos de restauración reales
@@ -414,17 +414,265 @@ es reversible: si el diagnóstico estaba errado, se vuelve a apuntar y no se per
 **sobrescribe `production`**: todo lo escrito después del punto de restauración se pierde.
 Solo con OK explícito y por escrito de qué se acepta perder.
 
+### Split de push del ADR reintento-vs-reversa — estado real (agregado 25/09/2026, continuación de sesión)
+
+`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6 exige
+que los Bloques 2a y 2b (agregar `invoices.pending_since` y agregar su
+CHECK) vayan en deploys SEPARADOS — el orden lo diseñó
+`architecture-governor` como un plan de "split de push" de varios pasos.
+Dos de esos pasos **ya son reales**, verificados contra producción; el
+resto sigue en plan. Esta subsección es la fuente de verdad de qué está
+hecho y qué no — las menciones a este split en el resto del documento
+(sección "Wave 14, ítem 4.3" y el desglose v61/v62/v63 de más abajo)
+remiten acá en vez de repetir el detalle.
+
+**D1 — ejecutado.** Commit `386359c`, pusheado y desplegado ~19:24 UTC
+del 25/09/2026, deploy `dep-darck0rtqb8s738p68r0`. 19 commits, **sin**
+cambios de schema. Verificado: Render marcó el deploy `live`, log de
+build sin `migrate:tenants` fallando.
+
+**D2 — ejecutado (Bloque 2a).** Commit `3216849`, pusheado y desplegado
+~22:23 UTC del 25/09/2026, deploy `dep-darf8enf3r2c73a27jn0`. Agrega
+`invoices.pending_since` (schema v60→v61), **sin** el CHECK todavía —
+ver el punto 1 de "Bloque 2a — BLOQUE 26" más abajo para qué agrega
+exactamente. Evidencia real, no inferida:
+
+- Log de build: "Versión objetivo: v61", "2/2 OK, 0 fallo(s)".
+- Neon, ambos tenants (Demo y Hotel los Álamos): `MAX(schema_migrations.version)
+  = 61`; columna `pending_since` presente con `is_nullable = 'YES'`;
+  `chk_invoices_pending_since` **no existe todavía**
+  (`SELECT count(*) FROM pg_constraint WHERE conname =
+  'chk_invoices_pending_since'` da 0 en los dos).
+- Consistencia 0/0 en ambos tenants:
+  `SELECT count(*) FILTER (WHERE status='PENDING' AND pending_since IS NULL),
+         count(*) FILTER (WHERE status<>'PENDING' AND pending_since IS NOT NULL)
+    FROM invoices;`
+- Plataforma: `businesses.schema_version = 61` en los 2 negocios `ACTIVE`
+  (`biz-demo-01` Demo, `cd6cd508-f219-4bde-81ec-7a1d74f02074` Hotel los
+  Álamos).
+
+**No se encontró en este documento ningún branch de respaldo específico
+para D1/D2** (la tabla de "Puntos de restauración reales" de más arriba
+no tiene una fila `respaldo-pre-v61-...` ni equivalente) — no asumir que
+no se creó: verificar con `list_branches` en los dos proyectos Neon antes
+de darlo por hecho en cualquier sentido. Residuo de este documento, no
+una afirmación sobre lo que pasó en producción.
+
+**D3, D4 y el deploy grande — siguen PENDIENTES a la fecha de esta
+subsección.** Verificar antes de actuar, no asumir de este texto:
+`git log origin/main --oneline | grep -E '2c9b423|548c432'` (0 líneas =
+ninguno de los dos llegó a `origin/main` todavía). Mientras ese comando
+no tenga match, no tienen deploy ID, hora ni verificación contra la base
+porque no hay nada corrido que verificar:
+
+| Paso | Commit | Qué trae | Schema |
+|---|---|---|---|
+| D3 (Bloque 2b) | `2c9b423` | CHECK `chk_invoices_pending_since` + backfill inverso — cierra la ventana que D2 dejó abierta a propósito | v61→v62 |
+| D4 (Bloque 3) | `548c432` | Guards de resolución manual de `credit_note_request` + reconciliación con AFIP | sin schema |
+| Deploy grande | (varios, sin consolidar todavía) | Wave 15 (v62→v63), Wave 14 ítem 4.3 (v63→v64), Bloque 6 | v62→v64 |
+
+**El revert-forward R' de Bloque 2c/5 no es parte del "deploy grande" en
+el sentido de traer contenido nuevo — ya está commiteado** (`8940467`→
+`d43de3f`→`3818910`→`4c6bf77`→`efdc5b0`, revertido y registrado en
+`docs/pendientes-2026-09-12.md`, ítem
+`ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`). Lo que sigue
+bloqueado no es R' en sí, sino **reaplicar** 2c/5 más adelante — eso sí
+depende de un Bloque 4 (worker de expiración de facturas `PENDING`)
+todavía sin mergear, hoy solo en la rama `bloque-4-invoice-pending-expiry`
+(tip `b5ed4cd`). No confundir "R' ya resuelto" con "2c/5 reaplicado" —
+son dos estados distintos del mismo mecanismo.
+
+**Pero R' SÍ es obligatorio en cualquier push cuya punta llegue hasta los
+originales de 2c/5 o más allá — corrección del gate (re-ronda,
+25/09/2026), que la versión anterior de este párrafo no decía.** El orden
+real de la historia local (`git log --reverse origin/main..HEAD`) pone
+los originales sin revertir de 2c/5 (`2db33f5`, "Bloque 2c (parcial) —
+toma exclusiva de retryExisting()"; `93ab083`, "Bloque 2c (residuo) —
+§3.5 reset uncertain_cleared_at + §3.8 guard 8-bis"; `a7d06be`, "Bloque 5
+— alcance NC en la toma exclusiva de retryExisting()") ANTES que todo el
+contenido del deploy grande, y R' (`8940467`/`d43de3f`/`3818910`) recién
+AL FINAL de la historia local, después de todo lo demás. R' revierte
+`2db33f5` y `a7d06be` COMPLETOS, pero de `93ab083` solo revierte la mitad
+§3.8 (`d43de3f`) — la mitad §3.5 se conservó a propósito (ver
+`docs/pendientes-2026-09-12.md`, ítem
+`ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`, sección "Por qué R' y
+no R" — y el ADR
+`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`), así que
+"el original de `93ab083`" en este párrafo se refiere solo a su parte §3.8,
+no al commit completo. Un push cuya punta caiga en `2db33f5` o cualquier
+commit posterior a él, pero anterior a `3818910`, despliega 2c/5 sin
+revertir (la parte §3.8 de `93ab083` incluida) y sin que exista Bloque 4
+— exactamente lo que R' se hizo para evitar. **Piso de punta de push,
+declarado explícitamente: cualquier push que incluya `2db33f5` tiene que
+llegar por lo menos hasta `3818910`** (los 3 commits de R' completos, no
+una parte). Ver la advertencia fechada más abajo (subsección "Wave 14,
+ítem 4.3", apartado del mecanismo de prefijo `git push origin
+<hash>:main`) — el runbook, en otro lugar, todavía recomienda un prefijo
+de push que viola este piso.
+
+**Estado de push, verificar en el momento, no citar este número más
+adelante:** `git log --oneline origin/main..HEAD | wc -l` daba **28** al
+escribir esta subsección (`origin/main` en `3216849`, es decir, en D2) —
+re-correr el comando antes de actuar, el número cambia con cada push.
+
+**Rollback de D2, específicamente.** La columna en sí es inofensiva
+(nullable, aditiva) — el punto que cambia todo es si el CHECK de D3 ya
+está o no en la base, porque de eso depende si el código viejo puede
+seguir insertando sin romper. Dos escenarios, distintos, verificados
+releyendo `src/db/schema.sql` BLOQUE 26 ("Bloque 2a — invoices.pending_since")
+y BLOQUE 27 ("Bloque 2b — CHECK chk_invoices_pending_since"), no
+asumidos:
+
+- **Si D3 (2b) todavía NO se desplegó** (a la fecha de esta subsección —
+  ver el comando de verificación de la tabla de arriba, no asumir el
+  estado de este texto): rollback directo — revertir el
+  código de D2 y redeployar, sin ningún paso de datos. El código viejo no
+  nombra `pending_since` en su `INSERT`/`UPDATE`, Postgres aplica `NULL`
+  por default, y como el CHECK todavía no existe eso no rompe nada; queda
+  huérfano en las filas que se marcaron `PENDING` mientras D2 estaba
+  sirviendo tráfico. Esta ventana (código viejo sin `pending_since`,
+  columna ya creada, CHECK todavía sin existir) es funcionalmente la
+  misma que describe la verificación puntual (1) de
+  `docs/pendientes-2026-09-12.md`, sección "Verificaciones pendientes --
+  dos gates de producción distintos del ADR reintento-vs-reversa" ("Entre
+  el deploy de 2a y el de 2b, antes de desplegar 2b"): si el conteo de
+  filas inconsistentes se mantiene estable entre dos mediciones, es el
+  residuo esperado que el backfill de 2b (las dos sentencias, directa e
+  inversa, que se re-ejecutan en su propia transacción) limpia cuando 2b
+  se despliega — no hace falta ningún `UPDATE` manual aparte.
+- **Si D3 (2b) YA se desplegó — no es un hallazgo nuevo: es el mismo
+  mecanismo que el ADR ya documenta**, en
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6,
+  párrafo **"Rollback de 2b (hueco N1, ronda 4 del gate)"** ("revertir el
+  commit de 2b NO saca el CHECK de la base... Volver a código anterior a
+  2a (que inserta `PENDING` sin `pending_since`) con el CHECK todavía
+  puesto en la base rompería ese código en el primer `INSERT`/`UPDATE`
+  que lo viole. El rollback de 2b, si hace falta llegar hasta ahí,
+  requiere un paso manual explícito además de revertir el commit: `ALTER
+  TABLE invoices DROP CONSTRAINT chk_invoices_pending_since;` contra cada
+  tenant, antes de (o en el mismo cambio que) desplegar el código anterior
+  a 2a"). Esta subsección solo propaga esa regla ya escrita al caso
+  concreto de D2/D3 de este split — no la redescubre. **Endurecimiento
+  declarado, no del ADR:** el "PRIMERO" del piso de rollback más abajo es
+  más estricto que el orden "antes de, o en el mismo cambio que" del ADR
+  citado arriba — se justifica acá por el caso `UPDATE`/CAE (más abajo),
+  que puede fallar en caliente si el `DROP CONSTRAINT` no corrió todavía
+  cuando el código viejo ya está sirviendo tráfico.
+
+  Revertir SOLO el código de D2 (volver al código que no conoce
+  `pending_since`) mientras el CHECK `chk_invoices_pending_since` sigue
+  activo en la base **no es seguro por sí solo**: `ALTER TABLE ... ADD
+  CONSTRAINT chk_invoices_pending_since CHECK ((status = 'PENDING') =
+  (pending_since IS NOT NULL))` (BLOQUE 27) queda en la base porque el
+  schema de este repo solo migra hacia adelante — un rollback de código
+  no le hace `DROP CONSTRAINT`. Dos caminos rompen, no uno solo:
+
+  - **`INSERT`** — el código viejo, al crear una factura `PENDING`, no
+    nombra `pending_since` en su `INSERT` → Postgres pone `NULL` por
+    default → el CHECK exige `pending_since IS NOT NULL` cuando
+    `status = 'PENDING'` → la fila lo viola y el `INSERT` falla en el
+    momento, no queda como "residuo silencioso".
+  - **`UPDATE` — más grave, y es lo que faltaba acá.**
+    `markIssuedWithClient()`/`markFailedWithClient()`
+    (`src/facturacion/sql.invoice.repository.ts`) del código viejo sacan la fila de
+    `PENDING` sin tocar `pending_since` (no la conocen) — si la fila ya
+    tenía `pending_since` poblado por haber nacido bajo D2/D3, ese
+    `UPDATE` deja `status <> 'PENDING'` con `pending_since` todavía
+    NOT NULL, violando el mismo CHECK. Puede ocurrir DESPUÉS de que AFIP
+    ya devolvió un CAE real: el `UPDATE` que falla es el que intenta
+    persistir ese CAE, así que la factura queda fiscalmente emitida en
+    AFIP pero atascada `PENDING` en la base local — integridad fiscal en
+    juego, no solo un `INSERT` rechazado.
+
+  Revertir D2 después de que D3 ya está en producción exige ADEMÁS una
+  migración explícita que saque el CHECK (`DROP CONSTRAINT
+  chk_invoices_pending_since`, remedio que el párrafo del ADR citado
+  arriba ya prescribe) — no alcanza con revertir el código de la app. El
+  backup y la autorización explícita del dueño antes de correrla NO
+  salen del ADR (que no los menciona): son la exigencia general de este
+  runbook para cualquier escritura manual contra producción (ver
+  "Puntos de restauración reales" más arriba), aplicada acá.
+
+  Sobre el precedente: este repo NO tiene precedente de `DROP CONSTRAINT`
+  usado como paso de ROLLBACK — sí tiene 15 sentencias `DROP CONSTRAINT`
+  usadas como parte de una migración hacia ADELANTE, repartidas entre
+  `src/db/schema.sql` (11) y `src/db/platform.schema.sql` (4) — más otras
+  4 en `migrations/` (007, 008, 012 ×2) que no se cuentan acá porque esta
+  cita se acota a los dos archivos de schema activo, no a todo el repo.
+  Ninguna de las 15 es un paso de rollback — se dividen en tres patrones
+  distintos, no "mayormente" uno solo:
+  - **7 con guard de nombre nuevo** (`schema.sql` 1264, 1292, 2476, 2645,
+    4095, 4467, 4475): `DROP CONSTRAINT IF EXISTS <nombre_viejo> ... ADD
+    CONSTRAINT <nombre_nuevo>` — el DROP apunta a un nombre que ya no
+    existe después del primer deploy, así que no hace nada en los deploys
+    siguientes (no hay CHECK que revalidar: la reafirmación viene de
+    tener un nombre nuevo, no de sacar y volver a poner el mismo).
+  - **3 con DROP+ADD incondicional del MISMO nombre**
+    (`schema.sql:2103-2105`, `platform.schema.sql:48`, `:181`): ejemplo
+    real, `stock_movements`/`chk_stock_movements_movement_type`
+    (`schema.sql:2103` `ALTER TABLE stock_movements DROP CONSTRAINT IF
+    EXISTS chk_stock_movements_movement_type;` seguido en la línea
+    siguiente de `ADD CONSTRAINT chk_stock_movements_movement_type
+    CHECK (...)`, sin guardar contra `pg_constraint`, con su propio
+    comentario arriba explicando por qué es a propósito (`schema.sql:2091-2102`):
+    sin guard, para que un tenant que todavía tenga una versión VIEJA de
+    esta constraint (con menos valores permitidos) reciba la definición
+    nueva al re-desplegar — un guard `IF NOT EXISTS` ahí dejaría a ese
+    tenant atascado para siempre con la versión vieja. El propio
+    comentario cierra con la regla para el futuro, cita literal: "Si
+    algún día se necesita otro valor de movement_type, mismo criterio
+    que v56: nombre nuevo, no reusar este." — o sea, el patrón sin guard
+    es la
+    excepción deliberada para ESTA constraint puntual, no el mecanismo
+    general para agregar valores).
+    Este es justo el patrón que SÍ revalida la constraint contra toda la
+    tabla en cada deploy — el inverso del motivo por el que el bullet v62
+    de más abajo dice "sin `DROP` previo, para no revalidar": ahí se
+    evita a propósito este patrón, acá se elige a propósito.
+  - **5 sin volver a agregar el mismo nombre** (`schema.sql` 1481, 1486,
+    1919; `platform.schema.sql` 40, 524): DROP puro, sin ADD que lo
+    reemplace en la misma sentencia.
+  Ninguno de los tres patrones es un paso de ROLLBACK — los tres corren
+  como parte de una migración hacia ADELANTE (agregar/reemplazar un CHECK
+  contra el estado nuevo, no deshacer uno viejo). Lo inédito acá es usar
+  `DROP CONSTRAINT` para deshacer un deploy ya aplicado, no la sentencia
+  SQL en sí (confirmado además contra código real:
+  `src/tests/integration/invoice-mark-failed-transactional.integration.test.ts`
+  ya corre `ALTER TABLE invoices DROP CONSTRAINT chk_invoices_pending_since`
+  contra una base descartable — no es un precedente de rollback, pero sí
+  evidencia de que la sentencia en sí está probada). **No confundir con
+  el punto anterior:** ese es sobre el residuo esperado ANTES de que
+  2b/D3 exista; este es sobre qué pasa si D3 ya corrió y recién ahí se
+  decide volver atrás — son ventanas distintas del mismo split, con
+  consecuencias distintas.
+
+  **Piso de rollback, declarado explícitamente.** Una vez que D3 esté
+  vivo en producción, cualquier rollback — por `git revert` o por el
+  botón Rollback del dashboard de Render — que apunte a un commit/deploy
+  anterior a `3216849` (D2), incluido volver directo a
+  `dep-darck0rtqb8s738p68r0` (D1) o más atrás, necesita el `DROP
+  CONSTRAINT` de arriba ejecutado PRIMERO contra cada tenant. El botón
+  Rollback de Render no sabe nada de esto — deja elegir cualquier deploy
+  anterior sin verificar constraints de schema —, así que la
+  verificación queda en quien ejecuta el rollback, no en la plataforma.
+
 ### Wave 14, ítem 4.3 — reserva por tipo de unidad con asignación diferida (schema v64)
 
 **Agregado el 25/09/2026**, antes de que estos commits se pusheen —
 `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6 registró en varias
 rondas de gate que este runbook necesitaba esta sección antes de
 autorizar el push/deploy real (no bloqueante del commit). Cuatro commits
-locales, del más viejo al más nuevo (39 commits locales sin pushear en
-total el 25/09/2026, medido con `git log --oneline origin/main..HEAD |
-wc -l` contra `origin/main` = `f9be209` — volvé a correr ese comando en
-vez de confiar en "39": el estado de push cambia con cada `git push`, no
-con este texto):
+locales, del más viejo al más nuevo.
+
+**Corrección 25/09/2026 (continuación de sesión): la cita de "39 commits
+... contra `origin/main` = `f9be209`" de este párrafo quedó stale — D1 y
+D2 del split de facturación (subsección "Split de push del ADR
+reintento-vs-reversa" más arriba) ya se pushearon y desplegaron desde que
+se escribió esto, así que ni el hash ni el conteo siguen valiendo. Mismo
+criterio que esa subsección: `git log --oneline origin/main..HEAD | wc -l`
+daba **28** contra `origin/main` = `3216849` al hacer esta corrección —
+no cites ese "28" tampoco sin volver a correr el comando, el número sigue
+cambiando con cada push:
 
 | Commit | Fase | Qué cambia | Toca `schema.sql` |
 |---|---|---|---|
@@ -439,42 +687,176 @@ Solo `f88dbdd` toca schema. Verificado contra
 `token_version`, 24/09/2026) a `64` — salto de 1, sin gap.
 
 **Esto NO es un deploy aislado de 4.3 — va en el mismo push que todo lo
-demás, salvo que se pushee explícitamente un prefijo.** `origin/main`
-(`f9be209`) tiene hoy `CURRENT_SCHEMA_VERSION = 60` — entre ese commit y
-`HEAD` hay 4 saltos de versión, no solo el de esta Wave: `3216849`
-(60→61, Bloque 2a facturación), `2c9b423` (61→62, Bloque 2b, CHECK
+demás, salvo que se pushee explícitamente un prefijo.** **Corrección
+25/09/2026 (continuación de sesión):** este párrafo decía que
+`origin/main` (`f9be209`) tenía `CURRENT_SCHEMA_VERSION = 60` con 4
+saltos pendientes hasta `HEAD` — eso era cierto al escribirlo, pero D1 y
+D2 (ver "Split de push del ADR reintento-vs-reversa" más arriba) ya se
+pushearon y desplegaron: `origin/main` ya no es `f9be209` ni está en v60
+(verificar con `git log --oneline -1 origin/main` y `SELECT MAX(version)
+FROM schema_migrations` antes de asumir un valor — a la fecha de esta
+corrección daba `3216849` / v61, no lo cites como fijo). De los 4 saltos
+que este párrafo listaba, **uno ya ocurrió** (`3216849`, 60→61, D2) y
+quedan **3 pendientes**: `2c9b423` (61→62, Bloque 2b/D3, CHECK
 `chk_invoices_pending_since`), `061e1ed` (62→63, Wave 15 ítems 1+2,
 también toca `platform.schema.sql`) y `f88dbdd` (63→64, BLOQUE 29 de esta
-Wave). Además `5e6d4a8` toca `platform.schema.sql` sin bump de
-`CURRENT_SCHEMA_VERSION` de tenant (vínculo a empresa, Wave 15 D-05). Por
-la sección "Trigger del deploy" de más arriba (push a `main` = deploy, sin
-`autoDeploy` explícito), un `git push` sin argumentos (o `git push origin
-main`) se lleva TODOS los commits locales sin pushear de una sola vez —
-`migrate:tenants` correría entonces con `CURRENT_SCHEMA_VERSION = 64` y
-los 4 saltos de arriba aplicados juntos.
+Wave) — los tres siguen fuera de `origin/main` a la fecha de esta
+corrección (verificar con `git log origin/main --oneline | grep -E
+'2c9b423|061e1ed|f88dbdd'`, 0 líneas = ninguno pusheado), agrupados hoy
+en el "deploy grande" de la tabla de D3/D4 de más arriba, no en un push
+aislado. Además `5e6d4a8` toca `platform.schema.sql` sin bump de
+`CURRENT_SCHEMA_VERSION` de tenant (vínculo a empresa, Wave 15 D-05) y
+también sigue fuera de `origin/main` (mismo chequeo: `git log origin/main
+--oneline | grep 5e6d4a8`, 0 líneas = no pusheado).
+Por la sección "Trigger del deploy" de más arriba (push a `main` = deploy,
+sin `autoDeploy` explícito), un `git push` sin argumentos (o `git push
+origin main`) se llevaría TODOS los commits locales sin pushear de una
+sola vez — `migrate:tenants` correría entonces con
+`CURRENT_SCHEMA_VERSION = 64` y los 3 saltos restantes aplicados juntos
+(D3 quedaría fusionado con el deploy grande si se pushea así, en vez de
+como su propio paso separado — ver la advertencia de la subsección de
+arriba sobre pushear un prefijo explícito si se quiere mantener D3
+aislado).
 
 **Dejar afuera estos 4 commits (o cualquier prefijo) SÍ es posible —
 no es "todo o nada".** `git push origin <hash>:main` es un push
 fast-forward de un prefijo de la historia local a una rama remota; no
 hace falta llevarse el HEAD completo. Es, de hecho, el mismo mecanismo
-que el camino de rollback de más abajo ya usa ("no deployar más allá de
-`f37d1c2`") — no hay contradicción entre "hay que decidir el push como
-una unidad" (la Wave completa) y "se puede pushear un prefijo más corto
-si se decide no incluir esta Wave todavía": son dos decisiones
-distintas, y la segunda requiere nombrar el refspec explícito
-(`git push origin f37d1c2:main`), no un `git push` liso.
+que antes se sugería para un rollback ("no deployar más allá de
+`f37d1c2`", ver por qué esa idea es errónea en la advertencia
+inmediatamente abajo) — no hay contradicción entre "hay que decidir el
+push como una unidad" (la Wave completa) y "se puede pushear un prefijo
+más corto si se decide no incluir esta Wave todavía": son dos decisiones
+distintas, y la segunda requiere nombrar el refspec explícito, por
+ejemplo `git push origin f37d1c2:main` (**hoy inseguro, ver la
+advertencia de abajo** — no un ejemplo neutro), no un `git push` liso.
 
-**Rollback de código, sin rollback de schema — verificado releyendo el
-código, no asumido.** Los 4 commits de esta tabla son los 4 más recientes
-que tocan 4.3 (re-verificar con `git log --oneline` si se agregó algo
-encima antes de actuar — esta afirmación tiene fecha de vencimiento igual
-que la de "sin pushear" más arriba), así que un rollback de código es
-simplemente **no deployar más allá de `f37d1c2`** (el commit de docs justo
-antes de Fase 1 — confirmado padre directo de `f88dbdd` con `git log
---oneline f37d1c2..f88dbdd`) o, si ya se deployó más allá, `git revert` de
-los 4 en orden inverso (`283bc4c`, `41b1ff9`, `2b8a6e8`, `f88dbdd`) +
-redeploy. Ninguno de los dos caminos toca `schema.sql`. Por qué la
-columna queda inofensiva:
+**Advertencia fechada, 25/09/2026 (re-ronda del gate) — `f37d1c2` como
+punta de push HOY es inseguro, viola el piso de R' declarado más arriba
+en "Split de push del ADR reintento-vs-reversa".** `git log --reverse
+origin/main..HEAD` ubica `f37d1c2` en la posición 15 de la historia local
+— DESPUÉS de los originales sin revertir de 2c/5 (`2db33f5` posición 5,
+`93ab083` posición 6, `a7d06be` posición 10) pero ANTES de los 3 commits
+de R' (`8940467`/`d43de3f`/`3818910`, posiciones 24-26). Un push con
+`git push origin f37d1c2:main` se llevaría 2c/5 SIN revertir y SIN que
+exista Bloque 4 — exactamente el escenario que R' se hizo para evitar.
+**El prefijo que respeta el piso de R' depende de qué se quiere incluir,
+no es un único número:** cualquier punta en posición 1-4 (`2c9b423`,
+`f9af82f`, `6920479` o `548c432`) queda ANTES de que empiece 2c/5 — de
+esas, D3 solo (sin D4) es cualquier punta en posición 1-3 (`2c9b423`,
+`f9af82f` o `6920479`, las dos últimas son commits de docs); D3+D4 juntos
+es punta en posición 4 (`548c432` — respeta el piso de R', pero ver el
+hallazgo separado más abajo, "Hallazgo separado, sin resolver en este
+runbook", antes de asumir que por eso ya es un push seguro sin más). O,
+en el otro extremo, ≥ `3818910` (posición 26, con las 3 partes de R' incluidas completas — pero esto junta 4.3 con el
+deploy grande completo, como ya advierte la subsección de arriba). Nunca
+un punto intermedio entre `2db33f5` (posición 5) y `3818910`.
+
+**Por qué "no volver a deployar más allá de `f37d1c2`" NO es un camino de
+rollback válido — error de la versión anterior de este párrafo,
+corregido en esta ronda del gate.** Lo que Render despliega depende del
+COMMIT elegido, no de si se llega ahí empujando hacia adelante o
+"volviendo" hacia atrás — la advertencia de arriba aplica igual en las
+dos direcciones. Si el código en producción ya incluye R' (es decir, ya
+se pusheó hasta `3818910` o más allá), automáticamente incluye también
+`f88dbdd`…`283bc4c` (posiciones 16-19, anteriores a R' en la historia) —
+"volver" a `f37d1c2` sería desplegar 2c/5 sin R', exactamente lo que el
+piso prohíbe. Y no es ejecutable de todos modos: con `origin/main` ya en
+`3818910` o más allá, un push a `f37d1c2:main` no es fast-forward — Git
+lo rechaza salvo con `--force`, prohibido por la regla de no
+force-pushear de este repo.
+
+**Rollback real de 4.3, una vez que el código ya está sirviendo tráfico
+más allá de `3818910` (R' incluido) — verificado releyendo el código, no
+asumido.** El único camino POR GIT que saca SOLO 4.3 (sin tocar lo demás
+que viaja en el mismo deploy grande) es `git revert` hacia adelante +
+redeploy — nunca "no avanzar más allá de" un commit anterior por git, por
+el motivo de arriba. El botón Rollback de Render es una alternativa
+distinta y más gruesa, ver el párrafo siguiente. Ese camino de `git
+revert` no toca `schema.sql`. **Pero el conjunto exacto de
+commits a revertir NO es un dato fijo de este texto — tiene que
+re-derivarse al momento de actuar, no asumirse de la tabla de 4 commits
+de más arriba.** Verificado en esta ronda: al menos otros 4 commits
+locales tocan el mismo código o los mismos tests después de esos 4
+(`5b9fce6` reescribe `createWindow()` sobre lo que agregó `283bc4c`;
+`770a836` toca la entrada de `/api/reservations/availability-by-category`
+en `NO_CONSUMER_ROUTES`, que si se revierte `2b8a6e8` queda apuntando a
+una ruta que ya no existe — hay que regenerar `docs/inventario-rutas.md`
+además; `4c6bf77` y `0c10512` tocan tests de integración de 4.3/maintenance-window).
+Un `git revert` de los 4 originales con estos 4 encima puede tener
+conflicto (no probado). **Este runbook NO decide si `283bc4c`/`5b9fce6`
+entran en un rollback de 4.3** (`283bc4c` es un fix de concurrencia que
+4.3 necesita como prerrequisito, no una feature propia de 4.3) — esa
+decisión de alcance queda para el momento de ejecutar el rollback, con
+`git log --oneline` re-corrido contra el estado real.
+
+**El botón Rollback del dashboard de Render, acotado correctamente — no
+es "cualquier deploy anterior a `3818910` es inseguro".** El criterio
+correcto no es "¿el commit desplegado CONTIENE algún commit del rango
+2c/5?" (todo deploy en `3818910` o después lo contiene, porque lo
+revierte encima — esa lectura marcaría como violando el piso lo que en
+realidad lo respeta, error de una versión anterior de este texto). El
+criterio correcto es sobre la PUNTA del deploy — pero expresarlo por
+POSICIÓN en `git log --reverse` es una trampa: las posiciones se corren
+con cada push, así que "5 a 25" deja de valer apenas se pushea D3, y
+justo cuando hace falta usar este criterio (después de que `origin/main`
+ya pasó `3818910`) esa lista de commits ya no aparece en
+`origin/main..HEAD` en absoluto. **El criterio estable es por
+ascendencia, no por posición:** el piso de R' se viola cuando el commit
+`T` que Render tiene desplegado cumple LAS DOS — `git merge-base
+--is-ancestor 2db33f5 T` (éxito) Y `git merge-base --is-ancestor 3818910
+T` (falla) —, es decir, `T` ya incluye el original de 2c/5 pero todavía
+no incluye R' completo. Verificado hoy (25/09/2026) contra 7 puntas
+reales: en `3216849` y `548c432` los dos comandos fallan (respetan el
+piso de R'); en `2db33f5`, `f37d1c2` y `d43de3f` el primero tiene éxito y
+el segundo falla (violan el piso); en `3818910` y `efdc5b0` los dos
+tienen éxito (respetan el piso de R', R' ya incluido). Un deploy cuya
+punta sea `548c432` (D4) o anterior no viola el
+piso de R' por sí solo (ver, sin embargo, el hallazgo separado más abajo
+sobre `548c432` específico). Con el plan de split vigente (D3=`2c9b423`
+solo, D4=`548c432` solo, deploy grande con punta en `3818910` o
+después), nunca debería existir en el historial de Render un deploy real
+que cumpla el criterio de arriba.
+
+**Hallazgo separado, sin resolver en este runbook: `548c432` (D4) cumple
+el piso de R' pero, por el código real de ese commit, parece reproducir
+el hueco que motivó elegir R' en primer lugar — inferido leyendo el
+código, no reproducido contra una base real.** El ADR
+(`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, ronda
+20) y `docs/pendientes-2026-09-12.md:1748` ("Por qué R' y no R")
+justifican conservar la mitad §3.5 (el reset de `uncertain_cleared_at`
+en `markFailedWithClient()`) precisamente porque, sin ella, una factura
+`CHARGE` limpiada por un operador y después reintentada queda (paráfrasis
+del texto real de `pendientes-2026-09-12.md:1748-1754`) sin ninguna
+salida visible una vez que el Bloque 3 de este ADR (commit `548c432`)
+esté sirviendo tráfico. Verificado
+contra `git show 548c432:src/facturacion/sql.invoice.repository.ts`:
+`markFailedWithClient()` en ese commit NO resetea `uncertain_cleared_at`
+— su propio comentario dice "El reset de uncertain_cleared_at (§3.5) es
+un fix distinto, asignado al Bloque 2c -- no se toca acá". Es decir, un
+deploy con punta en `548c432` (D4 solo, sin R' ni Bloque 2c) parecería
+reproducir el mismo hueco documentado (no reproducido contra Postgres
+real), aunque no viole el piso de R' recién declarado — son dos riesgos
+DISTINTOS del mismo commit, no el mismo riesgo dos
+veces. **Este runbook no decide si eso hace insegura a D4 como deploy
+aislado** (¿D4 depende de que §3.5 ya esté aplicada, o el hueco es
+tolerable durante la ventana entre D4 y el deploy grande? no evaluado
+acá) — queda como decisión abierta, a registrar en
+`docs/pendientes-2026-09-12.md` antes de autorizar el push de D4, no solo
+en este runbook. Sin reproducir esto contra Postgres real — basado en el
+texto del ADR/pendientes y en el código de `548c432`, no en una prueba.
+
+Elegir el botón Rollback hacia `548c432` (D4) SÍ respeta el piso de R' —
+pero es un rollback grueso: saca junto con 4.3 toda la Wave 15, el
+Bloque 6 y R' mismo, no solo 4.3 (y, por el hallazgo de arriba, vuelve a
+dejar expuesto el mismo hueco de facturación que motivó R'). Deja schema
+`v63`/`v64` puesto en la base sin que el código que corre después lo use
+(`tenant.middleware.ts` compara la versión de schema en modo fail-soft,
+solo `logger.warn`, no bloquea requests — verificado contra
+`src/platform/tenant.middleware.ts:88-102`, "Chequeo fail-SOFT (a
+propósito)"). Si además el deploy elegido en el botón Rollback es
+anterior a `3216849` (D2), se suma el piso de `DROP CONSTRAINT` de la
+subsección de arriba. Por qué la columna queda inofensiva:
 
 - `assignment_status VARCHAR(20) NOT NULL DEFAULT 'ASSIGNED'` — código que
   no la nombra en su `INSERT`/`UPSERT` (el código de antes de `f88dbdd`, o
@@ -554,23 +936,38 @@ pierde es solo la señal de "todavía puede reoptimizarse" (ver la nota
 sobre UI en el bloque de correcciones menores, más abajo) y, hasta que se
 complete la reserva, el registro de ocupación de esa fila puntual.
 
-**Backup pre-deploy — misma exigencia de siempre, sin excepción.** El
-push real de esta Wave aplica los 4 saltos de versión de la tabla de más
-arriba (60→61→62→63→64) más los 2 cambios de `platform.schema.sql`
-(`061e1ed`, `5e6d4a8`) — no solo el BLOQUE 29 de v64. Rige "Crear el
-respaldo antes de deployar" de más arriba: un branch de respaldo
-`no_compute: true` en LOS DOS proyectos Neon (tenants Y plataforma — el
-deploy reinicia el backend y reaplica los dos esquemas, mismo motivo que
-`respaldo-pre-fase3-2026-08-29`), verificado contra la base ANTES del push
-con `SELECT MAX(version) FROM schema_migrations;` — **tiene que dar la
-versión que hoy corre en producción, no un número fijo de este texto:
-esperado `60` si producción todavía está en `origin/main` = `f9be209`
-(VERIFICARLO antes de asumirlo — puede haber cambiado)**. **No hay ningún
-backup creado todavía para este deploy** — nombre sugerido cuando se
-autorice el push: `respaldo-pre-v60-a-v64-<fecha del push>` (no
+**Backup pre-deploy — misma exigencia de siempre, sin excepción.**
+**Corrección 25/09/2026 (continuación de sesión):** este párrafo decía
+que el push de esta Wave aplicaba los 4 saltos 60→61→62→63→64 — ya no es
+así, porque D2 (60→61) se ejecutó por separado y, por el plan de split
+vigente hoy (ver "Split de push del ADR reintento-vs-reversa" más
+arriba), D3 (61→62, Bloque 2b) también va como su PROPIO deploy, antes
+del "deploy grande" que trae esta Wave. Si ese orden se sostiene, el push
+que finalmente incluya BLOQUE 29 (v64) partiría de v62, no de v60 —
+saltos 62→63→64 más los 2 cambios de `platform.schema.sql` (`061e1ed`,
+`5e6d4a8`), no los 4 originales. **Esto es una lectura del plan actual,
+no un hecho fijo** — el propio plan de split ya cambió una vez desde que
+se escribió el párrafo original (D3 pasó de ir junto con esta Wave a ser
+su propio paso), así que re-confirmar contra la subsección de arriba
+antes de preparar el backup real. Rige igual "Crear el respaldo antes de
+deployar" de más arriba: un branch de respaldo `no_compute: true` en LOS
+DOS proyectos Neon (tenants Y plataforma — el deploy reinicia el backend
+y reaplica los dos esquemas, mismo motivo que
+`respaldo-pre-fase3-2026-08-29`), verificado contra la base ANTES del
+push con `SELECT MAX(version) FROM schema_migrations;` — **tiene que dar
+la versión que efectivamente corre en producción en ese momento, no un
+número fijo de este texto** (VERIFICARLO antes de asumirlo — a la fecha
+de esta corrección daba `61`, tras D2, pero puede haber cambiado si D3 ya
+corrió para entonces). **No hay ningún backup creado todavía para este
+deploy** ni tampoco, hasta donde este documento pudo confirmar, para D1 o
+D2 (ver la nota al respecto en la subsección de arriba) — nombre
+sugerido para el deploy grande cuando se autorice su push:
+`respaldo-pre-v62-a-v64-<fecha del push>` si D3 ya está en producción
+para ese momento (o `respaldo-pre-v60-a-v64-<fecha del push>` si por
+algún motivo el plan cambia y termina yendo junto con D3) — nunca
 `respaldo-pre-v64-...`: ese nombre sugiere que el respaldo cubre solo el
 último paso, cuando en realidad tiene que cubrir el salto completo desde
-la versión real de producción).
+la versión real de producción al momento de ese push.
 
 **La verificación post-deploy de ESTA sección cubre solo v64 (BLOQUE
 29).** No valida los 2 cambios de `platform.schema.sql` (`061e1ed`,
@@ -586,7 +983,10 @@ cambió en cada paso intermedio. Detalle por versión, mismo formato que
 usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
 
 - **v60 → v61 (`3216849`, "Bloque 2a — invoices.pending_since"), BLOQUE 26
-  de `schema.sql`.** `ISSUE-BEFORE-REVERSE-WINDOW-001`
+  de `schema.sql`. Estado: EJECUTADO — es D2, ver "Split de push del ADR
+  reintento-vs-reversa" más arriba para la evidencia real contra
+  producción (log de build, `MAX(schema_migrations.version)`, `businesses.schema_version`).**
+  `ISSUE-BEFORE-REVERSE-WINDOW-001`
   (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6/§6).
   Agrega `invoices.pending_since TIMESTAMPTZ` (nullable) + backfill directo
   (`pending_since = created_at WHERE status = 'PENDING'`) — marca desde
@@ -600,7 +1000,10 @@ usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
   fail-loud, no la causa de este split; el split evita LLEGAR a ese
   fail-loud por un motivo distinto: escritores viejos sin la columna).
 - **v61 → v62 (`2c9b423`, "Bloque 2b — CHECK
-  chk_invoices_pending_since"), BLOQUE 27 de `schema.sql`.** Mismo ADR,
+  chk_invoices_pending_since"), BLOQUE 27 de `schema.sql`. Estado:
+  PENDIENTE — es D3, todavía sin pushear (ver la tabla de D3/D4/deploy
+  grande en "Split de push del ADR reintento-vs-reversa" más arriba).**
+  Mismo ADR,
   §3.6/§6. Cierra la ventana que v61 dejó abierta a propósito: agrega el
   backfill INVERSO (`pending_since = NULL WHERE status <> 'PENDING'`, limpia
   el residuo que puede haber dejado una instancia vieja sirviendo tráfico
@@ -611,7 +1014,12 @@ usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
   en cada deploy).
 - **v62 → v63 (`061e1ed`, "TTL de sesión configurable por negocio +
   revocación real vía `token_version`, Wave 15 items 1+2"), BLOQUE 28 de
-  `schema.sql`.** `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
+  `schema.sql`. Estado: PENDIENTE — parte del "deploy grande". Verificar
+  con `git log origin/main --oneline | grep 061e1ed` (0 líneas = todavía
+  no pusheado; ese es el grep de la sección "Wave 14, ítem 4.3" más
+  arriba, no el de la tabla D3/D4/deploy-grande, que no incluye este
+  hash).**
+  `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
   §2, D-04 opción A. Agrega `customers.token_version INTEGER NOT NULL
   DEFAULT 0` — mismo mecanismo y mismo DEFAULT que
   `identities.token_version` de `platform.schema.sql` (BLOQUE SESSION_TTL /
