@@ -1,9 +1,9 @@
 # Runbook — deploy Render (Node pin + migraciones con EXCLUDE)
 
-- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito)
+- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito) · **actualizado 2026-09-25** (Procedimiento 3 — rollback de Wave 14 ítem 4.3, schema v64; 39 commits locales sin pushear medido con `git log --oneline origin/main..HEAD | wc -l`, re-verificar con ese comando en el momento en vez de confiar en el número)
 - **Estado:** implementado (`engines.node` acotado; incidente del día resuelto)
 - **Categoría:** Runbook + Incidente
-- **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `rollback` `neon`
+- **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `v64` `rollback` `neon` `4.3`
 - **Alcance:** `app-main` en Render + los dos proyectos Neon (tenants y plataforma). No documenta secretos.
 - **Referencias:** pendientes 25/08 “Incidente de deploy”; pendientes 28/08 (deploy v44); `package.json` `engines`; `render.yaml` `NODE_VERSION`; `i11-arcasdk-pdf-puppeteer.md`; `auditoria-dominios.md` (URLs reales).
 
@@ -413,6 +413,260 @@ es reversible: si el diagnóstico estaba errado, se vuelve a apuntar y no se per
 **Camino B — restaurar `production` desde el respaldo.** Deja la app sin tocar, pero
 **sobrescribe `production`**: todo lo escrito después del punto de restauración se pierde.
 Solo con OK explícito y por escrito de qué se acepta perder.
+
+### Wave 14, ítem 4.3 — reserva por tipo de unidad con asignación diferida (schema v64)
+
+**Agregado el 25/09/2026**, antes de que estos commits se pusheen —
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6 registró en varias
+rondas de gate que este runbook necesitaba esta sección antes de
+autorizar el push/deploy real (no bloqueante del commit). Cuatro commits
+locales, del más viejo al más nuevo (39 commits locales sin pushear en
+total el 25/09/2026, medido con `git log --oneline origin/main..HEAD |
+wc -l` contra `origin/main` = `f9be209` — volvé a correr ese comando en
+vez de confiar en "39": el estado de push cambia con cada `git push`, no
+con este texto):
+
+| Commit | Fase | Qué cambia | Toca `schema.sql` |
+|---|---|---|---|
+| `f88dbdd` | Fase 1 | `reservations.assignment_status` (BLOQUE 29) + validación de VALOR en `Reservation.ts` — ninguna reserva se marca `PENDING_ASSIGNMENT` todavía | **Sí — v63 → v64** |
+| `2b8a6e8` | Fase 0 | `GET /api/reservations/availability-by-category` (solo lectura, cupo disponible por categoría) | No |
+| `41b1ff9` | Fase 2 | Mecanismo real: `assignDeferred()`, alta por categoría, check-in/completar confirmando asignación, discriminador del PUT que rechaza combinar reasignación con otros cambios | No |
+| `283bc4c` | Prerrequisito | Fix de `createWindow()` (`MAINTENANCE-WINDOW-STALE-SAVE-001`) — relee el tramo incierto con `FOR UPDATE` dentro de la transacción en vez de mutar en memoria a partir de una lectura sin lock hecha afuera | No |
+
+Solo `f88dbdd` toca schema. Verificado contra
+`src/platform/tenant-db.setup.ts`: `CURRENT_SCHEMA_VERSION` pasa de `63`
+(Wave 15 ítem 2, D-04 opción A, revocación real de sesión por
+`token_version`, 24/09/2026) a `64` — salto de 1, sin gap.
+
+**Esto NO es un deploy aislado de 4.3 — va en el mismo push que todo lo
+demás, salvo que se pushee explícitamente un prefijo.** `origin/main`
+(`f9be209`) tiene hoy `CURRENT_SCHEMA_VERSION = 60` — entre ese commit y
+`HEAD` hay 4 saltos de versión, no solo el de esta Wave: `3216849`
+(60→61, Bloque 2a facturación), `2c9b423` (61→62, Bloque 2b, CHECK
+`chk_invoices_pending_since`), `061e1ed` (62→63, Wave 15 ítems 1+2,
+también toca `platform.schema.sql`) y `f88dbdd` (63→64, BLOQUE 29 de esta
+Wave). Además `5e6d4a8` toca `platform.schema.sql` sin bump de
+`CURRENT_SCHEMA_VERSION` de tenant (vínculo a empresa, Wave 15 D-05). Por
+la sección "Trigger del deploy" de más arriba (push a `main` = deploy, sin
+`autoDeploy` explícito), un `git push` sin argumentos (o `git push origin
+main`) se lleva TODOS los commits locales sin pushear de una sola vez —
+`migrate:tenants` correría entonces con `CURRENT_SCHEMA_VERSION = 64` y
+los 4 saltos de arriba aplicados juntos.
+
+**Dejar afuera estos 4 commits (o cualquier prefijo) SÍ es posible —
+no es "todo o nada".** `git push origin <hash>:main` es un push
+fast-forward de un prefijo de la historia local a una rama remota; no
+hace falta llevarse el HEAD completo. Es, de hecho, el mismo mecanismo
+que el camino de rollback de más abajo ya usa ("no deployar más allá de
+`f37d1c2`") — no hay contradicción entre "hay que decidir el push como
+una unidad" (la Wave completa) y "se puede pushear un prefijo más corto
+si se decide no incluir esta Wave todavía": son dos decisiones
+distintas, y la segunda requiere nombrar el refspec explícito
+(`git push origin f37d1c2:main`), no un `git push` liso.
+
+**Rollback de código, sin rollback de schema — verificado releyendo el
+código, no asumido.** Los 4 commits de esta tabla son los 4 más recientes
+que tocan 4.3 (re-verificar con `git log --oneline` si se agregó algo
+encima antes de actuar — esta afirmación tiene fecha de vencimiento igual
+que la de "sin pushear" más arriba), así que un rollback de código es
+simplemente **no deployar más allá de `f37d1c2`** (el commit de docs justo
+antes de Fase 1 — confirmado padre directo de `f88dbdd` con `git log
+--oneline f37d1c2..f88dbdd`) o, si ya se deployó más allá, `git revert` de
+los 4 en orden inverso (`283bc4c`, `41b1ff9`, `2b8a6e8`, `f88dbdd`) +
+redeploy. Ninguno de los dos caminos toca `schema.sql`. Por qué la
+columna queda inofensiva:
+
+- `assignment_status VARCHAR(20) NOT NULL DEFAULT 'ASSIGNED'` — código que
+  no la nombra en su `INSERT`/`UPSERT` (el código de antes de `f88dbdd`, o
+  el código revertido) deja que Postgres aplique el DEFAULT solo. No hay
+  forma de violar el `NOT NULL` sin nombrar la columna.
+- El código revertido no la lee: antes de `f88dbdd`,
+  `sql.reservation.repository.ts` no tiene `assignment_status` en su
+  `SELECT` ni en su UPSERT, y `Reservation.ts` no tiene `assignmentStatus`
+  en `ReservationProps` — el constructor ni sabe que la columna existe.
+- El código revertido no la escribe: ninguno de los 3 sitios de
+  construcción de `Reservation` en `reservation.service.ts` de antes de
+  Fase 1 fija valor alguno para esa columna.
+
+**Paso de datos OBLIGATORIO del rollback de Fase 2 — no es un matiz
+opcional, es parte del runbook (`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
+líneas 831-873, "Runbook de rollback de Fase 2, parte obligatoria del
+deploy, no una nota al pie", B3/C-d). Aplica tanto si se revierten los 4
+commits de la tabla como si se revierte solo `41b1ff9`** (Fase 1 puede
+quedar deployada sin Fase 2 — ver el rollback acotado más abajo). Si al
+momento de revertir el código ya existen reservas
+`assignment_status = 'PENDING_ASSIGNMENT'` en la base (Fase 2 corrió, al
+menos una reserva se creó por categoría de alojamiento), el código
+revertido no conoce `assignDeferred()` y NO resuelve nunca ese estado —
+quedan colgadas. Si Fase 2 se vuelve a deployar más adelante,
+`assignDeferred()` las procesaría de nuevo y **podría contar la ocupación
+DOS VECES** (una vez al confirmarse bajo el código revertido — Fase 1 NO
+saltea `recordOccupancy()` en `confirmReservation()`/`completeReservation()`,
+así que esas reservas quedan con ocupación registrada sobre el recurso
+provisorio en cuanto se confirman o completan bajo el código viejo; otra
+al reasignarse bajo Fase 2 redeployada, que sí registra sobre el recurso
+definitivo). El paso, en orden:
+
+1. **Antes del `UPDATE`, medir el impacto con el dueño** (evidencia de
+   cuántas filas se van a tocar, agrupadas por si ya se completaron o
+   siguen activas):
+
+   ```sql
+   SELECT status, COUNT(*) FROM reservations
+    WHERE assignment_status = 'PENDING_ASSIGNMENT'
+    GROUP BY status;
+   ```
+
+2. **El `UPDATE` en sí, con autorización explícita del dueño** (mismo
+   criterio que cualquier escritura masiva de este runbook — no se corre
+   sin OK):
+
+   ```sql
+   UPDATE reservations SET assignment_status = 'ASSIGNED'
+    WHERE assignment_status = 'PENDING_ASSIGNMENT';
+   ```
+
+   **Momento exacto: UNA SOLA VEZ, JUSTO DESPUÉS de que el código
+   revertido ya esté sirviendo tráfico — nunca antes.** Correrlo antes
+   deja una ventana donde Fase 2 sigue vigente y sigue marcando reservas
+   NUEVAS como `PENDING_ASSIGNMENT` después del `UPDATE`, así que esas
+   filas nuevas quedan sin tocar. El `UPDATE` es idempotente (correrlo dos
+   veces no hace daño), pero una sola corrida inmediatamente después del
+   redeploy alcanza para vaciar toda la cola.
+
+**Faltante de ocupación ACEPTADO, no un bug a arreglar en el runbook.**
+Las reservas `CONFIRMED` que el `UPDATE` pasa de `PENDING_ASSIGNMENT` a
+`ASSIGNED` quedan SIN ocupación registrada: `recordOccupancy()`
+(`src/reservas/reservation-availability.service.ts:424`) no registra nada
+mientras `assignmentStatus === 'PENDING_ASSIGNMENT'` (convención B-1 del
+diseño), y el `UPDATE` de rollback escribe la columna directo, sin pasar
+por `assignDeferred()` ni por `recordOccupancy()`. Ese faltante dura hasta
+que esas reservas se completan (`completeReservation()` sigue llamando a
+`recordOccupancy()` siempre). Consistente con que un rollback es un
+evento excepcional, no el camino normal de esta operación.
+
+El diseño (misma sección) eligió la Opción C de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §4 (línea 277) —
+`resource_id` sigue `NOT NULL`, apunta siempre a un recurso REAL y
+disponible, el "primer candidato encontrado", nunca a un placeholder — así
+que el rollback no pierde filas ni rompe ningún constraint. Lo que se
+pierde es solo la señal de "todavía puede reoptimizarse" (ver la nota
+sobre UI en el bloque de correcciones menores, más abajo) y, hasta que se
+complete la reserva, el registro de ocupación de esa fila puntual.
+
+**Backup pre-deploy — misma exigencia de siempre, sin excepción.** El
+push real de esta Wave aplica los 4 saltos de versión de la tabla de más
+arriba (60→61→62→63→64) más los 2 cambios de `platform.schema.sql`
+(`061e1ed`, `5e6d4a8`) — no solo el BLOQUE 29 de v64. Rige "Crear el
+respaldo antes de deployar" de más arriba: un branch de respaldo
+`no_compute: true` en LOS DOS proyectos Neon (tenants Y plataforma — el
+deploy reinicia el backend y reaplica los dos esquemas, mismo motivo que
+`respaldo-pre-fase3-2026-08-29`), verificado contra la base ANTES del push
+con `SELECT MAX(version) FROM schema_migrations;` — **tiene que dar la
+versión que hoy corre en producción, no un número fijo de este texto:
+esperado `60` si producción todavía está en `origin/main` = `f9be209`
+(VERIFICARLO antes de asumirlo — puede haber cambiado)**. **No hay ningún
+backup creado todavía para este deploy** — nombre sugerido cuando se
+autorice el push: `respaldo-pre-v60-a-v64-<fecha del push>` (no
+`respaldo-pre-v64-...`: ese nombre sugiere que el respaldo cubre solo el
+último paso, cuando en realidad tiene que cubrir el salto completo desde
+la versión real de producción).
+
+**La verificación post-deploy de ESTA sección cubre solo v64 (BLOQUE
+29).** No valida `3216849`/`2c9b423`/`061e1ed` (v61/v62/v63, facturación y
+Wave 15) ni los 2 cambios de `platform.schema.sql` — este runbook no
+tiene todavía una sección separada para esos commits; falta agregarla (o
+verificarlos a mano) antes de dar el deploy completo por confirmado.
+
+**Verificación post-deploy**, mismo patrón que "Verificación contra la
+base, no contra el log":
+
+```sql
+-- 1. Versión de schema y forma de la columna nueva
+SELECT (SELECT MAX(version) FROM schema_migrations) AS schema_version,
+       column_name, is_nullable, column_default
+  FROM information_schema.columns
+ WHERE table_name = 'reservations' AND column_name = 'assignment_status';
+-- esperado: schema_version = 64, is_nullable = 'NO',
+-- column_default = 'ASSIGNED'::character varying
+
+-- 2. El CHECK existe
+SELECT conname FROM pg_constraint WHERE conname = 'chk_reservations_assignment_status';
+
+-- 3. Todo lo existente (reservas de ANTES del deploy) quedó en ASSIGNED.
+--    PENDING_ASSIGNMENT puede ser distinto de 0 MINUTOS después del
+--    deploy -- no asumir 0: Fase 2 no tiene feature flag y el frontend
+--    ya dispara el flujo que la activa (ver el párrafo de abajo), así
+--    que la primera reserva por categoría creada después del deploy ya
+--    puede aparecer acá.
+SELECT assignment_status, COUNT(*) FROM reservations GROUP BY assignment_status;
+```
+
+Más los dos `curl` de siempre (`/health` y `/health/db?fresh=1`).
+
+**Fase 2 queda activa EN CUANTO SE DEPLOYA, no "si se activa" — no tiene
+feature flag y el consumidor ya está commiteado.** `41b1ff9` no tiene
+ningún guard que la mantenga apagada, y `appfrontend` (`origin/main` =
+`e5561b4`, mismo commit en `HEAD` de ese repo) ya manda el flujo que la
+dispara: el checkbox "cualquier recurso disponible" de
+`src/app/dashboard/reservas/page.tsx` (bloque comentado como "K4" dentro
+de `createReservation({ values })` — en `e5561b4` son las líneas 177-182;
+citado por el comentario "K4", no por línea, porque el working tree local
+de `appfrontend` tiene un `import` sin commitear que corre todo el
+archivo una línea, mismo criterio que SCHEMA-ANCHOR-DRIFT-001) manda
+`categoryId` del servicio elegido SIN `resourceId` cuando
+está tildado. Del lado del backend, `reservations.routes.ts:498`
+(`const enteredByCategory = !body.resourceId && !!body.categoryId`) y
+`reservation.service.ts:470`
+(`assignmentStatus: params.enteredByCategory && category?.isLodging ?
+'PENDING_ASSIGNMENT' : 'ASSIGNED'`) confirman que alcanza con esa
+combinación — sin nada adicional que activar — para que una categoría de
+alojamiento genere una reserva `PENDING_ASSIGNMENT`. Por eso el flujo
+funcional de validación no es opcional ni condicional al deploy: crear
+una reserva por categoría, confirmar que queda `PENDING_ASSIGNMENT` con
+un recurso candidato, reasignar por `PUT`, y check-in confirmando la
+asignación — ninguna parte de esto la puede correr el agente (requiere
+login, mismo límite que "Validación funcional punta a punta"), así que
+corre el dueño apenas el deploy esté sirviendo tráfico, no como paso
+opcional.
+
+**El fix de `createWindow()` (`283bc4c`) no necesita nada de lo anterior
+por sí solo.** No toca `schema.sql` — es prerrequisito de código puro para
+activar Fase 2 sin reabrir `MAINTENANCE-WINDOW-STALE-SAVE-001`. Su
+rollback es el genérico de la tabla del comienzo de este Procedimiento
+("Bug funcional... Solo el código"): revertirlo no deja ningún dato
+inconsistente porque no cambia qué se guarda, solo mueve una lectura de
+fuera a dentro de una transacción ya existente.
+
+**Advertencia — NO revertir `283bc4c` dejando `41b1ff9` (Fase 2)
+deployado.** `283bc4c` es justamente el fix que cierra
+`MAINTENANCE-WINDOW-STALE-SAVE-001`; revertirlo solo (con Fase 2 todavía
+activa) reabre ese bug con Fase 2 activa — exactamente el escenario que
+el fix vino a cerrar. Revertir `283bc4c` es seguro únicamente si TAMBIÉN
+se revierte Fase 2 (`41b1ff9`).
+
+**Rollback más acotado, también contemplado por el diseño.** No hace
+falta revertir los 4 commits siempre — se puede revertir SOLO `41b1ff9`
+(y `283bc4c` junto con él, por la advertencia de arriba), dejando Fase 1
+(`f88dbdd`) y Fase 0 (`2b8a6e8`) deployadas, más el paso de datos
+obligatorio de más arriba (`UPDATE ... SET assignment_status =
+'ASSIGNED'`). Este camino deja la columna y el endpoint de solo lectura
+de Fase 0 en pie, sin el mecanismo real de asignación diferida.
+
+**Nota sobre UI, fechada — puede quedar desactualizada.** Al escribir
+esta sección (25/09/2026), `appfrontend` no tenía commiteado ningún
+indicador visual de `assignmentStatus` — pero SÍ había trabajo en curso
+sin commitear (mismo checkout, misma sesión) que lo agrega en
+`RoomCalendar.tsx`, `dashboard/reservas/page.tsx`,
+`dashboard/reservas/[id]/page.tsx` y `lib/reservas/types.ts`. Esta
+afirmación es sobre el estado del 25/09/2026, no una propiedad
+permanente — re-verificar `git status`/`git log` de `appfrontend` antes
+de repetirla. Distinto, y no relacionado, de que la ruta de Fase 0
+(`GET /api/reservations/availability-by-category`) figure en
+`NO_CONSUMER_ROUTES` de `route-consumer-coverage.test.ts` — eso es sobre
+CONSUMO de esa ruta puntual, no sobre si el dashboard muestra
+`assignmentStatus` en pantalla (que es un campo ya presente en las
+respuestas existentes, no depende de esa ruta).
 
 ### Lo que no hay que hacer
 
