@@ -2,8 +2,16 @@
 
 **Fecha:** 2026-09-24 (consolidado en la séptima ronda de edición,
 corregido en la octava, la novena, la décima, la onceava, la doceava, la
-decimotercera, la decimocuarta, la decimoquinta y la decimosexta, mismo
-día)
+decimotercera y la decimocuarta el mismo día 24/09/2026, y en la
+decimoquinta, la decimosexta, la decimoséptima, la decimoctava y la
+decimonovena el 25/09/2026 — **corregido, condición menor
+del gate 18:** una versión anterior de este encabezado decía "mismo día"
+para las nueve, lo que era falso para las últimas dos (la decimoquinta y
+la decimosexta, 25/09/2026, no 24/09/2026 como el resto); ver Anexo,
+entradas "Ronda 15" a "Ronda 19", para la evidencia de fecha de cada una
+— **agregadas la decimoséptima y la decimoctava, ronda de correcciones
+sobre el gate 19; agregada la decimonovena, ronda de correcciones sobre
+el gate 20**)
 **Origen:** Wave 14 de `docs/plan-ejecucion-integral-2026-09-16.md` (`4.3`,
 citado desde `docs/pendientes-2026-09-12.md:2825` y
 `docs/plan-integral-sistemico-2026-09-16.md:120`). Decisión de producto ya
@@ -14,17 +22,36 @@ corrido y suficiente — `docs/grounding-25-preguntas-2026-09-16.md:290-308`
 (Cloudbeds, QloApps, OCA/pms de Odoo) — por eso este documento no vuelve a
 invocar `auditor-circuitos-erp`.
 
-**Estado de este documento:** especificación normativa lista para su gate
-`architecture-governor`. Ningún fork de negocio queda abierto — todos los
-que este diseño levantó (17, enumerados en §9 — corregido en la Ronda 10,
-faltaba contar N4; corregido de nuevo en la Ronda 14, sumó D-1/D-2) están
-resueltos vía `AskUserQuestion` con el dueño. Lo que sigue abierto es
+**Estado de este documento:** especificación normativa, con Fase 1 y
+Fase 2 aprobadas con condiciones por el gate `architecture-governor`
+(las condiciones remanentes de Fase 2 son de implementación — ver el pie
+de este documento, entrada "Ronda 19", que registra el veredicto final
+del gate 20) y Fase 3 en HOLD (precondición de Fase 2 en producción,
+§6, más F3-4 abierta a propósito). **Corregido (gate 20, Ronda 19):**
+una versión anterior de este párrafo decía "Fases 2/3 en HOLD" — Fase 2
+dejó de estar en HOLD en el gate 19 (25/09/2026), que aprobó su DISEÑO
+con condiciones; este párrafo no se había actualizado para reflejarlo.
+Los
+17 forks de negocio de Fases 0-2 (enumerados en §9 —
+corregido en la Ronda 10, faltaba contar N4; corregido de nuevo en la
+Ronda 14, sumó D-1/D-2) están resueltos vía `AskUserQuestion` con el
+dueño. **Corregido (condición menor del gate 18) — ya no es "ningún fork
+de negocio queda abierto" sin excepción:** el gate 18 encontró, en Fase 3,
+UN fork nuevo (F3-4, §6/§9) que sí queda abierto a propósito — no se
+resuelve todavía porque Fase 3 no se puede aprobar de todas formas hasta
+que Fase 2 esté en producción. Lo que sigue abierto, aparte de F3-4, es
 exclusivamente implementación, enumerado también en §9.
 
 **Nota sobre esta versión del documento:** el documento pasó por
-dieciséis rondas de escritura/gate (contadas contra el Anexo, incluida
-esta — el encabezado decía "doce", ya desactualizado antes de esta
-ronda). Las primeras seis apilaban cada corrección como
+diecinueve rondas de escritura/gate (contadas contra el Anexo, incluida
+esta — corregido de "dieciocho" a "diecinueve", ronda de correcciones
+sobre el gate 20: sumaba la Ronda 18 pero no esta misma Ronda 19 sin que
+el conteo se hubiera actualizado; antes de eso el conteo había pasado de
+"dieciséis" a "dieciocho", C-5 de la ronda de correcciones sobre el gate
+19, porque sumaban la Ronda 17 y la Ronda 18 sin actualizarse; el
+encabezado decía "doce" antes de eso, ya desactualizado desde la Ronda
+16). Las primeras seis
+apilaban cada corrección como
 un párrafo "Actualización N-ésima ronda" encima del texto anterior — eso
 funcionó para que cada hallazgo quedara trazado, pero terminó produciendo
 contradicciones nuevas en rondas sucesivas (una sección corregida en la
@@ -84,7 +111,11 @@ antes de abrirla), la semántica de `ON DELETE SET NULL`, y revirtió la
 decisión de la Ronda 14 sobre el cuarto sitio de wiring de
 `ReservationService` (se exporta y reusa `buildStayService()`, en vez de
 agregar un composition root manual — la justificación de la Ronda 14 leía
-mal el docblock D-10). **La Ronda 16 (esta) encontró que la columna de
+mal el docblock D-10). **La Ronda 16 (gate 17, decimoséptimo — el propio
+Anexo salta de "decimoquinto" (Ronda 15) a "decimoséptimo" sin registrar
+un "decimosexto": es un hueco real en la numeración externa de gates de
+este repo, no un error de este documento, ver el bullet C-4 más abajo)
+encontró que la columna de
 D-1' es matemáticamente redundante con `resource_id`** (combinando
 "congelar de verdad" con "actualizar en cada reasignación", la columna
 nunca guarda un valor distinto de `resource_id` — no protege nada), más 2
@@ -98,7 +129,30 @@ Assign All" (F3-1: el candidato se lockea/valida como primera sentencia
 DENTRO de la transacción, nunca antes de abrirla) y un bug real en
 `findAvailableResourceInCategory()` que hace que una reserva
 `PENDING_ASSIGNMENT` choque contra su propio recurso provisorio en "Auto
-Assign All" (F3-2, no preexistente en producción hoy — ver el Anexo).**
+Assign All" (F3-2, no preexistente en producción hoy — ver el Anexo).
+**Un gate posterior y DISTINTO del de la Ronda 16 (gate 18 — no "ese
+mismo gate": una versión anterior de este párrafo los conflaba en uno
+solo; su veredicto está registrado en la entrada "Ronda 17" del Anexo, y
+coincide con el mensaje del commit `94d3a68`, "en el estado tras el 18º
+gate")** aprobó Fase 1 CON CONDICIONES (agregando G-1) y dejó
+Fase 2/3 en HOLD con 3 hallazgos puramente técnicos más (G-1, G-2, G-3) y
+2 sobre Fase 3 (F3-3 técnico, F3-4 decisión de negocio abierta). La Ronda
+17 — ronda de EDICIÓN, no un gate propio, mismo criterio que las Rondas
+2/7/8/9/12 — hizo el trabajo de cierre de G-1/G-2/G-3/F3-3, en respuesta
+al gate 18. La Ronda 18 refleja el gate 19, que revisó ese cierre y
+encontró 3 anclas
+falsas (una por G-1, una por F3-3/F3-5, una por cómo estaba planteada
+F3-4) más 1 defecto técnico nuevo introducido por la propia corrección de
+F3-3 (F3-5) — los 4 corregidos en esa ronda (C-1 a C-5, más C-6/C-7 sobre
+otros documentos). **La Ronda 19 (esta) refleja el gate 20, que verificó
+el cierre de C-1 a C-7 (Ronda 18) y encontró 4 problemas de bookkeeping
+de este documento (P-1 a P-4: la numeración de gates que este mismo
+párrafo corrige, el título y veredicto de la entrada "Ronda 18", el
+registro del propio veredicto del gate 20, y 2 anclas de línea volátiles
+en `pendientes-2026-09-12.md`) más 1 condición menor de implementación
+(P-5, ubicación del test de `Reservation`) — ninguno cambia el diseño — y
+dio el veredicto final: el diseño de Fase 2 queda APROBADO CON
+CONDICIONES. Ver Anexo, "Ronda 19".**
 El historial completo — qué encontró cada
 ronda de gate, qué se decidió, por quién — vive en el **Anexo**, al final
 del documento.
@@ -506,6 +560,87 @@ Se crea todo lo que Fase 2 va a necesitar, pero **ninguna reserva nace
   default a propósito" — ver §8 A6.1 para el detalle de por qué el default
   de la columna de Postgres y el default del parámetro de TypeScript son
   dos cosas distintas, y por qué el segundo no puede existir).
+- **`baseSelect()` (`sql.reservation.repository.ts`, método privado que
+  arma el `SELECT` reusado por `getById()`/`getByIdWithLock()`/etc. —
+  hoy termina en `FROM reservations r`, sin `assignment_status` en su
+  lista de columnas, verificado con `grep -n` contra el archivo real)
+  agrega `r.assignment_status` a esa lista.** Condición nueva de Fase 1
+  (G-1, gate 18 — no estaba especificado explícitamente en versiones
+  anteriores de este documento, que solo mencionaban `buildReservation()`
+  como consumidor, no la función que arma el `SELECT` que `buildReservation()`
+  recibe como fila). Sin este bullet, `row.assignment_status` en
+  `buildReservation()` sería siempre `undefined` — ver el punto siguiente
+  para por qué eso deja de ser silencioso.
+- **Validación en runtime del valor, no solo del tipo declarado (G-1, gate
+  18) — distinta de, y adicional a, la validación de la TRANSICIÓN que ya
+  hace `assignConcreteResource()` (§8 A6.1).** El constructor de
+  `Reservation` (y, por lo tanto, `Reservation.restore()`, que lo invoca
+  internamente) valida `assignmentStatus` contra
+  `Object.keys(ASSIGNMENT_STATUS_TRANSITIONS)` (§8 A6.1) y lanza
+  `InvalidReservationError` si el valor no es exactamente `'ASSIGNED'` o
+  `'PENDING_ASSIGNMENT'` — incluido el caso `undefined` (un `SELECT` que
+  se olvide de `r.assignment_status`, el bullet de arriba, o cualquier
+  otro caller que no reenvíe el campo). **Mismo mecanismo que ya usa
+  `reservationNumber` en este constructor — el precedente correcto
+  (corregido, C-1 de la ronda de correcciones sobre el gate 19: una
+  versión anterior de este párrafo citaba `id`/`partySize` como "los
+  demás campos obligatorios sin default del constructor", y los dos
+  ejemplos eran falsos — `id` sin valor tira `TypeError` de `.trim()`
+  (`Reservation.ts:272`), no un error de dominio; `partySize` SÍ tiene
+  default `= 1` en la destructuración (`Reservation.ts:250`), así que un
+  valor `undefined` nunca llega a fallar `partySize < 1`
+  (`Reservation.ts:276`) — pasa a valer 1 en silencio).** `reservationNumber`
+  no tiene default en la destructuración (`Reservation.ts:265`) y se
+  valida por VALOR: `!Number.isInteger(reservationNumber) ||
+  reservationNumber < 1` (`Reservation.ts:273-275`) lanza
+  `InvalidReservationError` para `undefined` (`Number.isInteger(undefined)
+  === false`) igual que para cualquier otro valor inválido — mismo patrón
+  que Fase 1 ya declara para `assignmentStatus` (`Reservation.ts:136-151`,
+  "obligatorio y sin default a propósito", ver §6). Ver también T-2 en el
+  Anexo, Ronda 16: la garantía de "columna faltante = falla visible" que
+  D-1' prometía para `priced_with_resource_id` sin este mecanismo real
+  resultó falsa — `buildReservation()` no tiene ningún guard propio; acá
+  el guard vive en el constructor de la entidad, no en el repositorio, por
+  eso protege a los 3 call-sites de `restore()` por igual, no solo a
+  `buildReservation()`. **Test obligatorio, parte del diseño, alcance de
+  implementación de Fase 1 — archivo nuevo, `src/tests/domain/reservation.test.ts`
+  (corregido, C-1 de la ronda de correcciones sobre el gate 19: una
+  versión anterior de este párrafo decía "mismo patrón que los tests
+  existentes de validación de constructor de esta entidad ... no un
+  archivo nuevo" — el gate verificó que esos tests NO EXISTEN: no hay
+  ningún `Reservation.test.ts` hoy, y ningún test de este repo construye
+  un `Reservation`/`Reservation.restore()` con `partySize`/`totalPrice`
+  inválidos a propósito — `grep -rlnE "new Reservation\(|Reservation\.restore\("`
+  contra `src/**/*.test.ts` (corregido, P-5 de la ronda de correcciones
+  sobre el gate 20: una versión anterior de este comando citaba el segundo
+  patrón como si fuera un argumento de ruta aparte —
+  `grep -rln "new Reservation(" "Reservation.restore("` —, en vez de
+  combinarlo con el primero vía `-E`/alternancia) solo encuentra usos de
+  setup en `stay.service.test.ts`, `reservation-availability.service.test.ts`,
+  `api/mappers/reservation.mapper.test.ts`,
+  `in-memory.reservation.repository.test.ts`, `reservation.service.test.ts`,
+  `cancellation-refund.service.test.ts` y
+  `reservation-hold-expiry.worker.test.ts` — ninguno dedicado al
+  constructor de la entidad. Mismo argumento ya usado para G-2: sin
+  ningún bloque existente que pruebe el constructor/`restore()` de
+  `Reservation` en aislamiento, no hay "archivo existente" al que
+  sumarle este test — nace uno nuevo. Ubicación corregida (P-5, ronda de
+  correcciones sobre el gate 20): no "mismo directorio que el resto del
+  módulo" — `src/tests/domain/` es la convención real para tests de
+  ENTIDADES de dominio en este repo (constructor/invariantes), distinta
+  de la de servicios (que sí se co-ubican junto a su archivo fuente,
+  `reservation.service.test.ts` junto a `reservation.service.ts`).
+  Precedente directo, del MISMO módulo `reservas/`:
+  `src/tests/domain/resource.entities.test.ts` prueba `PhysicalResource`
+  (`reservas/resource.entities.ts`) sin vivir junto a ella; también
+  `src/tests/domain/customer.test.ts` prueba `Customer`
+  (`clientes-finanzas/customer.entities.ts`) con `InvalidCustomerError`,
+  mismo patrón que `InvalidReservationError` acá. Verificado con `ls
+  src/tests/domain/`):** un test unitario en ese archivo nuevo, de
+  `Reservation.restore()`/`new Reservation(...)`, que pase un
+  `assignmentStatus` inválido (ej. `undefined as unknown as AssignmentStatus`,
+  o el string `'FOO'`) sobre props por lo demás válidas, y verifique que
+  lanza `InvalidReservationError`.
 - `assignmentStatus` se agrega a `ReservationDto` (`reservation.mapper.ts`)
   — visible en el path de staff (`GET /reservations`, `GET /:id`), y
   filtrado explícitamente de las 4 respuestas del portal de clientes
@@ -682,7 +817,10 @@ Fase 1 evita a propósito:
    `updateReservation()` en "`updateReservation()` en relación con
    `assignDeferred()`" para el detalle completo.** El precio de
    alojamiento no depende hoy de qué recurso puntual se le asigna a la
-   reserva (verificado dos veces: Ronda 14 y el gate de la Ronda 16/17) —
+   reserva (verificado tres veces — corregido, condición menor del gate
+   18, contaba "dos veces" y se saltaba la reconfirmación de la Ronda 15:
+   Ronda 14, la reconfirmación de la Ronda 15/B-2 ("confirmado de nuevo",
+   ver Anexo), y el gate de la Ronda 16) —
    no hay ninguna columna nueva que agregar. Lo que Fase 2 sí agrega,
    como parte de su propio alcance de implementación, es el test de
    regresión que el dueño pidió en vez de la columna — diseño completo en
@@ -967,9 +1105,24 @@ implementación de Fase 2, no resuelto en detalle acá):
   `client`).
 - Después de que esa transacción haga commit, y **SOLO** si el camino
   `PENDING_ASSIGNMENT` corrió (H1), `checkIn()` llama a
-  `this.reservationService.recordOccupancy(reservation)` con el recurso ya
-  definitivo (mismo patrón que los otros callers de `assignDeferred()`,
-  §8). **Corrección obligatoria (B-2, Ronda 13) — `StayService` no tiene,
+  `this.reservationService.recordOccupancy(assigned)` — **`assigned` es,
+  explícitamente, la entidad que DEVOLVIÓ `assignDeferred()` dentro de la
+  transacción (su propio paso 10, la que ya tiene el recurso definitivo y
+  `assignmentStatus = 'ASSIGNED'`), nunca la variable `reservation` de la
+  lectura inicial sin lock (`stay.service.ts:180`, `const reservation =
+  await this.reservationRepository.getById(...)`, verificado en código).**
+  Corregido (G-3, gate 18) — una versión anterior de este bullet escribía
+  literalmente `recordOccupancy(reservation)`, y `reservation` es,
+  precisamente, el nombre de esa variable sin lock en el código real de
+  `checkIn()`: pasarle ESA entidad a `recordOccupancy()` la dejaría
+  todavía en `PENDING_ASSIGNMENT` desde el punto de vista del guard de
+  salteo (§7, fila de `recordOccupancy()`) — que la ignoraría SIN error
+  visible, dejando la ocupación sin registrar hasta que la reserva se
+  complete, en silencio (mismo patrón de bug que B4 de rondas muy
+  anteriores). Mismo patrón que ya usan los otros 3 callers de
+  `assignDeferred()` (PUT, "Auto Assign All", completar, §8): siempre la
+  entidad que devuelve `assignDeferred()`, nunca una lectura previa.
+  **Corrección obligatoria (B-2, Ronda 13) — `StayService` no tiene,
   ni va a tener, ningún `this.availability`.** Verificado en código
   (`pms-estadias/stay.service.ts`, constructor de `StayService`): recibe
   `stayRepository`, `reservationRepository`, `housekeepingRepository`,
@@ -989,8 +1142,10 @@ implementación de Fase 2, no resuelto en detalle acá):
   this.availability.recordOccupancy(reservation);`) — mismo patrón que ya
   usan `confirmReservation()`/`completeReservation()` desde DENTRO de la
   clase, ahora expuesto para un caller externo. `checkIn()` llama a
-  `this.reservationService.recordOccupancy(reservation)` sobre la
-  dependencia `ReservationService` que `StayService` YA necesita agregar
+  `this.reservationService.recordOccupancy(assigned)` (la entidad de
+  `assignDeferred()`, nunca la lectura sin lock — ver el bullet de arriba,
+  G-3) sobre la dependencia `ReservationService` que `StayService` YA
+  necesita agregar
   para `assignDeferred()` (ítem siguiente) — dentro de `StayService` no
   hace falta ningún wiring adicional más allá de ese. **Corregido (N-1,
   Ronda 14, gate `architecture-governor`; resolución revisada en la Ronda
@@ -1366,8 +1521,12 @@ El batch corre `findAvailableResourceInCategory()` sobre todas las
 asignación a `assignDeferred()`. **Cada reserva se procesa en su PROPIA
 transacción, nunca una transacción gigante para todo el batch** — y,
 después de que la transacción de CADA reserva haga commit, el batch llama
-a `recordOccupancy()` para esa reserva puntual antes de seguir con la
-siguiente. Una reserva que ya quedó `ASSIGNED` en una corrida anterior no
+a `recordOccupancy()` para esa reserva puntual, **sobre la entidad que
+devolvió `assignDeferred()` para esa reserva (nunca sobre el candidato
+resuelto sin lock por `findAvailableResourceInCategory()` antes de abrir
+la transacción, ni sobre ninguna lectura previa) — mismo criterio que
+check-in (G-3, gate 18, §6 sub-alcance "check-in")** — antes de seguir con
+la siguiente. Una reserva que ya quedó `ASSIGNED` en una corrida anterior no
 se vuelve a tocar en una corrida posterior el mismo día — solo procesa las
 que sigan `PENDING_ASSIGNMENT`.
 
@@ -1393,7 +1552,61 @@ variante sin `client`), y ese `client` no existe hasta que
 mecanismo real: se abre la transacción de la reserva; el lock+validación
 del candidato (`assertAllResourcesAvailable()`) es la PRIMERA sentencia
 DENTRO de ese callback — antes de lockear la fila de la reserva, nunca
-después — mismo patrón que "completar" ya usa en §6 (C-4, Ronda 15). **Corregido
+después — mismo patrón que "completar" ya usa en §6 (C-4, Ronda 15).
+**Corregido (F3-3, gate 18) — la llamada DENTRO de la transacción también
+tiene que pasar `excludeReservationId = id`, el id de la propia reserva
+que se está evaluando.** Sin este parámetro, el mismo bug que F3-2
+corrige en la RESOLUCIÓN del candidato (fuera de la transacción)
+reaparece una capa más abajo, en la VALIDACIÓN dentro de la transacción:
+si el candidato que `findAvailableResourceInCategory()` resolvió (ya
+excluyéndose a sí misma, F3-2) resulta ser la misma habitación
+provisoria que esta reserva YA tiene, `assertAllResourcesAvailable()` la
+compararía contra las reservas solapadas SIN excluirse, y chocaría
+contra su propia fila — mismo `excludeReservationId` que F3-2 ya pasa en
+la resolución previa, acá reenviado a la validación real.
+
+**Corregido de nuevo (F3-5, gate 19) — la llamada literal que la propia
+corrección de F3-3 agregó tenía 2 defectos propios, encontrados por el
+gate 19, ninguno relacionado con `excludeReservationId` (eso seguía
+bien):**
+
+- **F3-5a — `locked` no existe todavía en este punto.** La versión
+  anterior de esta corrección escribía la llamada como
+  `assertAllResourcesAvailable(client, [resourceId], locked.startTime,
+  locked.endTime, id)` — pero el párrafo de arriba (F3-1, Ronda 16) es
+  explícito: el lock+validación del candidato es la PRIMERA sentencia
+  DENTRO de la transacción, **antes de lockear la fila de la reserva**.
+  `locked` (la lectura BAJO lock de esa fila) recién existe DESPUÉS de
+  este paso, no antes — usarlo acá es una referencia a un dato que
+  todavía no se leyó. Corregido: la llamada usa las fechas de
+  `queuedReservation` — la MISMA lectura SIN lock que el batch ya hizo al
+  armar la lista de `PENDING_ASSIGNMENT` de la fecha (nombrada así de
+  acá en más; ver "Rango de fechas del pre-lock", más abajo, que ya
+  describía esta fuente en prosa sin darle nombre).
+- **F3-5b — faltaba `partySize`.** Sin este argumento, la llamada toma el
+  default `1` (`reservation-availability.service.ts:292-298`, `partySize
+  = 1`) — subestimando, en cualquier recurso no exclusivo, la capacidad
+  que esta reserva realmente ocupa, y dejando falsa la frase "validación
+  completa, mismo mecanismo que `updateReservation()`" (que sí reenvía
+  `existing.partySize`, `reservation.service.ts:628`, verificado).
+  Corregido: `queuedReservation.partySize`, la misma lectura de arriba.
+  A diferencia de las fechas, `partySize` no necesita compararse después
+  contra `locked.partySize` para detectar un cambio concurrente —
+  `updateReservation()` no lo recalcula ni lo deja modificar
+  (`reservation.service.ts:617-620`, comentario "Bug 1, 25/08/2026":
+  "permanece congelado desde la creación"), así que el valor que
+  `queuedReservation` trae y el que `locked` traería más tarde son
+  siempre el mismo, por construcción — no hay ventana de staleness que
+  cerrar para este campo.
+
+**Llamada corregida (F3-5, gate 19):**
+`assertAllResourcesAvailable(client, [resourceId],
+queuedReservation.startTime, queuedReservation.endTime, id,
+queuedReservation.partySize)` (firma real,
+`reservation-availability.service.ts:292-298`: `(client, resourceIds,
+startTime, endTime, excludeReservationId?, partySize?)`).
+
+**Corregido
 (Hallazgo 2, Ronda 12): ya no es "el mismo mecanismo que check-in"** —
 desde esa ronda, el pre-lock de check-in es un lock puro
 (`lockByIds()`, sin validación, ver §6), mientras que "Auto Assign All"
@@ -1406,19 +1619,23 @@ lockear la fila de la reserva correspondiente, nunca al revés — ver la
 tabla de §8 A6.1 (corregida en la misma ronda, mismo motivo).
 
 **Rango de fechas del pre-lock — condición explícita (hallazgo menor de la
-Ronda 10).** El rango de fechas
-contra el que el batch pre-lockea y valida el candidato sale de la lectura
-SIN lock que el batch ya hizo al armar la lista de `PENDING_ASSIGNMENT` de
-la fecha — no hay otra fuente disponible antes de abrir la transacción de
-esa reserva puntual. Si, una vez que esa transacción toma el lock de la
-fila, `locked.startTime`/`locked.endTime` DIFIEREN de lo que el batch usó
-para el pre-lock (alguien cambió las fechas de esa reserva puntual
-mientras el batch corría, vía un `PUT` concurrente), la operación aborta
-con `ReservationConcurrentlyModifiedError` — mismo error, mismo criterio
-que el resto de este documento — **para esa reserva puntual únicamente**;
-el batch sigue procesando el resto de la lista, no aborta completo (cada
-reserva es su propia transacción, arriba). El staff puede volver a correr
-"Auto Assign All" para recoger la que quedó sin procesar.
+Ronda 10; la lectura sin lock queda nombrada `queuedReservation` desde el
+gate 19/F3-5, ver arriba).** El rango de fechas
+contra el que el batch pre-lockea y valida el candidato sale de
+`queuedReservation` — la lectura SIN lock que el batch ya hizo al armar
+la lista de `PENDING_ASSIGNMENT` de la fecha — no hay otra fuente
+disponible antes de abrir la transacción de esa reserva puntual. Si, una
+vez que esa transacción toma el lock de la fila, `locked.startTime`/
+`locked.endTime` DIFIEREN de `queuedReservation.startTime`/
+`queuedReservation.endTime` (alguien cambió las fechas de esa reserva
+puntual mientras el batch corría, vía un `PUT` concurrente), la operación
+aborta con `ReservationConcurrentlyModifiedError` — mismo error, mismo
+criterio que el resto de este documento — **para esa reserva puntual
+únicamente**; el batch sigue procesando el resto de la lista, no aborta
+completo (cada reserva es su propia transacción, arriba). El staff puede
+volver a correr "Auto Assign All" para recoger la que quedó sin procesar.
+`queuedReservation.partySize` no participa de esta comparación — ver F3-5b
+arriba para por qué ese campo no puede quedar desactualizado.
 
 **Defensa en profundidad, dentro de `assignDeferred()`, no como
 pre-filtro aparte — pero sin cerrar la carrera contra un check-in
@@ -1474,6 +1691,68 @@ idéntico a hoy. **No se registra aparte en `docs/pendientes-2026-09-12.md`**
 — eso solo aplicaría si fuera un bug preexistente de producción, y no lo
 es (ver arriba); queda especificado acá como requisito de implementación
 de esta fase.
+
+**Pregunta de negocio ABIERTA, NO resuelta acá (F3-4, gate 18) — "confirmar
+la provisoria" vs. "reoptimizar" vs. "dejar el comportamiento actual"
+(greedy alfabético).** Incluso con F3-2/F3-3 ya
+corregidos (la reserva no choca contra su propio recurso provisorio),
+`getByCategory()` (`sql.resource.repository.ts:141`, `ORDER BY r.name
+ASC`, verificado) hace que `findAvailableResourceInCategory()` siempre
+devuelva el PRIMER candidato libre por orden alfabético — no
+necesariamente la habitación que la reserva ya tiene asignada como
+provisoria, aunque esa provisoria siga siendo perfectamente válida. Efecto
+práctico: "Auto Assign All" mueve sistemáticamente al huésped de su
+habitación provisoria (ej. "105") a la primera libre por alfabeto (ej.
+"101"), aunque "105" siguiera disponible.
+
+**Corregido (C-3, ronda de correcciones sobre el gate 19) — se retira la
+afirmación de que esto contradice "la lectura más natural" del
+documento: esta pregunta no tiene una inclinación correcta que el texto
+deba imponerle al dueño.** §4 Opción C (línea 254) ya declara
+explícitamente que la asignación provisoria "es reoptimizable, no
+definitiva" — así que "reoptimizar" es una lectura tan legítima de este
+mismo diseño como "confirmar la provisoria sin tocarla". Hay TRES
+comportamientos igual de razonables y este documento NO elige entre
+ellos:
+
+(a) **Confirmar la provisoria** si sigue siendo válida, evitando mover
+huéspedes sin necesidad.
+
+(b) **Reoptimizar las reservas `PENDING_ASSIGNMENT` de la categoría**
+— nunca las que ya están `ASSIGNED` — moviendo el candidato provisorio
+de OTRAS reservas todavía sin confirmar a un mejor acomodo global
+(efecto de mayor alcance que (a), y potencialmente deseable para un
+operador que quiere maximizar ocupación contigua). **Acotada a
+`PENDING_ASSIGNMENT` (corregido, C-3): una versión anterior de esta
+opción decía "mover reservas YA CONFIRMADAS", sin distinguir `ASSIGNED`
+de `PENDING_ASSIGNMENT`.** Mover una reserva ya `ASSIGNED` chocaría
+contra A6.4 (`ASSIGNED: []` es terminal, transición de una sola vía, §8
+A6.1) — `assignDeferred()` exige `locked.assignmentStatus ===
+'PENDING_ASSIGNMENT'` (paso 2, si no `ReservationAlreadyAssignedError`)
+para poder tocar nada, así que "mover una reserva `ASSIGNED`" no es una
+variante menor de esta opción: es una operación distinta, que REABRIRÍA
+A6.4 (una transición `ASSIGNED → PENDING_ASSIGNMENT` que hoy no existe)
+y sería, en sí misma, otra decisión de negocio aparte, más grande, que
+este documento tampoco resuelve.
+
+(c) **Dejar el comportamiento tal como está especificado hoy** — greedy
+alfabético, sin cambio de código adicional (`getByCategory()`/`ORDER BY
+r.name ASC`, arriba): "Auto Assign All" simplemente confirma lo que
+`findAvailableResourceInCategory()` resuelva, sea o no la provisoria.
+**Agregada (C-3, ronda de correcciones sobre el gate 19)** — es lo que
+pasa si nadie decide nada, y por eso es una tercera opción real, no la
+mera ausencia de las otras dos: queda documentada acá para que sea una
+de las opciones que se le presenten al dueño en el `AskUserQuestion`
+real, no una omisión.
+
+Siguiendo el criterio
+ya declarado en este repo ("Preguntas de alcance pueden esconder una
+decisión de negocio", `CLAUDE.md`): **esta pregunta se deja anotada,
+pendiente de `AskUserQuestion` al dueño CUANDO se retome el diseño
+completo de Fase 3** — no ahora, porque Fase 3 no se puede aprobar de
+todas formas hasta que Fase 2 esté en producción (precondición de gate, ya
+declarada más arriba). No se inventa una respuesta acá — sigue,
+íntegramente, sin resolver.
 
 ### Fase 4 (evaluar aparte, después de medir el costo real)
 
@@ -1534,7 +1813,7 @@ asumiendo que es el recurso **final** cuando, durante la ventana
 | `src/facturacion/invoice.service.ts` (líneas 406, 453) — `description: reservation.resource.name` | El nombre de línea de la factura se resuelve en vivo desde el recurso referenciado por `resource_id` al momento de facturar — `Reservation` no snapshotea el nombre del recurso (gap `4.2`, fuera de alcance) | **No rompe, pero amplifica un gap ya registrado.** Con 4.3, "recurso provisorio distinto del final" pasa a ser el camino NORMAL (no la excepción) durante la ventana `PENDING_ASSIGNMENT` para toda reserva de alojamiento por categoría. Si se factura mientras la reserva sigue `PENDING_ASSIGNMENT`, el nombre de línea (documento — `docs/criterios-datos.md` Parte 1: "jamás se edita") queda fijado al recurso provisorio para siempre. No se resuelve acá (depende de `4.2`) — se deja señalado como argumento para que la implementación considere bloquear o advertir la facturación anticipada de una reserva `PENDING_ASSIGNMENT`, si el flujo de negocio lo permite hoy. |
 | `reservation-pricing.service.ts` (cascada de `customer_rates`, incluye tarifas scoped a `resource_id` puntual) + `reservation.service.ts::updateReservation()` (recotiza si `existing.status === 'PENDING'`, línea 593 — re-verificada post-commit `6178d70`, C-2; congelado si `CONFIRMED`, A3.9) | `resolvePrice()` (`reservation-pricing.service.ts:117`) recibe `resourceId` como parámetro independiente de `startTime`/`endTime`/`ratePlanId` — el componente de precio por recurso ES técnicamente separable del de fechas/plan | Ver §8, "`updateReservation()` en relación con `assignDeferred()`" — la no-recotización se describe ahí junto con el resto del algoritmo, para no repetir el discriminador dos veces. |
 | `src/reservas/resource-lock.service.ts`/`resource-lock.repository.ts` (`resource_locks`) | `resolveLockedResourceIds()` solo aporta algo si `serviceId` está seteado | **Impacto nulo — corregida la justificación (C-4, Ronda 14): la premisa anterior era falsa.** No es que una reserva de alojamiento "normalmente no lleve `serviceId`" — SIEMPRE lo lleva (`LodgingRequiresServiceError`, `reservation.service.ts:287`, verificado), así que `resolveLockedResourceIds()` nunca es un no-op para alojamiento. **El paso 8 de `assignDeferred()` (§8 A6.1) valida solo `[resourceId]`** — declarado explícitamente: `assertAllResourcesAvailable(client, [resourceId], ...)` recibe un array de UN elemento (el candidato puntual), no el resultado de `resolveLockedResourceIds()` — verificado en `reservation-availability.service.ts`: `assertAllResourcesAvailable()` no llama a `resolveLockedResourceIds()` en absoluto, toma `resourceIds: string[]` tal cual se lo pasan. Impacto nulo, entonces, no porque `assignDeferred()` revalide el conjunto completo, sino porque no hace falta: `resolveLockedResourceIds(serviceId, primaryResourceId)` (`reservation-availability.service.ts:268-282`) arma el conjunto adicional de recursos bloqueados A PARTIR DE `serviceId` únicamente (`resourceLockRepository.getByServiceId(serviceId)`) — `primaryResourceId` solo se agrega a ESE mismo conjunto, no cambia CUÁLES otros recursos bloquea el servicio. Como `assignDeferred()` nunca cambia `serviceId` (la categoría, y por lo tanto el servicio, no varían dentro de una asignación diferida — solo la unidad puntual dentro de esa categoría) ni cambia fechas, el conjunto de recursos adicionales que el servicio bloquea es EXACTAMENTE el mismo que `createReservation()` ya validó/lockeó al crear la reserva (con el candidato provisorio) — no hay nada nuevo que reclamar. |
-| Los tres call-sites reales de `Reservation.restore()`: `src/reservas/sql.reservation.repository.ts::buildReservation()` (línea 559 — la llamada a `Reservation.restore(` en sí, mismo criterio que las otras dos citas de esta fila; la función se DECLARA en la línea 541, corregido C-2, Ronda 14: la Ronda 13 había cambiado esta cita de 559→541 con la justificación "estaba desactualizado", que era falsa — 559 sigue siendo la línea real de la llamada — hidratación de TODA lectura de una reserva desde la BD), y `src/reservas/reservation.service.ts::updateReservation()` (línea 631) / `::confirmPriceAdjustment()` (línea 826) — re-verificadas post-commit `6178d70`, C-2 — **corregido (T5): los dos últimos están en `reservation.service.ts`, NO en `sql.reservation.repository.ts`** — solo `buildReservation()` vive en el repositorio | Reconstruyen la entidad desde una fila de Postgres o desde una lectura previa | `assignmentStatus` en `ReservationProps` pasa a ser OBLIGATORIO, sin default, en los tres — mismo patrón que `reservationNumber`. En `buildReservation()`, a diferencia de los demás campos de esa función (que usan `??` sobre la fila), `assignment_status` **no puede** tener un `?? 'ASSIGNED'` — un `SELECT` que por algún motivo no traiga la columna reintroduciría el bug en el punto de mayor superficie (toda lectura de cualquier reserva). Los otros dos reenvían `locked.assignmentStatus`/el valor ya leído, nunca lo infieren. Ver §8 A6.1. |
+| Los tres call-sites reales de `Reservation.restore()`: `src/reservas/sql.reservation.repository.ts::buildReservation()` (línea 559 — la llamada a `Reservation.restore(` en sí, mismo criterio que las otras dos citas de esta fila; la función se DECLARA en la línea 541, corregido C-2, Ronda 14: la Ronda 13 había cambiado esta cita de 559→541 con la justificación "estaba desactualizado", que era falsa — 559 sigue siendo la línea real de la llamada — hidratación de TODA lectura de una reserva desde la BD), y `src/reservas/reservation.service.ts::updateReservation()` (línea 631) / `::confirmPriceAdjustment()` (línea 826) — re-verificadas post-commit `6178d70`, C-2 — **corregido (T5): los dos últimos están en `reservation.service.ts`, NO en `sql.reservation.repository.ts`** — solo `buildReservation()` vive en el repositorio | Reconstruyen la entidad desde una fila de Postgres o desde una lectura previa | `assignmentStatus` en `ReservationProps` pasa a ser OBLIGATORIO, sin default, en los tres — mismo patrón que `reservationNumber`. **Corregido (condición menor del gate 18) — la versión anterior de esta fila decía "a diferencia de los demás campos de esa función (que usan `??` sobre la fila)", falso: `buildReservation()` ya carga hoy `reservationNumber: row.reservation_number` y `appliedCustomerRateId: row.applied_customer_rate_id` sin `??` (verificado con `grep -n`/`sed -n` contra `sql.reservation.repository.ts`) — no son la excepción, son el precedente.** En `buildReservation()`, igual que esos dos, `assignment_status` **no puede** tener un `?? 'ASSIGNED'` — un `SELECT` que por algún motivo no traiga la columna reintroduciría el bug en el punto de mayor superficie (toda lectura de cualquier reserva); a diferencia de `reservationNumber`/`appliedCustomerRateId` (que solo quedan `undefined` en runtime si la columna falta, sin guard propio), `assignmentStatus` además queda protegido por la validación nueva del constructor/`restore()` de `Reservation` (G-1, ver §8 A6.1) — un valor `undefined` o inválido lanza en vez de persistir en silencio. Los otros dos call-sites (`updateReservation()`/`confirmPriceAdjustment()`) reenvían `locked.assignmentStatus`/el valor ya leído, nunca lo infieren. Ver §8 A6.1. |
 | `src/api/mappers/reservation.mapper.ts` (`toReservationDto()`) — dos consumidores: `GET /reservations`/`GET /:id` de staff (`reservations.routes.ts`, líneas 287/341) y el portal de clientes (`api/routes/customer.routes.ts`, 4 call-sites por símbolo — C-c: `GET /me/reservations`, `POST /me/reservations`, `PATCH /me/reservations/:id`, `POST /me/reservations/:id/cancel`) | No tiene campo para distinguir "recurso provisorio vs. definitivo" | `ReservationDto` agrega `assignmentStatus` para el path de staff — se filtra de las 4 respuestas del portal (el huésped no ve el estado provisorio como algo nuevo en su experiencia). Ver §6 Fase 1. |
 | `src/pms-estadias/maintenance-window*.ts`, `reservation-availability.service.ts` (bloqueo por mantenimiento) | Ya excluyen recursos bloqueados al resolver `findAvailableResourceInCategory()`/`assertAllResourcesAvailable()` | **Impacto nulo.** Agnóstico de si la asignación es provisoria o definitiva. |
 | `GET /reservations/:id/price-preview` / `POST /reservations/:id/confirm-price-adjustment` (`Roles.MANAGEMENT`, ya existentes) | Ofrecen ajuste manual de precio sin distinguir si la reserva pasó por asignación diferida | **Confirmado, sin cambio de código.** Después de una asignación diferida a un recurso con otro precio, esta salida manual sigue disponible — el staff decide caso por caso. Coincide con el principio ya declarado en este repo: la app no le dice al negocio cómo trabajar, le da una salida. |
@@ -1614,7 +1893,10 @@ asumiendo que es el recurso **final** cuando, durante la ventana
    ítem 4/6) — sin esto el archivo de test queda con un import roto.
 10. `clientes-finanzas/sql.financial-transaction.repository.ts` —
     `linkStayToReservationCharges()` necesita variante `WithClient`.
-11. `reservas/reservation.mapper.ts::toReservationDto()` — agregar
+11. `src/api/mappers/reservation.mapper.ts::toReservationDto()` — **corregido
+    (condición menor del gate 18): el path real es `src/api/mappers/`, no
+    `reservas/` — verificado con `ls`, ver también la fila de este mismo
+    archivo en §7** — agregar
     `assignmentStatus`, filtrarlo de las 4 respuestas de `customer.routes.ts`.
 12. **Los 3 sitios de wiring EXISTENTES de `ReservationService`**
     (`reservations.routes.ts::buildReservationService()`,
@@ -1755,7 +2037,9 @@ asumiendo que es el recurso **final** cuando, durante la ventana
     `buildReservationService()` se exporta directamente** — hoy no hace
     falta: solo `buildStayService()`, que vive en el mismo archivo, la
     necesita (`decision-record-discipline`).
-13. `email/workers/email.handlers.ts` — destructurar `categoryName` del
+13. `src/workers/email.handlers.ts` — **corregido (condición menor del gate
+    18): el path real es `src/workers/`, no `email/workers/` — verificado
+    con `ls`** — destructurar `categoryName` del
     payload, elegir el nombre según `isLodging`.
 14. `appfrontend/src/components/RoomCalendar.tsx`/`dashboard/reservas/page.tsx`
     — distinguir los 3 casos de una reserva `PENDING_ASSIGNMENT` al
@@ -1788,6 +2072,31 @@ vive en `reservas/Reservation.ts`, junto a `ALLOWED_TRANSITIONS` (línea 78)
 ("los estados terminales no se reabren")** sea estructural, no solo
 convencional: no existe ninguna arista de salida de `ASSIGNED`, así que no
 hace falta un guard aparte para impedir el regreso.
+
+**Validación de VALOR, distinta de la validación de TRANSICIÓN de más
+abajo (G-1, gate 18).** La falla de T-2 (Anexo, Ronda 16 — la garantía de
+"columna faltante = falla visible" resultó falsa para el campo que D-1'
+proponía) aplica igual a `assignment_status`, y con radio mayor: no es una
+columna opcional de cara a futuro, es un campo que CADA lectura de
+CUALQUIER reserva hidrata (`buildReservation()`, los tres call-sites de
+`restore()`, §7). Si `baseSelect()` se olvida de `r.assignment_status`
+(bullet nuevo de Fase 1, §6), o cualquier otro caller construye
+`ReservationProps` sin el campo, un valor `undefined` sin guard haría que
+`=== 'ASSIGNED'`/`=== 'PENDING_ASSIGNMENT'` den los dos falso en
+silencio, y el siguiente `UPSERT` grabaría `NULL` — violando el `NOT NULL`
+de la columna (Fase 1) en CUALQUIER guardado de CUALQUIER reserva, no solo
+las diferidas. El constructor de `Reservation` (invocado tanto por `new
+Reservation(...)` como, internamente, por `Reservation.restore()`) valida
+`assignmentStatus` contra `Object.keys(ASSIGNMENT_STATUS_TRANSITIONS)` —
+mismo objeto que declara las transiciones, una sola fuente de verdad para
+"qué valores son válidos" y "qué transición es válida" — y lanza
+`InvalidReservationError` si el valor no es una de las dos claves,
+incluido `undefined`. Es una validación de FORMA (¿es uno de los dos
+valores permitidos?), no de FLUJO (¿puede pasar de este valor a otro?) —
+esa segunda pregunta es la que resuelve `assignConcreteResource()`, más
+abajo, que asume que el valor de entrada ya es válido porque el
+constructor no deja construir la entidad si no lo es. Test obligatorio,
+alcance de Fase 1: ver §6, bullet de `baseSelect()`/validación runtime.
 
 Un solo método de la entidad, `Reservation.assignConcreteResource(resource,
 isExclusiveResource)`, es el único punto de escritura que aplica la
@@ -1903,7 +2212,7 @@ con FK hacia `resources`:
 | `PUT /reservations/:id` (`updateReservation()`), con reasignación (`!isSameResource`) | Recurso CANDIDATO (el nuevo) → fila de la reserva → (dentro de la misma transacción, ambos ya lockeados) `assignDeferred()` compuesta, sin locks nuevos. |
 | Check-in, cualquier `resourceId` (H2, Ronda 10 — reemplaza las dos filas de la Ronda 9) | Recurso (`input.resourceId`, dato de ENTRADA del check-in — el mismo con el que se va a hacer el `INSERT` de `Stay`, sea el provisorio u otro elegido por el staff; lock PURO vía `lockByIds()`, sin validación — Hallazgo 2, Ronda 12, ver §6) → fila de la reserva. La restricción de categoría (`AssignmentCategoryMismatchError`, si `!isSameResource`) se evalúa DESPUÉS de que los dos locks ya están tomados, dentro de `assignDeferred()` (su paso 6) — no antes. |
 | Completar (`completeReservation()`) — **ya no es una excepción (Hallazgo 1, Ronda 12 — corrige N2/Rondas 9-10, que resultó falso, ver §6); decisión corregida en la Ronda 13/B-3; guard acotado reintroducido en la Ronda 14/N-2** | `preCheck` sin lock (patrón NUEVO que este diseño agrega — `completeReservation()` hoy no tiene ninguna lectura previa, ver §6) decide SOLO qué recurso lockear: si `preCheck.assignmentStatus === 'PENDING_ASSIGNMENT'`, lockea `preCheck.resource.id`; si no, no lockea ningún recurso. Fila de la reserva SIEMPRE después. **La decisión de invocar `assignDeferred()` — y el guard de coherencia — se toman SIEMPRE con `locked` (la lectura BAJO lock), nunca con `preCheck` (§6(b), sin excepción):** si `locked.assignmentStatus === 'ASSIGNED'` (haya visto `preCheck` lo que haya visto) → no invoca `assignDeferred()`, sigue por la rama `ASSIGNED` normal, **sin error** — cualquier lock de recurso tomado de más (porque `preCheck` vio `PENDING_ASSIGNMENT` y `locked` ya no) es inocuo. Si `locked.assignmentStatus === 'PENDING_ASSIGNMENT'` → guard: `preCheck.assignmentStatus !== 'PENDING_ASSIGNMENT' || locked.resource.id !== preCheck.resource.id` → si es verdadero, **no** invoca `assignDeferred()`, aborta con `ReservationConcurrentlyModifiedError(id, 'cambió de estado de asignación o de recurso candidato')` (409, mensaje parametrizado, Ronda 15) — el recurso correcto (`locked.resource.id`) nunca se pre-lockeó, invocar acá violaría N1; si es falso (`preCheck` vio el MISMO recurso que `locked`), `assignDeferred()` compuesta, sin locks nuevos (`isSameResource` siempre verdadero, "completar" nunca reasigna). Tabla completa de 6 casos (Ronda 15) en §6, sub-alcance "completar". |
-| Auto Assign All (Fase 3) | Recurso CANDIDATO (`findAvailableResourceInCategory()`, RESUELTO — lectura sin lock — ANTES de abrir la transacción de esa reserva puntual; LOCKEADO y VALIDADO con `assertAllResourcesAvailable()` como PRIMERA sentencia DENTRO de esa transacción, nunca antes de abrirla — corregido F3-1, Ronda 16, mismo patrón que "completar", C-4/Ronda 15 — con validación completa, mismo mecanismo que `updateReservation()`, ver §6 Fase 3) → fila de la reserva. Cada reserva del batch es su propia transacción — el orden se repite por reserva, nunca se comparte lock entre dos reservas del mismo batch. |
+| Auto Assign All (Fase 3) | Recurso CANDIDATO (`findAvailableResourceInCategory()`, RESUELTO — lectura sin lock, con `excludeReservationId = id` (F3-2) — ANTES de abrir la transacción de esa reserva puntual; LOCKEADO y VALIDADO con `assertAllResourcesAvailable(client, [resourceId], queuedReservation.startTime, queuedReservation.endTime, id, queuedReservation.partySize)` como PRIMERA sentencia DENTRO de esa transacción, nunca antes de abrirla — corregido F3-1, Ronda 16, mismo patrón que "completar", C-4/Ronda 15 — con validación completa, mismo mecanismo que `updateReservation()`, ver §6 Fase 3; **corregido (F3-3, gate 18): la llamada DENTRO de la transacción también pasa `excludeReservationId = id` — sin esto, un candidato que resulte ser la propia habitación provisoria de la reserva chocaría contra sí misma en la validación, aunque F3-2 ya la haya excluido en la resolución previa; corregido de nuevo (F3-5, gate 19): la llamada usa `queuedReservation` (la lectura SIN lock del batch), no `locked` (que todavía no existe en este punto), y suma `partySize` — ver §6 Fase 3 para el detalle de los 2 defectos**) → fila de la reserva. Cada reserva del batch es su propia transacción — el orden se repite por reserva, nunca se comparte lock entre dos reservas del mismo batch. |
 
 **Pasos, en este orden (sin dependencias hacia adelante — ningún paso usa
 un dato que un paso posterior todavía no calculó). Orden de locks —
@@ -2428,7 +2737,7 @@ tiene que volver a sumar ocupación).
 ### D-1 — Congelar el componente de precio del recurso: cerrado como no-op estructural, con test de regresión (Ronda 16, revierte D-1')
 
 **Decisión final del dueño (vía `AskUserQuestion`, 25/09/2026, sobre la
-contradicción que encontró el gate de la Ronda 16/17): "No construir nada
+contradicción que encontró el gate de la Ronda 16): "No construir nada
 aún, solo un test de regresión."** Revierte D-1' (Ronda 15 — persistir
 `priced_with_resource_id`) y, con ella, también D-1 original (Ronda 14 —
 el booleano `resource_price_frozen`, ya descartado desde la Ronda 15).
@@ -2437,7 +2746,7 @@ completo a la "D-1'" de la Ronda 15 — no queda ningún DDL, ningún punto de
 escritura, ni ninguna columna nueva de este diseño.
 
 **Por qué se revierte — la columna de D-1' era matemáticamente redundante
-con `resource_id` (hallazgo del gate de la Ronda 16/17).** Combinando las
+con `resource_id` (hallazgo del gate de la Ronda 16).** Combinando las
 dos decisiones previas del dueño sobre D-1' — (a) "congelamiento real
 ahora" (persistir el recurso, Ronda 15) y (b) la sub-pregunta resuelta en
 el mismo turno, "se actualiza en cada reasignación posterior" (punto 4 de
@@ -2471,30 +2780,52 @@ es simplemente `undefined` en runtime, y que el tipo declarado sea
 `string | null` sin `?` no lo rechaza en tiempo de ejecución. Ninguno de
 los dos se arregla acá — no hace falta, la columna no se construye.
 
-**Verificación, dos veces (Ronda 14 y este gate) — el hallazgo de fondo no
-cambió.** El precio de alojamiento no depende hoy de qué recurso puntual
-se le asigna a la reserva. Verificado contra
+**Verificación, tres veces (Ronda 14, la reconfirmación de la Ronda 15/B-2
+y este gate — corregido, condición menor del gate 18: decía "dos veces",
+omitiendo la reconfirmación de la Ronda 15, ver Anexo) — el hallazgo de
+fondo no cambió, y no es casualidad del código actual: es una DECISIÓN DE
+PRODUCTO
+ya tomada (G-2.1, gate 18).** `docs/diseno-precio-servicio-vs-recurso-2026-08-27.md`
+es la decisión de origen del dueño (27/08/2026): *"Te cobro la estadía, no
+la habitación"* — el recurso HABILITA, el servicio es lo que se vende y lo
+que se cobra; el recurso puede tener noción de costo, nunca de precio de
+venta. Esa decisión es la que `reservation.service.ts:287`
+(`LodgingRequiresServiceError`, verificado) hace cumplir estructuralmente
+— toda reserva de alojamiento entra con `serviceId`, sin excepción, por
+eso mismo motivo, no por casualidad de cómo quedó escrito
+`resolveUnitPrice()`. D-1 no es un no-op porque el código de hoy no
+produzca una divergencia (aunque, medido, tampoco la produce) — es un
+no-op porque el dueño ya decidió que el recurso NUNCA debe fijar precio de
+alojamiento, así que "congelar qué recurso se usó para cotizar" estaría
+protegiendo algo que la regla de negocio prohíbe que exista en primer
+lugar. El test de regresión de abajo existe para blindar ESA decisión, no
+solo el estado actual del código.
+
+Verificado contra
 `reservation-pricing.service.ts::resolveUnitPrice()` (líneas 159-242, no
 148-240 como decía la Ronda 14 — la función se corrió ~11 líneas por
 cambios de otro bloque): toda reserva de alojamiento **SIEMPRE** tiene
-`serviceId` — `LodgingRequiresServiceError` (`reservation.service.ts:287`,
-verificado) lo garantiza al crearse — así que SIEMPRE entra por la rama
+`serviceId` así que SIEMPRE entra por la rama
 `if (params.serviceId)` (línea 169, no 168 — re-derivado con `grep -n`) —
-y esa rama **retorna en sus 3 sub-casos** (tarifa especial
-cliente+servicio, tarifa elegida `ratePlanId`, precio de catálogo del
-servicio) sin llegar NUNCA al fallback (líneas 228-241), que es el único
-tramo de la función que lee `resourceId`/`resource.basePrice`.
-Consecuencia verificada: para una reserva de alojamiento, `resolvePrice()`
-devuelve el mismo `totalPrice`/`lines` sin importar CUÁL recurso puntual,
-dentro de la MISMA categoría y con el MISMO `serviceId`, se le pase como
-`resourceId` — el precio vive enteramente en el servicio, no en la unidad
-física. El parámetro `resourceId` de `resolvePrice()` sigue existiendo
-porque la función también sirve a TURNOS (categorías sin `is_lodging`,
-donde `serviceId` puede faltar y el fallback SÍ aplica) — mismo
-`resolvePrice()`, dos usos con comportamiento distinto según el rubro. No
-hay, hoy, ningún valor que "congelar" — no porque no importe
-conceptualmente, sino porque el código real no produce ninguna divergencia
-que proteger.
+y esa rama tiene **3 sub-ramas, cada una con su propio `return`**
+(re-derivadas con `grep -n`/`sed -n` contra el código real, gate 18):
+(i) tarifa especial cliente+servicio (`findActiveForCustomerAndService()`,
+línea 175, `% aplicado contra requireServicePrice()`, línea 190); (ii)
+tarifa elegida `ratePlanId` (línea 194, `findRatePlanById()` +
+`resolveSeasonalPrice()`); (iii) precio de catálogo del servicio (línea
+222, `params.service.price`) — sin llegar NUNCA al fallback (líneas
+228-241), que es el único tramo de la función que lee
+`resourceId`/`resource.basePrice`. Consecuencia verificada: para una
+reserva de alojamiento, `resolvePrice()` devuelve el mismo
+`totalPrice`/`lines` sin importar CUÁL recurso puntual, dentro de la MISMA
+categoría y con el MISMO `serviceId`, se le pase como `resourceId` — el
+precio vive enteramente en el servicio, no en la unidad física. El
+parámetro `resourceId` de `resolvePrice()` sigue existiendo porque la
+función también sirve a TURNOS (categorías sin `is_lodging`, donde
+`serviceId` puede faltar y el fallback SÍ aplica) — mismo `resolvePrice()`,
+dos usos con comportamiento distinto según el rubro. No hay, hoy, ningún
+valor que "congelar" — no porque no importe conceptualmente, sino porque
+el código real no produce ninguna divergencia que proteger.
 
 **Lo que se agrega en su lugar: un test de regresión, alcance de
 implementación de Fase 2 (no de Fase 1) — mismo punto del documento que
@@ -2507,38 +2838,118 @@ para ese cálculo — forzando, en ese momento, a retomar el diseño de
 "congelar qué recurso se usó para cotizar" en vez de dejarlo pasar en
 silencio.
 
-Diseño del test — nuevo archivo `src/reservas/reservation-pricing.service.test.ts`
-(no existe hoy — verificado con `find`/`grep`, ningún test unitario está
+**Dónde vive el test — archivo nuevo, no extensión del bloque existente
+(G-2.2, gate 18, decisión justificada).** `reservation.service.test.ts`
+YA tiene dos tests que actúan como cerca parcial de este mismo hallazgo
+(`:1932` y `:1990` en versiones anteriores de este archivo — re-derivar
+con `grep -n "D9-Parte 1"` antes de citar línea, el archivo se mueve con
+cada bloque; los 19 tests de ese `describe` pasan hoy, verificado por el
+gate), pero los dos construyen un `ReservationService` COMPLETO a mano
+(18 dependencias — el test `:1932` incluso instancia una SEGUNDA copia
+completa del servicio, `lodgingService`, solo para tener un
+`ICategoryRepository` con `isLodging: true`) y cotizan pasando por
+`createReservation()` entero — locks, `TransactionManager`,
+disponibilidad, persistencia in-memory. Ninguno de los dos aísla
+`ReservationPricingService`, y ninguno varía el `resourceId` manteniendo
+todo lo demás fijo (que es, específicamente, lo que este test necesita
+probar). Extender ese bloque para agregar la variación por recurso
+significaría instanciar una TERCERA copia del `ReservationService`
+completo (o reusar `lodgingService`) solo para leer `reservation.totalPrice`
+al final — máximo aislamiento necesario, mínimo aprovechado.
+`ReservationPricingService` en cambio tiene 3-4 dependencias por
+constructor (`ICustomerRateRepository`, `IBookableServiceRepository`,
+`ICategoryRepository`, `IDepositPolicyRepository` opcional — verificado
+contra la clase real) y su `resolvePrice()` no toca locks ni transacción:
+construirlo y llamarlo directo es estrictamente más simple para EXACTAMENTE
+lo que este test necesita (variar `resourceId`/`resource` manteniendo el
+resto constante), sin sacrificar cobertura — los 19 tests existentes
+siguen siendo la cerca de "el precio de alojamiento entra por la rama de
+servicio" a nivel `ReservationService`; este test nuevo es la cerca de "el
+precio de alojamiento NO varía por `resourceId`" a nivel
+`ReservationPricingService`, una capa más abajo y más barata de correr.
+Archivo nuevo: `src/reservas/reservation-pricing.service.test.ts` (no
+existe hoy — verificado con `find`/`grep`, ningún test unitario está
 dedicado a esta clase todavía, pese a que su propio docblock menciona
 "tests unitarios de la cascada de precio"; este sería el primero).
-Construcción directa de `ReservationPricingService`, sin pasar por
-`ReservationService` completo (más simple: la cascada de precio no
-necesita locks, disponibilidad ni transacción para probarse en
-aislamiento) — mismo tipo de fixtures in-memory que ya usa
-`reservation.service.test.ts` para sus propios repos
-(`InMemoryCustomerRateRepository`, un `ICategoryRepository` mínimo con
-`isLodging: true`, un objeto `BookableService` armado a mano):
 
-1. Dos `PhysicalResource`/`BookableResource` en la MISMA categoría
-   (`is_lodging = TRUE`), con `basePrice` deliberadamente DISTINTO entre sí
-   (ej. 100 y 500) — la diferencia es la que haría fallar el test si el
-   precio empezara a depender del recurso.
-2. Un `BookableService` de alojamiento (`bookingMode: 'block'`), con
-   `price` fijo (ej. 80).
-3. `CustomerRateRepository` in-memory SIN ninguna tarifa especial sembrada
-   (`findActiveForCustomerAndService()`/`findActiveForCustomerAndResource()`
-   devuelven `null`) — la cascada cae al escalón de "precio de catálogo
-   del servicio" (`if (params.service)`, dentro de `resolveUnitPrice()`).
-4. Llamar `pricingService.resolvePrice({ ...params, resourceId: resourceA.id, resource: resourceA })`
-   y, por separado, `resolvePrice({ ...mismos params, resourceId: resourceB.id, resource: resourceB })`
-   — mismo `customerId`/`serviceId`/fechas, solo cambia el recurso.
-5. Asserts: `totalPrice` (o `lines[0].price`) es IGUAL entre las dos
-   llamadas, Y — el assert que realmente detecta la regresión, no solo
-   "las dos llamadas dan lo mismo" — ambos resultados son iguales a
-   `service.price` (no a ningún `basePrice` de recurso). Sin este segundo
-   assert, un bug que hiciera que el precio dependiera de AMBOS recursos
-   por igual (ej. un promedio, o un valor constante ajeno) pasaría el
-   primer assert sin ser detectado.
+Fixtures — mismo tipo de fixtures in-memory que ya usa
+`reservation.service.test.ts` para sus propios repos:
+`InMemoryCustomerRateRepository`, **`InMemoryBookableServiceRepository`
+(agregado, G-2.5, gate 18 — la versión anterior de este diseño no la
+listaba; hace falta para sembrar el `RatePlan` de la sub-rama (ii) vía su
+método real `seedRatePlan()`, verificado contra la clase)**, un
+`ICategoryRepository` mínimo con `isLodging: true`, un objeto
+`BookableService` armado a mano.
+
+**Parametrizado sobre las 3 sub-ramas reales (G-2.3, gate 18) — la versión
+anterior de este diseño solo cubría la sub-rama (iii).** La regresión más
+probable que esa versión NO detectaba: una tarifa especial cliente+servicio
+con % de descuento (sub-rama (i)) que empezara a calcular su porcentaje
+sobre `resource.basePrice` en vez de sobre `requireServicePrice()` (línea
+real ~190) — bug que la sub-rama (iii), sin ninguna `CustomerRate`
+sembrada, nunca ejercita. Tres casos (`it.each` o tres `it` separados,
+mismo criterio, lo que sea más legible para quien lo escriba):
+
+1. **Sub-rama (iii), precio de catálogo** — sin ninguna `CustomerRate`
+   sembrada (`findActiveForCustomerAndService()`/
+   `findActiveForCustomerAndResource()` devuelven `null`) y sin
+   `ratePlanId` en los params — cae al precio de catálogo del servicio.
+   Precio esperado por línea: `service.price`.
+2. **Sub-rama (i), tarifa cliente+servicio con % de descuento** — sembrar
+   una `CustomerRate` con `serviceId` seteado, `resourceId: null`,
+   `discountPercentage` (ej. 25% sobre un `service.price` de 80 → 60 por
+   línea) — mismo patrón que el test `D5` ya existente en
+   `reservation.service.test.ts` (`discountPercentage: 25` sobre un
+   catálogo de 40 → 30). Precio esperado por línea: el monto descontado
+   sobre `service.price`, NUNCA sobre `resource.basePrice`.
+3. **Sub-rama (ii), `ratePlanId`** — sembrar un `RatePlan` con
+   `bookableServiceRepo.seedRatePlan(...)` (`serviceId` del servicio de
+   prueba, `active: true`) y pasarlo como `params.ratePlanId`. Precio
+   esperado por línea: el precio resuelto por `resolveSeasonalPrice()`
+   para ese plan (fijar el rango de fechas del test para que no cruce
+   temporada, o sembrar una sola fila de temporada que cubra todo el
+   rango, para que el precio esperado sea un único valor conocido).
+
+**Cada uno de los 3 casos corre dos veces (recurso A / recurso B), mismo
+mecanismo:** dos `PhysicalResource`/`BookableResource` en la MISMA
+categoría (`is_lodging = TRUE`) con `basePrice` deliberadamente DISTINTO
+entre sí (ej. 100 y 500 — la diferencia es la que haría fallar el test si
+el precio empezara a depender del recurso), llamando
+`pricingService.resolvePrice({ ...params, resourceId: resourceA.id, resource: resourceA })`
+y, por separado, con `resourceB`/`resourceB.id` — mismo
+`customerId`/`serviceId`/`ratePlanId`/fechas, solo cambia el recurso.
+
+**Aserción — por LÍNEA, no contra `totalPrice` (G-2.4, gate 18, corrige un
+falso-rojo latente).** `bookingMode: 'block'` (el modo real de un servicio
+de alojamiento) cotiza por NOCHE (`units = calculateNights(...)`,
+`resolvePrice()` línea ~139) — con más de una noche, `totalPrice = noches
+× precio de la línea`, así que comparar `totalPrice` directo contra el
+precio esperado de UNA noche daría un falso-rojo si el test usara más
+de 1 noche. Fijar el rango del test en exactamente 1 noche evita el
+problema pero lo hace fráchil ante un cambio futuro del rango; en cambio,
+afirmar `lines.every(l => l.price === <precio esperado de la sub-rama>)`
+(además de comparar el resultado de recurso A contra recurso B, línea por
+línea, `lines.length` incluido) es correcto sin importar cuántas noches
+tenga el rango del test — y sigue siendo el assert que realmente detecta
+la regresión (no solo "A y B dan lo mismo": ambos tienen que ser IGUALES
+al precio esperado de la sub-rama, no a ningún `basePrice` de recurso ni a
+un promedio/valor constante ajeno que por casualidad coincidiera entre A y
+B).
+
+**Caso adicional — demuestra que el escalón de tarifa cliente+RECURSO
+queda inalcanzable para alojamiento (G-2.3, gate 18).** Sembrar una
+`CustomerRate` con `resourceId: resourceA.id` (`serviceId: null`) — el
+escalón que `resolveUnitPrice()` evalúa DESPUÉS del `if (params.serviceId)`
+(línea 229, `findActiveForCustomerAndResource()`), fuera del bloque que
+siempre retorna antes para alojamiento. Llamar `resolvePrice()` con
+`resourceId: resourceA.id`/`resource: resourceA` (el recurso que la tarifa
+apunta) y, por separado, con `resourceB` — **el precio tiene que ser
+IDÉNTICO en los dos casos, e igual al de la sub-rama (iii)/(i)/(ii) que
+esté activa** (la tarifa de recurso se ignora incluso cuando el recurso
+consultado es exactamente el que la tarifa apunta) — documentando
+explícitamente, con un test, que para alojamiento este escalón es
+inalcanzable por diseño (mismo hallazgo que el comentario del test `D9-Parte 1`
+de `reservation.service.test.ts` ya documenta para el escalón de BUCKET).
 
 Comentario obligatorio en el test (para quien lo encuentre roto en el
 futuro):
@@ -2549,7 +2960,7 @@ futuro):
 // qué recurso se usó para cotizar" antes de seguir
 // (docs/diseno-reserva-por-tipo-unidad-2026-09-24.md, §8 "D-1", Ronda 16,
 // 25/09/2026 — reemplaza D-1'/D-1, descartadas por redundancia con
-// resource_id).
+// resource_id; decisión de origen: docs/diseno-precio-servicio-vs-recurso-2026-08-27.md).
 ```
 
 **Fase.** Fase 2 (§6, ítem 9) — mismo punto donde la columna hubiera ido;
@@ -2613,13 +3024,22 @@ amplia que este documento no toma.
   de `resource.id` en otro módulo, no está caminado acá.
 - **No toca código.** Cero cambios en `src/`, cero migraciones, cero
   commits — este documento es la especificación, no la implementación.
-- **No quedan decisiones de negocio abiertas.** Los 17 forks que este
-  diseño levantó en total (corregido en la Ronda 10 — una versión anterior
+- **Los 17 forks de alcance de Fases 0-2 no quedan abiertos — hay, además,
+  UN fork nuevo de Fase 3 (F3-4) que sí queda abierto a propósito, ver más
+  abajo (corregido, condición menor del gate 18 — una versión anterior de
+  este bullet afirmaba, sin excepción, "no quedan decisiones de negocio
+  abiertas").** Los 17 forks que este diseño levantó en Fases 0-2 en total
+  (corregido en la Ronda 10 — una versión anterior
   decía "14" sin contar N4; corregido de nuevo en la Ronda 14 — sumó D-1 y
   D-2, los 2 forks que el gate de la Ronda 13 devolvió al dueño vía
   `AskUserQuestion`, recontados de punta a punta contra cada mención de
   `AskUserQuestion`/"resuelto por el dueño" del documento),
-  todos resueltos vía `AskUserQuestion` con el dueño el 24/09/2026 (el
+  todos resueltos vía `AskUserQuestion` con el dueño — la mayoría el
+  24/09/2026, y el fork 16 (D-1, en su forma final) recién el 25/09/2026,
+  tras pasar por D-1' el mismo día — **corregido (condición menor del gate
+  18): una versión anterior de este bullet decía, sin excepción, "el
+  24/09/2026" — falso para el fork 16, ver Anexo, entradas "Ronda 15"/
+  "Ronda 16" para la fecha real de cada resolución** (el
   historial de en qué ronda se encontró y resolvió cada uno vive en el
   Anexo):
   1. Alcance: solo alojamiento (`is_lodging = TRUE`); turnos queda fuera
@@ -2665,7 +3085,8 @@ amplia que este documento no toma.
       en la Ronda 16 — "no construir nada aún, solo un test de
       regresión")** D-1 queda cerrado como no-op estructural: el precio
       de alojamiento no depende hoy del recurso puntual asignado
-      (verificado dos veces, Ronda 14 y el gate de la Ronda 16/17) — no se
+      (verificado tres veces — Ronda 14, la reconfirmación de la Ronda
+      15/B-2 y el gate de la Ronda 16, ver Anexo) — no se
       agrega ninguna columna (la de D-1' resultó matemáticamente
       redundante con `resource_id`, ver §8 "D-1"). En su lugar, un test de
       regresión (alcance de Fase 2) que fuerza a retomar el diseño de
@@ -2675,6 +3096,23 @@ amplia que este documento no toma.
       sobre `PENDING_ASSIGNMENT` se rechaza, mismo criterio que el combo
       fecha+reasignación (D-2, §8, "`updateReservation()` en relación con
       `assignDeferred()`").
+
+  **F3-4 — excepción explícita, es una decisión de negocio y queda
+  ABIERTA a propósito (gate 18, agregada después de los 17 de arriba, no
+  renumerada como "18" porque no es de Fases 0-2 ni fue resuelta —
+  numerar como fork "resuelto" algo que no lo es contradiría el propio
+  título de esta lista).** "Auto Assign All" (Fase 3), aun con F3-2/F3-3
+  corregidos, ¿debe CONFIRMAR la asignación provisoria de una reserva si
+  sigue siendo válida, REOPTIMIZAR las demás reservas `PENDING_ASSIGNMENT`
+  de la categoría (nunca las ya `ASSIGNED` — ver §6, Fase 3, para por qué
+  eso reabriría A6.4), o dejar el comportamiento greedy alfabético
+  actual sin tocarlo — **corregido (C-3, ronda de correcciones sobre el
+  gate 19): son tres opciones, no dos, ninguna con más peso que las
+  otras** (ver §6, Fase 3, para el detalle completo de las tres)? No se
+  resuelve acá — Fase 3 no se puede aprobar de
+  todas formas hasta que Fase 2 esté en producción (precondición de gate,
+  §6), así que preguntarle al dueño ahora no desbloquea nada; queda
+  anotada para cuando se retome el diseño completo de esa fase.
 
   Lo que sigue abierto es exclusivamente de implementación: Fase 4/Opción
   A sin dimensionar; la matriz de impacto acotada a los tres módulos
@@ -3084,7 +3522,11 @@ sin pasar por `reservations.routes.ts` (`app.ts`, closure de
 `/api/stays`) — ahí no existía, ni existe, ninguna referencia a
 `ReservationService` antes de esta ronda. Ver §7, ítem 12, para el
 análisis y la decisión (cuarto composition root manual, no un builder
-compartido).
+compartido) — **corregido (condición menor del gate 18): esta era la
+decisión de la Ronda 13/N-1, luego REVISADA en la Ronda 15 (ver esa
+entrada, más abajo) — el resultado final no es un cuarto composition root
+manual, es exportar y reusar `buildStayService()`. §7, ítem 12, refleja
+hoy la versión final revisada, no la de este párrafo.**
 
 **Hallazgo nuevo, corrección de un hecho falso (B-3).** La sección de
 "completar" decía que `completeReservation()` "sigue leyendo la reserva
@@ -3296,8 +3738,13 @@ resolvió junto con D-1', no por separado.
 por "congelamiento real ahora": persistir QUÉ RECURSO se usó para
 cotizar, no un booleano — decidido vía `AskUserQuestion` (25/09/2026),
 junto con la sub-pregunta de que la marca se actualiza en cada
-reasignación posterior, no queda fija en la de la primera asignación. Ver
-§8 "D-1'" para el mecanismo completo: columna nueva
+reasignación posterior, no queda fija en la de la primera asignación.
+**Puntero corregido (condición menor del gate 18): §8 ya NO tiene una
+subsección "D-1'" — se revirtió a "D-1" en la Ronda 16 (ver esa entrada,
+más abajo), y ese es el nombre vigente de la sección hoy; lo que sigue acá
+es la descripción HISTÓRICA del mecanismo que D-1' proponía en su
+momento, no una referencia a contenido que siga existiendo con ese
+nombre.** Mecanismo (histórico, revertido) descrito para memoria: columna nueva
 `reservations.priced_with_resource_id` (`VARCHAR(255) REFERENCES
 resources(id) ON DELETE SET NULL`, nullable a propósito — a diferencia
 del booleano descartado, `NULL` es un valor legítimo, no solo el default
@@ -3335,10 +3782,12 @@ verificado que los servicios de este repo solo se dan de baja lógica
 (`sql.bookable-service.repository.ts:149`, `active = FALSE`), nunca hay
 un `DELETE FROM bookable_services` real en `src/` (`grep -rn` sin
 resultados). El campo queda declarado como garantía estructural/de cara a
-futuro (§8 "D-1'", punto 8) — nada en Fase 2 lo lee para calcular un
+futuro (referencia histórica — la sección que en ese momento describía
+esto vivía bajo "D-1'"; §8 se revirtió a "D-1" en la Ronda 16, puntero
+corregido, condición menor del gate 18) — nada en Fase 2 lo lee para calcular un
 precio. **Este mismo hallazgo es, sin cambios, la base de la reversión de
 la Ronda 16** — verificado por tercera vez (Ronda 14, esta ronda, y el
-gate de la Ronda 16/17), el precio de alojamiento nunca depende del
+gate de la Ronda 16), el precio de alojamiento nunca depende del
 recurso puntual; la Ronda 16 lo usa para cerrar D-1 como no-op con un
 test de regresión, en vez de seguir prometiendo un campo "de cara a
 futuro" sin ningún consumidor (§8, "D-1").
@@ -3412,13 +3861,33 @@ arriba en este mismo Anexo) citaba `resources.resource_price_frozen` — la
 tabla equivocada; la columna descartada vivía en `reservations`, corregido
 ahí mismo.
 
-**Ronda 16 (esta) — gate `architecture-governor` (decimoséptimo gate) dio
+**Ronda 16 — gate `architecture-governor` (decimoséptimo gate —
+**corregido de nuevo (P-1, ronda de correcciones sobre el gate 20): la
+ronda de correcciones sobre el gate 19 había "restaurado" esto a "gate
+18", creyendo que ese era el ordinal real — pero eso conflaba DOS gates
+distintos bajo un mismo número: el que produjo los 4 hallazgos de esta
+entrada (T-1, T-2, F3-1, F3-2) con el gate posterior que aprobó Fase 1
+CON CONDICIONES y fijó G-1 a F3-4 (registrado en la entrada "Ronda 17"
+más abajo, "Veredicto textual del gate 18" — ese sí es, correctamente,
+"gate 18"). `git show 94d3a68:docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
+confirma que esta entrada decía, en el commit real, "decimoséptimo
+gate" — restaurado ahora. El historial completo de las 3 renumeraciones
+de este ordinal (decimoséptimo → decimosexto → gate 18 → decimoséptimo
+de nuevo) vive en el bullet C-4 de la entrada "Ronda 18" de este mismo
+Anexo.**) dio
 `HOLD` de nuevo sobre Fase 2/3, con 1 hallazgo de redundancia + 2 bugs
 menores sobre D-1' (T-1, T-2), 1 corrección de timing de lock sobre Fase 3
 (F3-1, mismo patrón que ya se había corregido para "completar") y 1 bug de
 diseño en la reutilización de `findAvailableResourceInCategory()` (F3-2),
 más varias condiciones menores (líneas/rondas duplicadas en el
 encabezado y el Anexo, citas de línea).**
+
+**El "decimosexto gate" (16º, según la numeración externa de esta
+serie, entre el decimoquinto de la Ronda 15 y el decimoséptimo de esta
+entrada) no tiene entrada propia registrada en este Anexo. No hay ningún
+registro versionado de qué revisó — no se le atribuye contenido ni
+origen (no se afirma que sea "de otro documento" ni de qué se trató). Se
+deja constancia del hueco de numeración sin llenarlo con una suposición.**
 
 **Redundancia de D-1' con `resource_id` — el hallazgo principal.**
 Combinando las dos decisiones del dueño sobre D-1' (Ronda 15) — congelar
@@ -3493,3 +3962,326 @@ de la sección D-1' que se reemplazó). Ninguna mención de "regla H2" o del
 orden de parámetros de `StayRepository` dependía de D-1'/la columna
 descartada — verificado con `grep -n`, ambos temas son independientes de
 la columna, no hacía falta tocarlos.
+
+**Ronda 17 — ronda de EDICIÓN, no un gate propio (mismo criterio que las
+Rondas 2/7/8/9/12, ver la corrección de la entrada "Ronda 16" más arriba)
+— aplicó las condiciones del gate 18.**
+
+**Veredicto textual del gate 18 (gate DISTINTO del decimoséptimo que
+generó la entrada "Ronda 16" de arriba — ver la corrección de esa
+entrada, más el bullet C-4 más abajo, para el porqué de la distinción —
+separado acá, C-5 de la ronda de correcciones sobre el gate 19, de lo que
+sigue: un gate revisa y falla, nunca edita texto — la entidad que hizo el
+cierre de cada hallazgo de abajo fue esta misma Ronda 17, EN TANTO ronda
+de edición, no el gate):** Aprobó Fase 1 CON CONDICIONES (agregando G-1
+como condición nueva sobre esa fase), dejó Fase 2 en HOLD acotado con 3
+hallazgos puramente técnicos (G-1, G-2, G-3 — ninguno requiere decisión
+del dueño) y mantuvo Fase 3 en HOLD (ya lo exigía el propio documento —
+Fase 2 en producción es precondición de gate, §6 — más 1 hallazgo
+técnico, F3-3, y 1 decisión de negocio anotada sin resolver, F3-4).
+
+**Cierre escrito por la Ronda 17 en respuesta a cada hallazgo — sin
+verificar por ningún gate hasta acá.** Lo que sigue (G-1 a F3-4) es el
+texto que esta ronda de edición escribió para responder a cada hallazgo
+del gate 18; en su momento no había pasado por ninguna revisión. Recién
+el gate 19 (Ronda 18, más abajo) lo verificó, y encontró 3 anclas falsas
+entre estos cierres (marcadas en el punto que corresponde, con el enlace
+a la corrección real) más 1 defecto técnico nuevo que el propio cierre de
+F3-3 introdujo sin querer (F3-5) — los 4 corregidos recién en la Ronda
+18, no acá:
+
+**G-1 — la falla de T-2 (Ronda 16) aplica igual a `assignment_status`, la
+columna de Fase 1, no solo a la de Fase 2 descartada.** `buildReservation()`
+no valida nada en runtime; `reservationNumber`/`appliedCustomerRateId` ya
+se cargan sin `??` (precedente real, no la excepción que una versión
+anterior de §7 decía). Cerrado agregando, a Fase 1: `r.assignment_status`
+explícito en la lista de columnas de `baseSelect()` (no estaba
+especificado); validación en el CONSTRUCTOR/`restore()` de `Reservation`
+contra `Object.keys(ASSIGNMENT_STATUS_TRANSITIONS)` (§8 A6.1, distinta de
+la validación de TRANSICIÓN que ya hacía `assignConcreteResource()`); un
+test unitario de `Reservation.restore()` con un valor inválido/`undefined`
+que verifique que lanza. **Ancla falsa encontrada acá por el gate 19,
+corregida en la Ronda 18 (C-1):** el texto de este cierre citaba `id`/
+`partySize` como precedente de "campo obligatorio sin default" (falso
+para los dos) y decía "no un archivo nuevo" para el test (falso — no hay
+ningún test hoy del constructor de `Reservation` en aislamiento). Ver §6
+(Fase 1) y §8 A6.1 para el texto ya corregido.
+
+**G-2 — el test de regresión de D-1 no cubría 2 cosas que ya existen.**
+(1) Le faltaba citar `docs/diseno-precio-servicio-vs-recurso-2026-08-27.md`
+como la decisión de origen del dueño — D-1 es un no-op por DECISIÓN DE
+PRODUCTO, no por casualidad del código actual. (2) No decidía
+explícitamente si el test extendía `reservation.service.test.ts`
+(`:1932`/`:1990`, 19 tests en verde) o iba en un archivo nuevo — se
+justificó archivo nuevo (`reservation-pricing.service.test.ts`,
+construcción directa de `ReservationPricingService`, más liviana que
+instanciar `ReservationService` completo). (3) El test diseñado solo
+cubría 1 de las 3 sub-ramas de `if (params.serviceId)` — se parametrizó
+sobre las 3, más un caso que demuestra que la tarifa cliente+RECURSO queda
+inalcanzable para alojamiento. (4) La aserción contra `totalPrice` directo
+daba falso-rojo con más de 1 noche en modo `block` — corregido a afirmar
+por LÍNEA. (5) Se agregó `InMemoryBookableServiceRepository` a la lista de
+fixtures (hacía falta para sembrar el `RatePlan` de la sub-rama (ii)). El
+gate 19 no encontró ninguna ancla falsa acá — cierre confirmado tal cual.
+Ver §8 "D-1".
+
+**G-3 — check-in (y el batch de Fase 3) le pasarían la entidad EQUIVOCADA
+a `recordOccupancy()`.** El texto decía literalmente
+`recordOccupancy(reservation)` — y `reservation` es, en el código real de
+`checkIn()` (`stay.service.ts:180`), el nombre de la lectura SIN LOCK
+previa, todavía `PENDING_ASSIGNMENT` en ese punto. Pasarle esa entidad
+haría que el guard de salteo por `PENDING_ASSIGNMENT` (§7) la ignorara SIN
+error visible — ocupación sin registrar en silencio, mismo patrón que B4
+de rondas muy anteriores. Corregido para especificar explícitamente que se
+pasa la entidad que DEVUELVE `assignDeferred()`, nunca la lectura sin
+lock — en check-in y, por el mismo patrón, en el batch de "Auto Assign
+All". El gate 19 no encontró ninguna ancla falsa acá — cierre confirmado
+tal cual. Ver §6, sub-alcance "check-in", y Fase 3.
+
+**F3-3 — mismo bug que F3-2, una capa más abajo.** La validación DENTRO de
+la transacción de "Auto Assign All" (`assertAllResourcesAvailable()`) no
+decía explícitamente que recibe `excludeReservationId = id` — sin eso, un
+candidato que resultara ser la propia habitación provisoria de la reserva
+chocaría contra sí misma en la validación, aunque F3-2 ya la hubiera
+excluido en la resolución previa (fuera de la transacción). Corregido en
+§6 (Fase 3) y en la tabla de §8 A6.1. **El `excludeReservationId` que este
+cierre agregó era correcto — pero la llamada literal que lo llevaba tenía
+2 defectos propios, encontrados por el gate 19 (F3-5) y corregidos en la
+Ronda 18 (C-2):** usaba `locked.startTime`/`locked.endTime` en un punto
+donde `locked` todavía no existe (F3-5a), y omitía `partySize` (F3-5b).
+Ver §6 (Fase 3) para el texto ya corregido.
+
+**F3-4 — pregunta de negocio nueva, dejada ABIERTA a propósito, no
+resuelta.** Aun con F3-2/F3-3 corregidos, `getByCategory()`
+(`sql.resource.repository.ts:141`, `ORDER BY r.name ASC`) hace que "Auto
+Assign All" mueva sistemáticamente al huésped de su habitación provisoria
+a la primera libre por orden alfabético, aunque la provisoria siguiera
+siendo válida. ¿"Auto Assign All" debe
+CONFIRMAR la provisoria si sigue siendo válida, o REOPTIMIZAR toda la
+ocupación (pudiendo mover reservas ya confirmadas)? Dos respuestas
+igualmente razonables — se deja anotada para `AskUserQuestion` al dueño
+cuando se retome el diseño completo de Fase 3, no ahora (Fase 3 no se
+puede aprobar de todas formas hasta que Fase 2 esté en producción). Ver
+§6 (Fase 3) y §9 (fork nuevo, fuera del conteo de 17 de Fases 0-2). **Esta
+manera de plantearla tenía 3 problemas, encontrados por el gate 19 y
+corregidos en la Ronda 18 (C-3):** (1) "dos respuestas igualmente
+razonables" ya era, en rigor, una inclinación implícita — la versión de
+§6 llegó a decir explícitamente "la lectura más natural", que CONTRADICE
+§4 Opción C (línea 254: la asignación provisoria "es reoptimizable, no
+definitiva"); (2) "reoptimizar... pudiendo mover reservas ya confirmadas"
+no distinguía `PENDING_ASSIGNMENT` de `ASSIGNED` — mover una `ASSIGNED`
+chocaría contra A6.4; (3) faltaba el comportamiento actual (greedy
+alfabético) como tercera opción real. Ver §6 (Fase 3) para el texto ya
+corregido, con las tres opciones (a)/(b)/(c).
+
+**Condiciones menores, todas aplicadas (por la Ronda 17).** Encabezado:
+"mismo día" para las nueve rondas 8ª-16ª corregido — las Rondas 15/16
+fueron 25/09/2026, no el mismo día que las anteriores (24/09/2026). §9:
+"todos resueltos el 24/09/2026" corregido — el fork 16 (D-1, forma final)
+se resolvió el 25/09/2026. Contradicción "verificado dos veces" (D-1,
+cuerpo del documento) vs. "tercera vez" (Anexo, entrada "Ronda 15"/B-2)
+reconciliada a "tres veces" — la reconfirmación de la Ronda 15/B-2
+("confirmado de nuevo") es una verificación real, distinta de la de
+Ronda 14 y la de este gate, que las 3 menciones de "dos veces" del cuerpo
+del documento omitían. La expresión ambigua "gate de la Ronda 16/17" (5
+apariciones) desambiguada a "gate de la Ronda 16" en todas. §7, ítem 11:
+corregido `reservas/reservation.mapper.ts` → `src/api/mappers/reservation.mapper.ts`
+(path real, verificado con `ls`). §7, ítem 13: corregido `email/workers/
+email.handlers.ts` → `src/workers/email.handlers.ts` (path real,
+verificado con `ls`). Tres punteros colgados del Anexo a una §8 "D-1'" que
+ya no existe (se revirtió a "D-1" en la Ronda 16) corregidos — dos con una
+nota aclarando que describen el mecanismo HISTÓRICO que D-1' proponía, no
+contenido vigente; uno (dentro de la entrada de Ronda 13/N-1, "cuarto
+composition root manual") corregido para apuntar a la decisión FINAL,
+revisada en la Ronda 15 (exportar y reusar `buildStayService()`, no un
+composition root nuevo). **Una condición menor más de esta misma ronda
+resultó, en sí misma, incorrecta — no cuenta como "aplicada" sin
+reservas:** el intento de resolver "el Anexo saltaba del decimoquinto
+gate (Ronda 15) al decimoséptimo (Ronda 16) sin registrar un
+decimosexto" renumerando la entrada de Ronda 16 a "decimosexto gate"
+imponía una correspondencia 1:1 Ronda↔gate que el propio Anexo no
+sostiene — corregido en la Ronda 18 (C-4), revirtiendo esa renumeración.
+**Esa corrección, a su vez, también resultó incorrecta** (revirtió a
+"gate 18", conflando dos gates distintos — ver el bullet C-4 de la
+entrada "Ronda 18" y P-1 de la entrada "Ronda 19", ambos más abajo, para
+la corrección real: "decimoséptimo gate"/gate 17, y el "decimosexto
+gate" (16º) declarado sin entrada propia en este Anexo, no un error de
+este documento). El salto de numeración descrito en este párrafo SÍ
+existe, entonces — no era una ambigüedad a resolver renumerando, era un
+hueco real de la numeración externa.
+
+---
+
+**Ronda 18 — ronda de edición que aplica las condiciones del gate 19
+(corregido, P-2 de la ronda de correcciones sobre el gate 20: una
+versión anterior de esta entrada se titulaba "gate `architecture-governor`
+(gate 19 de esta serie)", como si esta misma entrada FUERA el gate — un
+gate revisa, nunca edita, mismo criterio ya aplicado a la entrada "Ronda
+17"/C-5 de arriba; el gate 19 real es el que revisó, encontró los 4
+defectos de abajo, y dio verdicto — esta entrada es el trabajo de cierre
+que respondió a ese verdicto, no el gate en sí).** El gate 19 revisó el
+cierre que la Ronda 17 escribió para G-1/G-2/G-3/F3-3
+(gate 18) y la corrección de numeración que esa misma ronda había
+intentado — encontró 3 anclas falsas entre esos cierres, 1 defecto
+técnico nuevo introducido por el propio cierre de F3-3, y la
+renumeración de gate incorrecta, y con eso **aprobó el DISEÑO de Fase 2
+CON CONDICIONES** (corregido, P-2: una versión anterior de esta entrada
+decía que el gate 19 dejaba "a Fase 2/3 en el mismo HOLD que ya tenían"
+— incorrecto, Fase 2 dejó el HOLD en este mismo gate; las condiciones
+son C-1 a C-7 de abajo, todas aplicadas en esta ronda de edición).
+Mantiene a Fase 1 aprobada con
+condiciones (G-1 ahora cerrado de verdad — precedente correcto,
+`reservationNumber`, y archivo de test nombrado,
+`src/tests/domain/reservation.test.ts` — corregido, P-5, ver §6 para
+la justificación completa) y deja a Fase 3 en HOLD, como ya lo exigía el
+propio documento (G-2/G-3 sin hallazgos nuevos; F3-3/F3-5 ahora cerrado
+de verdad; F3-4 sigue exactamente igual de abierta — solo mejor
+planteada, con sus tres opciones). Todos los hallazgos y sus correcciones
+están anotados inline, en el punto que corresponde de la entrada "Ronda
+17" de arriba, y en el cuerpo del documento (§6 Fase 1, §6 Fase 3, §9).
+Detalle de cada uno:
+
+- **C-1 (cierra G-1).** El texto de G-1 citaba `id`/`partySize` como el
+  precedente de "campo obligatorio sin default del constructor" — los dos
+  ejemplos eran falsos (`id` sin valor tira `TypeError` de `.trim()`, no
+  un error de dominio; `partySize` SÍ tiene default `= 1`). El precedente
+  correcto es `reservationNumber` (`Reservation.ts:265`, sin default;
+  `:273-275`, valida por VALOR — `undefined` lanza). El texto también
+  decía "no un archivo nuevo" para el test — falso: no existe hoy ningún
+  `Reservation.test.ts`, ni ningún test de este repo que construya un
+  `Reservation`/`Reservation.restore()` con valores inválidos a propósito
+  (verificado, `grep -rl "new Reservation(\|Reservation\.restore("
+  src --include="*.test.ts"` — 7 archivos, ninguno dedicado al
+  constructor). **Ubicación corregida (P-5, ronda de correcciones sobre
+  el gate 20):** archivo nombrado `src/tests/domain/reservation.test.ts`
+  (minúscula), no `src/reservas/Reservation.test.ts` — `src/tests/domain/`
+  es el directorio real donde viven los tests de ENTIDADES de dominio de
+  este repo (constructor/invariantes), no de servicios: `customer.test.ts`
+  prueba `Customer` (`clientes-finanzas/customer.entities.ts`, con
+  `InvalidCustomerError`) y `resource.entities.test.ts` prueba
+  `PhysicalResource` — la entidad del MISMO módulo `reservas/` que
+  `Reservation`, verificado con `ls src/tests/domain/` — ninguna de las
+  dos vive junto a su archivo fuente. Los tests co-ubicados junto al
+  código (`reservation.service.test.ts`, `reservation-availability.service.test.ts`)
+  son todos de SERVICIOS, no de entidades — patrón distinto, no aplica acá.
+  Ver §6 (Fase 1) y §7 para el texto ya corregido.
+- **C-2 (cierra F3-5, hallazgo nuevo del gate 19).** La llamada literal
+  que el cierre de F3-3 agregó tenía 2 defectos: usaba `locked.startTime`/
+  `locked.endTime` en el punto donde el candidato se lockea+valida
+  ANTES de lockear la fila de la reserva — `locked` todavía no existe ahí
+  (F3-5a); y omitía `partySize`, tomando el default `1` de
+  `assertAllResourcesAvailable()` (F3-5b). Corregido: la llamada usa
+  `queuedReservation` (nombre nuevo para la lectura SIN lock que el batch
+  ya hacía, antes sin nombre propio) — `queuedReservation.startTime`/
+  `queuedReservation.endTime`/`queuedReservation.partySize` — y compara
+  `locked.startTime`/`locked.endTime` contra esos mismos valores DESPUÉS
+  de lockear la fila (mecanismo que "Rango de fechas del pre-lock", §6
+  Fase 3, ya describía en prosa sin nombrar la fuente). `partySize` no
+  necesita esa comparación — es inmutable post-creación
+  (`reservation.service.ts:617-620`).
+- **C-3 (refina F3-4, sin resolverla).** Tres correcciones a cómo está
+  planteada la pregunta, ninguna a la respuesta (sigue sin responderse):
+  se retira "la lectura más natural" (contradecía §4 Opción C, línea
+  254); la opción "reoptimizar" se acota a reservas `PENDING_ASSIGNMENT`
+  (nunca `ASSIGNED` — A6.4); se agrega el comportamiento greedy
+  alfabético actual como tercera opción real, (c). Ver §6 Fase 3 y §9.
+- **C-4 (numeración de gates) — corregida OTRA VEZ por el gate 20, esta
+  vez se había aplicado mal.** Esta ronda (Ronda 18) revirtió la
+  renumeración previa de "Ronda 16" (que decía "decimosexto gate") — eso
+  sí estaba mal, no se sostenía (el propio Anexo tiene 5 rondas sin gate
+  propio: 2, 7, 8, 9, 12). Pero el destino elegido acá, "gate 18", era
+  TAMBIÉN incorrecto: conflaba el gate que generó la entrada "Ronda 16"
+  (T-1, T-2, F3-1, F3-2) con el gate posterior, distinto, que aprobó
+  Fase 1 CON CONDICIONES y fijó G-1 a F3-4 (registrado en "Veredicto
+  textual del gate 18" de la entrada "Ronda 17" de arriba — ese sí es
+  "gate 18"). `git show 94d3a68:docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
+  confirma que la entrada "Ronda 16", en el commit real, decía
+  "decimoséptimo gate" — no "gate 18". Corregido de verdad en la Ronda 19
+  (P-1): "Ronda 16" vuelve a "decimoséptimo gate"/gate 17, distinto del
+  "gate 18" de "Ronda 17"; declarado también que el "decimosexto gate"
+  (16º) no tiene entrada propia en este Anexo — es un hueco real de la
+  numeración externa, no un error de este documento (ver la entrada
+  "Ronda 16" de arriba).
+- **C-5 (separa veredicto de cierre).** La entrada "Ronda 17" mezclaba el
+  veredicto textual del gate 18 con el trabajo de cierre que esa misma
+  ronda de EDICIÓN hizo, presentado sin distinguir que un gate revisa y
+  falla, no edita texto. Separados en la entrada de arriba: veredicto
+  primero, cierre después, con nota de que el cierre quedó sin verificar
+  hasta este mismo gate 19. Las marcas "(esta)" que apuntaban a la Ronda
+  16 se movieron acá.
+- **C-6 (pendientes-2026-09-12.md).** Ver el párrafo agregado en ese
+  documento, corregido en el mismo commit que esta ronda — atribución de
+  las ediciones de texto a "la Ronda 17 (ronda de edición posterior al
+  gate 18)", no al gate 18 mismo, y las 2 anclas re-derivadas contra el
+  estado final de este documento (post C-1 a C-5).
+- **C-7.** No se tocaron `docs/decisiones-plan-integral-2026-09-16.md` ni
+  los 2 archivos sin trackear de otras waves (`docs/diseno-ui-caja-contrato-2026-09-24.md`,
+  `docs/perfil-fiscal-anchor-refresh-2026-09-24.md`).
+
+---
+
+**Ronda 19 (esta) — ronda de edición que aplica las condiciones del gate
+20.** El gate 20 verificó el cierre que la Ronda 18 escribió para C-1 a
+C-7 (arriba) — sin encontrar ningún problema en el DISEÑO en sí — y
+encontró 4 problemas de bookkeeping del documento (P-1 a P-4, ninguno
+cambia el diseño) más 1 condición menor de implementación (P-5). Con
+eso, dio el **veredicto final: el diseño de Fase 2 queda APROBADO CON
+CONDICIONES** (las condiciones remanentes son de implementación: test y
+guard de G-1, test de regresión de G-2, `recordOccupancy(assigned)` de
+G-3, el arreglo previo de `createWindow()`, el mensaje parametrizado de
+`ReservationConcurrentlyModifiedError`). Fase 3 sigue HOLD (precondición
+de Fase 2 en producción + F3-4 abierta a propósito, ambas sin cambios).
+Fase 0 y Fase 1 sin cambios de alcance — Fase 1 sigue aprobada con
+condiciones, su único cambio en esta ronda fue el texto de la propia
+condición G-1 (P-5, ubicación del test). Detalle de cada hallazgo:
+
+- **P-1 (numeración de gates, corregida OTRA VEZ).** La ronda de
+  correcciones sobre el gate 19 había "restaurado" la entrada "Ronda 16"
+  a "gate 18" creyendo eso era el ordinal real — pero conflaba dos gates
+  distintos bajo un mismo número (el que generó "Ronda 16", T-1/T-2/F3-1/
+  F3-2, con el que generó "Ronda 17", G-1 a F3-4). `git show
+  94d3a68:docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` confirma que
+  en el commit real esa entrada decía "decimoséptimo gate". Corregido:
+  "Ronda 16" vuelve a "decimoséptimo gate"/gate 17; "gate 18" queda
+  reservado exclusivamente para el gate distinto de "Ronda 17"; declarado
+  explícitamente que el "decimosexto gate" (16º) no tiene entrada propia
+  en este Anexo — hueco real de la numeración externa, no un error de
+  este documento. Verificado con
+  `grep -n "decimo\|gate 1[5-9]\|gate 20" docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
+  que cada ordinal nombra a un único gate real. Ver también el bullet C-4
+  de la entrada "Ronda 18" (corregido acá por segunda vez) y el párrafo
+  de `pendientes-2026-09-12.md` sobre el "salto de numeración" (P-4,
+  abajo).
+- **P-2 (la entrada "Ronda 18" se titulaba como si fuera un gate).** Un
+  gate revisa, nunca edita — pero la entrada que aplica C-1 a C-7 se
+  titulaba "gate `architecture-governor` (gate 19 de esta serie)", como
+  si ESA ENTRADA fuera el gate 19 en sí. Retitulada "ronda de edición que
+  aplica las condiciones del gate 19". Esa misma entrada registraba
+  además el veredicto del gate 19 como "Fase 2/3 en el mismo HOLD que ya
+  tenían" — incorrecto: el gate 19 aprobó el DISEÑO de Fase 2 CON
+  CONDICIONES (C-1 a C-7), no la dejó en HOLD sin más. Corregido en esa
+  misma entrada.
+- **P-3 (veredicto del gate 20 sin registrar).** Esta misma entrada
+  ("Ronda 19") es la corrección — antes de esta ronda, el veredicto final
+  del gate 20 (arriba) no estaba escrito en ningún lado del documento.
+- **P-4 (anclas de línea de `pendientes-2026-09-12.md` vueltas a mover
+  por esta misma ronda).** Ver la corrección en ese documento — las 2
+  anclas de línea (fila de pricing en §7, bullet 6 de forks en §9) se
+  reemplazan por anclas de texto/sección, con la línea como referencia
+  adicional entre paréntesis, para que sobrevivan a la PRÓXIMA ronda de
+  edición sin quedar stale (van 11 correcciones previas de
+  `SCHEMA-ANCHOR-DRIFT-001` por este mismo motivo sobre esas 2 anclas).
+- **P-5 (ubicación del test de `Reservation`).** Ver §6 y el bullet
+  C-1 de la entrada "Ronda 18", ya corregidos: `src/tests/domain/reservation.test.ts`,
+  no `src/reservas/Reservation.test.ts` — `src/tests/domain/` es la
+  convención real para tests de entidades de dominio de este repo
+  (`customer.test.ts`, `resource.entities.test.ts` — este último del
+  MISMO módulo `reservas/` que `Reservation`), verificado con `ls
+  src/tests/domain/`. También corregido el grep mal formado de §6 (el
+  segundo patrón de `new Reservation(`/`Reservation.restore(` aparecía
+  como si fuera un argumento de ruta aparte en vez de una alternancia del
+  mismo patrón).
+
+**No se tocó `src/` en esta ronda — solo documentación.** No se tocaron
+`docs/decisiones-plan-integral-2026-09-16.md` ni los 2 archivos sin
+trackear de otras waves (mismo alcance que C-7 de la Ronda 18).

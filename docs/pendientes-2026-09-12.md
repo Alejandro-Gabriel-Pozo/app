@@ -2926,6 +2926,99 @@ no se agrega ni se saca ningún fork). Mismo criterio que las ocho
 correcciones anteriores: re-derivado con `grep -n` contra el archivo real
 en el momento de escribir esto, no copiado de la cita anterior.
 
+**Re-derivadas de nuevo con el gate 18 (25/09/2026), décima vez — mismo
+modo de falla, `SCHEMA-ANCHOR-DRIFT-001`.** **Corrección de atribución
+(C-6 de la ronda de correcciones sobre el gate 19):** una versión
+anterior de este párrafo decía "el gate 18 ... agregó texto sustancial" —
+un gate revisa y falla, nunca edita texto. Quien agregó el texto (G-1 a
+F3-4, en respuesta a los hallazgos del gate 18) fue la Ronda 17 de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`, en tanto ronda de
+EDICIÓN posterior al gate 18 — no el gate mismo (ver esa entrada del
+Anexo, corregida en la Ronda 18/C-5 de ese documento). Esa Ronda 17
+(que también corrigió, entre otras cosas, el rótulo ambiguo "gate de la
+Ronda 16/17" del párrafo anterior a "gate de la Ronda 16" — el Anexo de
+ese documento ya no tiene el salto de numeración "decimoquinto"→
+"decimoséptimo" que motivaba la ambigüedad, ver esa entrada —
+**corrección, P-1 de la ronda de correcciones sobre el gate 20: esta
+afirmación era falsa y lo sigue siendo — el salto SÍ existe, es real (el
+"decimosexto gate" no tiene entrada propia en el Anexo de ese documento —
+no hay registro versionado de qué revisó, no se le atribuye contenido ni
+origen), y volvió a estar mal
+"resuelto" una vez más entre esta ronda y el gate 20: una ronda
+intermedia había renumerado la entrada de "Ronda 16" a "gate 18" en vez
+de dejarla en "decimoséptimo", conflando dos gates distintos — corregido
+de verdad recién en la Ronda 19 de ese documento, ver esa entrada**) agregó
+texto sustancial en §6 (Fase 0/1/2/3), §7 y §8 de ese
+documento (validación de `assignmentStatus` en el constructor de
+`Reservation`, G-1; rediseño del test de regresión de D-1 en 3 sub-ramas,
+G-2; corrección de qué entidad recibe `recordOccupancy()` en check-in y en
+el batch de Fase 3, G-3; `excludeReservationId` dentro de la transacción
+de "Auto Assign All", F3-3; nota de pregunta de negocio abierta sobre
+"Auto Assign All", F3-4) — y las dos anclas de este párrafo volvieron a
+moverse: la fila de pricing (§7, fila de `reservation-pricing.service.ts`)
+pasó de `:1535` a `:1639`; el bullet 6 ("No-recotización en asignación
+diferida...") de la lista de forks pasó de `:2634-2637` a `:2879-2882`
+(el conteo total de forks de Fases 0-2 sigue sin cambiar — 17; esa ronda
+agregó, aparte, un fork NUEVO de Fase 3 explícitamente dejado ABIERTO
+—F3-4, "confirmar la provisoria" vs. "reoptimizar todo" en "Auto Assign
+All" — que no se pliega dentro de este conteo de 17 porque no es de
+Fases 0-2 ni está resuelto, ver §9 de ese documento). Mismo criterio que
+las nueve correcciones anteriores: re-derivado con `grep -n` contra el
+archivo real en el momento de escribir esto, no copiado de la cita
+anterior. **Estas dos anclas (`:1639`/`:2879-2882`) volvieron a moverse
+de nuevo — ver la corrección siguiente, undécima vez.**
+
+**Re-derivadas de nuevo en la Ronda 18/gate 19 (25/09/2026), undécima vez
+— mismo modo de falla, `SCHEMA-ANCHOR-DRIFT-001`.** El gate 19 revisó el
+cierre que la Ronda 17 (arriba) escribió para G-1/F3-3/F3-4 y encontró 3
+anclas falsas (no de línea — de precedente y de mecanismo, ver esa
+entrada) más 1 defecto técnico nuevo (F3-5); la Ronda 18 de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` aplicó las
+correcciones (C-1 a C-5 sobre ese documento) y, con eso, volvió a mover
+las dos anclas de este párrafo: la fila de pricing (§7, fila de
+`reservation-pricing.service.ts`) pasó de `:1639` a `:1771`; el bullet 6
+("No-recotización en asignación diferida...") de la lista de forks pasó
+de `:2879-2882` a `:3011-3014` (el conteo total de forks de Fases 0-2
+sigue sin cambiar — 17; F3-4 sigue como el único fork de Fase 3
+explícitamente dejado ABIERTO, ahora planteado con 3 opciones en vez de
+2 — ver esa entrada). Mismo criterio que las diez correcciones
+anteriores, con una diferencia: re-derivado con `grep -n` contra el
+ESTADO FINAL del documento de diseño — después de aplicar sus propias
+C-1 a C-5, no contra ningún estado intermedio de esa misma ronda de
+edición.
+
+**Convertidas a anclas de texto/sección en la Ronda 19/gate 20
+(25/09/2026), duodécima vez — mismo modo de falla,
+`SCHEMA-ANCHOR-DRIFT-001`, pero esta vez la corrección no es "re-derivar
+otro número de línea".** Este documento de diseño lleva 11 correcciones
+de línea sobre las mismas 2 anclas (arriba) por el mismo motivo cada vez
+— una ronda de edición reescribe una sección y el número de línea se
+mueve — así que una cita de línea más solo sería la duodécima que se
+desactualiza con la próxima ronda. En vez de eso, las 2 anclas de este
+párrafo pasan a citarse por texto/sección, mismo criterio que el propio
+documento de diseño ya usa para citas volátiles (ej. "§4 Opción C", o
+`completeReservation()` por nombre de método):
+- La fila de pricing es la fila de `reservation-pricing.service.ts` en
+  la tabla de la matriz de impacto de §7 (de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — es la única tabla
+  de §7, encabezado `Archivo / call-site | Qué asume hoy | …`; NO en la
+  lista "Resumen de lo que hay que tocar" que viene después, que no
+  menciona `reservation-pricing` en ningún lado) — al momento de escribir
+  esto, línea `:1813`, dato adicional, no la referencia principal.
+- El bullet de forks es el bullet "No-recotización en asignación
+  diferida..." de la lista de forks resueltos en §9 de ese mismo
+  documento — al momento de escribir esto, línea `:3053`, dato
+  adicional, no la referencia principal.
+
+El conteo total de forks de Fases 0-2 sigue sin cambiar — 17; F3-4 sigue
+como el único fork de Fase 3 explícitamente dejado ABIERTO. Esta ronda
+del documento de diseño (Ronda 19, gate 20) no reescribió §7 ni §9 lo
+bastante como para que el CONTENIDO de estas dos citas cambie — solo
+bookkeeping de numeración de gates (P-1 a P-3) y ubicación de un test
+(P-5) en otras secciones — pero la conversión a texto/sección se hace
+igual, a propósito, para que la corrección número 13 (si hace falta) no
+vuelva a ser "otro número de línea".
+
 **Fuentes externas** (repos públicos, rama `develop`/`main`, revalidadas
 esta sesión — no reusadas de grounding previo sin chequear):
 `frappe/frappe` (`core/doctype/user/user.{json,py}`,
