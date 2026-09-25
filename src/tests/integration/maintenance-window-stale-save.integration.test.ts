@@ -72,7 +72,7 @@ const BUSINESS_ID = 'biz-maintenance-window-stale-save-001';
 /**
  * Sondeo determinístico vía `pg_blocking_pids()` -- mismo patrón que
  * `reservation-deferred-assignment.integration.test.ts::waitUntilBlockedBy()`
- * / `invoice-retry-exclusive-claim.integration.test.ts::waitUntilBlockedBy()`,
+ * / `invoice-retry-charge-guard.integration.test.ts::waitUntilBlockedBy()`,
  * duplicado acá (archivo distinto, sin módulo compartido de test helpers
  * para esto todavía -- mismo criterio que esos dos archivos ya documentan
  * para su propia duplicación). Reemplaza un `setTimeout` fijo -- riesgo de

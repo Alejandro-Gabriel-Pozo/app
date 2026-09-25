@@ -166,7 +166,7 @@ function buildStayService(reservationService: ReservationService): StayService {
 
 /**
  * Sondeo determinístico vía `pg_blocking_pids()` -- mismo patrón que
- * `invoice-retry-exclusive-claim.integration.test.ts::waitUntilBlockedBy()`,
+ * `invoice-retry-charge-guard.integration.test.ts::waitUntilBlockedBy()`,
  * duplicado acá (archivo distinto, sin módulo compartido de test helpers
  * para esto todavía -- mismo criterio que ese archivo documenta para su
  * propia duplicación). Reemplaza el `setTimeout(300)` fijo que usaban las

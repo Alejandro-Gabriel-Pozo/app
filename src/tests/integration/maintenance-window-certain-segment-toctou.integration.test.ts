@@ -100,7 +100,7 @@ const BUSINESS_ID = 'biz-maintenance-window-certain-segment-toctou-001';
  * `maintenance-window-stale-save.integration.test.ts::waitUntilBlockedBy()`
  * (duplicado acá a propósito, mismo criterio ya documentado en ese
  * archivo y en `reservation-deferred-assignment.integration.test.ts`/
- * `invoice-retry-exclusive-claim.integration.test.ts`: sin módulo
+ * `invoice-retry-charge-guard.integration.test.ts`: sin módulo
  * compartido de test helpers para esto todavía).
  */
 async function waitUntilBlockedBy(holderPid: number, timeoutMs = 10_000): Promise<number[]> {

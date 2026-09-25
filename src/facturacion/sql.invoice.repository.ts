@@ -1237,8 +1237,8 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // decisión deliberada de esta implementación, no del §3.10 original
     // (que sí lo pedía): el set de columnas difiere (acá hace falta
     // pto_vta/cbte_nro/imp_total/issued_at para la fila del reporte, ese
-    // método necesita status/afip_contacted/uncertain_cleared_at para el
-    // guard 8-bis) y unificarlas de verdad exigiría tocar
+    // método necesita status/afip_contacted para el guard 8-bis) y
+    // unificarlas de verdad exigiría tocar
     // resolveInvoiceLinkage()/getAllLinkedInvoicesWithClient() -- dos
     // métodos ya en producción que blindan la cancelación real (guard
     // 8-bis) -- para un cambio que es puramente de reporte. Riesgo/beneficio
@@ -1764,14 +1764,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Bloque 2c (§3.5) -- también limpia uncertain_cleared_at
     // incondicionalmente, no solo cuando data.status es FAILED_UNCERTAIN
     // con afipContacted:true (que es el caso mínimo que el ADR describe).
-    // Es un superset seguro: ningún guard del repo lee uncertain_cleared_at
-    // sin filtrar también por status = 'FAILED_UNCERTAIN' AND afip_contacted
-    // (grep verificado -- GET /api/invoices/uncertain, retryExisting()), así
-    // que resetearlo acá también para la rama REJECTED o para
-    // afipContacted:false no cambia ningún comportamiento observable, y
-    // cierra el hueco para CUALQUIER secuencia futura sin depender de
-    // acertar el `WHERE` exacto. Sin este reset, una factura ya limpiada
-    // (`markUncertainClearedWithClient()`) que vuelve a caer en
+    // Es un superset seguro para los dos guards que SÍ filtran por
+    // status = 'FAILED_UNCERTAIN' AND afip_contacted antes de leer esta
+    // columna (grep verificado -- GET /api/invoices/uncertain,
+    // retryExisting()): para esos dos, resetearlo acá también en la rama
+    // REJECTED o para afipContacted:false no cambia ningún comportamiento
+    // observable, y cierra el hueco para CUALQUIER secuencia futura sin
+    // depender de acertar el `WHERE` exacto. (Hay otros dos lectores que
+    // filtran solo por status = 'FAILED_UNCERTAIN', sin afip_contacted --
+    // resolveCreditNoteRequestManually() e invoice.service.ts ~1311,
+    // candidato MANUAL_RESOLUTION_STATE_MISMATCH del Bloque 6; preexistente
+    // a este bloque, no lo introduce el reset.) Sin este reset, una factura
+    // ya limpiada (`markUncertainClearedWithClient()`) que vuelve a caer en
     // FAILED_UNCERTAIN con afipContacted:true por un reintento posterior
     // conservaría el `uncertain_cleared_at` viejo y esquivaría el guard de
     // `retryExisting()` sin revisión real -- exactamente el hueco #4 del
@@ -1779,15 +1783,19 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // propósito -- queda como residuo histórico de quién limpió la
     // declaración anterior, ningún guard lo lee de forma independiente).
     //
-    // Revert R' (25/09/2026, decisión del dueño -- ver CLAUDE.md raíz y el
-    // commit de este revert) -- el guard 8-bis de reverseTransfer() (§3.8,
-    // accounts-receivable.service.ts) fue REVERTIDO junto con a7d06be y
-    // 2db33f5 para destrabar 19 commits atascados; NO lee
-    // uncertain_cleared_at hoy, así que el párrafo de arriba (escrito
-    // cuando §3.8 sí existía) es aspiracional hasta que §3.8 se reaplique.
-    // Este reset (§3.5) se conserva igual porque es inofensivo por sí solo
-    // (nadie más lee la columna con un comportamiento distinto) y evita
-    // reabrir el hueco #4 el día que §3.8 vuelva.
+    // Revert R' (25/09/2026, decisión del dueño) -- el guard 8-bis de
+    // reverseTransfer() (§3.8, accounts-receivable.service.ts) fue
+    // REVERTIDO en un commit aparte junto con a7d06be y 2db33f5, para
+    // destrabar la cola de commits que dependían de un Bloque 4 (worker de
+    // expiración) todavía sin mergear. El párrafo de arriba SIGUE VIGENTE:
+    // el reset de este bloque sostiene HOY el comportamiento real de
+    // `retryExisting()` y de `GET /api/invoices/uncertain` -- es exactamente
+    // la razón por la que R' conservó §3.5 en vez de revertirlo entero
+    // (revertirlo dejaba, probado contra Postgres real, una factura CHARGE
+    // limpiada y reintentada sin ninguna salida visible). El guard 8-bis sí
+    // volvió a su forma previa a §3.8: bloquea cualquier fila
+    // FAILED_UNCERTAIN con afipContacted:true, esté limpiada o no (falla
+    // cerrado) -- ese guard no depende de este reset.
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5,
