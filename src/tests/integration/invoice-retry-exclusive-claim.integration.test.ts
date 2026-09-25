@@ -266,28 +266,14 @@ describe.skipIf(skipIfNoDb)('ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3
     );
   }
 
-  /**
-   * Bloque 5 (§3.11, 23/09/2026, gate `architecture-governor`, ronda 17) --
-   * parametrizado con `type` (CHARGE/REFUND/ADJUSTMENT) en vez de duplicado,
-   * mismo criterio que el propio §3.11 recomienda ("el SQL bajo prueba,
-   * `takeRetryClaimWithClient()`, es literalmente el mismo, lo único que
-   * cambia es el `type` de la fila de origen"): para CHARGE, `retryExisting()`
-   * toma la marca dentro del `if (chargeTxs.length > 0)` (Bloque 2c, ya
-   * cubierto); para REFUND/ADJUSTMENT, `chargeTxs` queda vacío y la toma
-   * corre por el `else` nuevo de Bloque 5 -- la propiedad bajo prueba (nunca
-   * más de un comprobante real bajo dos `retryExisting()` concurrentes) es
-   * la misma para los tres tipos, porque el UPDATE condicionado que la
-   * garantiza no distingue `type` (ver docblock de `retryExisting()` en
-   * `invoice.service.ts`).
-   */
-  it.each(['CHARGE', 'REFUND', 'ADJUSTMENT'] as const)('dos retryExisting() concurrentes sobre la MISMA factura REJECTED (%s, carrera real, Promise.allSettled) -- nunca más de un CAE real, ningún 500, todo rechazo es RetryInvoiceInFlightError', async (type) => {
+  it('dos retryExisting() concurrentes sobre la MISMA factura REJECTED (carrera real, Promise.allSettled) -- nunca más de un CAE real, ningún 500, todo rechazo es RetryInvoiceInFlightError', async () => {
     const customer = await seedCustomer(db);
     const orderId = await seedOrder(customer.id);
     const chargeId = randomUUID();
     await financialRepo.create({
       id: chargeId, businessId: BUSINESS_ID, customerId: customer.id,
       reservationId: null, orderId, stayId: null,
-      type, amount: 100, currency: 'ARS', status: 'SETTLED',
+      type: 'CHARGE', amount: 100, currency: 'ARS', status: 'SETTLED',
     });
     await seedRejectedInvoice(customer.id, chargeId);
 

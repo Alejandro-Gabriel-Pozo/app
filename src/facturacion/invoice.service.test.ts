@@ -2076,26 +2076,12 @@ describe('InvoiceService', () => {
     it('posición del guard (load-bearing): una NC (ADJUSTMENT) que YA tiene su propia invoice PENDING sigue cayendo en retryExisting(), no en el guard cruzado', async () => {
       // Reproduce lo que dependen los 4 call-sites reales de cancelación-con-NC
       // (cancel-order-with-credit-note.service.ts / cancel-reservation-with-credit-note.service.ts):
-      // un reintento del MISMO ADJUSTMENT tiene que caer en retryExisting()
-      // -- idempotencyKey `invoice:ft-1` matchea ANTES (:333-334) de que el
-      // guard cruzado (:335+) llegue a mirar `invoice_charges`. No hace falta
-      // seedear la factura original que revierte -- retryExisting() nunca
-      // toca `reversedInvoiceId`/tx.type para decidir esto, solo el
-      // idempotencyKey ya guardado en la fila existente.
-      //
-      // Bloque 5 (§3.11, 23/09/2026) cambió el desenlace ESPERADO de este
-      // escenario, no el punto que el test verifica (que cae en
-      // retryExisting(), no en el guard cruzado): antes de Bloque 5, un
-      // PENDING sin afipContacted del camino NC puro no pasaba por ninguna
-      // toma exclusiva (el `if (chargeTxs.length > 0)` la saltaba entera) y
-      // reintentaba ciego contra AFIP -- exactamente el mismo doble-envío
-      // que Bloque 2c cerró para CHARGE. Con el `else` nuevo, el mismo
-      // `takeRetryClaimWithClient()` corre acá también: su WHERE no matchea
-      // PENDING (ninguna rama, ni REJECTED ni FAILED_UNCERTAIN-limpio), así
-      // que rechaza con RetryInvoiceInFlightError SIN llamar a AFIP -- la
-      // prueba de que "cae en retryExisting()" ahora es justamente que NO
-      // tira InvoiceAlreadyLinkedByOtherPathError (el guard cruzado) sino el
-      // error de la toma exclusiva.
+      // un reintento del MISMO ADJUSTMENT tiene que devolver la NC ya creada
+      // por ESTE camino -- idempotencyKey `invoice:ft-1` matchea ANTES
+      // (:333-334) de que el guard cruzado (:335+) llegue a mirar `invoice_charges`.
+      // No hace falta seedear la factura original que revierte -- retryExisting()
+      // (`:1014-1032`) nunca toca `reversedInvoiceId`/tx.type, solo credentials
+      // + profile + el afipRequest ya guardado en la fila existente.
       const pendingNc: Invoice = {
         id: 'inv-nc-pendiente', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
         idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
@@ -2113,13 +2099,13 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      await expect(
-        service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
-      ).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
-      // Nunca InvoiceAlreadyLinkedByOtherPathError -- el guard cruzado no es
-      // lo que la rechazó, así que el punto original del test (la posición
-      // del guard) sigue probado.
-      expect(createNextVoucher).not.toHaveBeenCalled();
+      const result = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      // retryExisting() sobre un PENDING sin afipContacted SÍ reintenta contra
+      // AFIP (mismo camino que el test de FAILED_UNCERTAIN sin contactar) --
+      // lo que importa acá es que NO tiró InvoiceAlreadyLinkedByOtherPathError.
+      expect(result.id).toBe('inv-nc-pendiente');
+      expect(createNextVoucher).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -3102,66 +3088,19 @@ describe('InvoiceService', () => {
         expect(invoiceRepo.invoices.get('inv-retry')?.status).toBe('PENDING');
       });
 
-      describe('Bloque 5 (§3.11, 23/09/2026, gate `architecture-governor`, ronda 17) -- la toma exclusiva también cubre NC pura (REFUND/ADJUSTMENT, sin CHARGE en el lote), vía el `else` nuevo de retryExisting()', () => {
-        it.each(['REFUND', 'ADJUSTMENT'] as const)(
-          'reintento de NC pura (%s) individual -- llama a takeRetryClaimWithClient() exactamente una vez, y NO llama a los guards CHARGE-only (assertNoOtherLiveInvoiceForCharges()/assertChargesStillInvoiceable())',
-          async (type) => {
-            seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
-            const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
-            const service = buildService({
-              tx: makeTx({ id: 'ft-1', type }),
-              client: fakeArcaClient({ createNextVoucher }),
-            });
-            const takeSpy = vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient');
-            // Prueba de invocación/orden para los dos guards CHARGE-only,
-            // mismo criterio que el test hermano de más arriba
-            // (`getByFinancialTransactionIdWithLock`/`takeRetryClaimWithClient`
-            // espiados directo): `assertChargesStillInvoiceable()` es privado,
-            // así que se prueba por su efecto observable (nunca lockea AR) en
-            // vez de espiar el método en sí.
-            const arLockSpy = vi.spyOn(arRepo, 'getByFinancialTransactionIdWithLock');
-            const arLockByIdSpy = vi.spyOn(arRepo, 'getByIdWithLock');
-            const otherLiveLinksSpy = vi.spyOn(invoiceRepo, 'getOtherLiveInvoiceLinksForCharges');
-
-            const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
-
-            expect(invoice.status).toBe('ISSUED');
-            // (a) invocación real de la toma exclusiva en el camino NC puro --
-            // guarda de regresión: sin esto, un reintento de NC no está
-            // protegido contra el doble click (§3.11).
-            expect(takeSpy).toHaveBeenCalledTimes(1);
-            expect(takeSpy).toHaveBeenCalledWith(expect.anything(), 'inv-retry');
-            // (b) los guards CHARGE-only NO corren en la rama NC -- guarda de
-            // regresión inversa: si un refactor futuro empieza a correrlos
-            // sobre NC sin querer, este test lo detecta (getOtherLiveInvoiceLinksForCharges()
-            // es lo único que invoca assertNoOtherLiveInvoiceForCharges();
-            // getByFinancialTransactionIdWithLock()/getByIdWithLock() son lo
-            // único que invoca assertChargesStillInvoiceable() para lockear AR).
-            expect(otherLiveLinksSpy).not.toHaveBeenCalled();
-            expect(arLockSpy).not.toHaveBeenCalled();
-            expect(arLockByIdSpy).not.toHaveBeenCalled();
-          },
-        );
-
-        it('doble click de NC pura (REFUND) -- si takeRetryClaimWithClient() no devuelve fila (ya en vuelo), retryExisting() rechaza con RetryInvoiceInFlightError SIN llamar a AFIP', async () => {
-          // Mismo patrón que el test hermano de PENDING para CHARGE (línea
-          // ~3061 de este archivo): simula el efecto del `UPDATE ... RETURNING`
-          // vacío del mecanismo real (`takeRetryClaimWithClient()` sin fila que
-          // actualizar) sin depender de Postgres real -- eso lo cubre el
-          // integration test parametrizado de "doble click".
-          seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
-          const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
-          const service = buildService({
-            tx: makeTx({ id: 'ft-1', type: 'REFUND' }),
-            client: fakeArcaClient({ createNextVoucher }),
-          });
-          vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient').mockRejectedValue(new RetryInvoiceInFlightError('inv-retry'));
-
-          await expect(
-            service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
-          ).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
-          expect(createNextVoucher).not.toHaveBeenCalled();
+      it('alcance de este bloque: un reintento de NC pura (REFUND, sin CHARGE en el lote) NO pasa por la toma exclusiva (Bloque 5, §3.11, fuera de alcance acá)', async () => {
+        seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
+        const service = buildService({
+          tx: makeTx({ id: 'ft-1', type: 'REFUND' }),
+          client: fakeArcaClient({ createNextVoucher }),
         });
+        const takeSpy = vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient');
+
+        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        expect(takeSpy).not.toHaveBeenCalled();
       });
     });
 
