@@ -2826,6 +2826,106 @@ email.
 | 4.4 | `adultos`/`ninos` + aprobación de check-in/check-out tardío — verificado, sin acción | — | ✅ verificado, sin acción | — |
 | ~~4.5~~ | ~~`booking_mode = 'event'` sin semántica~~ — **descartado post-gate, afirmación falsa**: ya implementado y decidido (18/08/2026) | — | ✅ descartado | — |
 
+**Actualización 24/09/2026 (`AskUserQuestion`, dueño, vía
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §5):** confirmado que
+4.1 y 4.2 NO se pliegan dentro de 4.3 — siguen siendo ítems separados, sin
+diseño propio, con las mismas anclas de esta tabla (`:2823`/`:2824` acá
+arriba) y el detalle narrativo de `:2761-2775`. 4.3, además, queda acotado
+a alojamiento (`is_lodging = TRUE`) solamente — no se extiende a turnos.
+
+**Residuo CERRADO 24/09/2026 (`AskUserQuestion`, dueño, vía
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §7, fila de
+`reservation-pricing.service.ts`, y §9): ya NO queda "aceptado, sin
+acción de código" — corrección de la ronda de correcciones del gate
+(H5) sobre este mismo párrafo, que hasta ahora describía una resolución
+ya superada.** Una reserva `CONFIRMED` reasignada por el mecanismo de
+asignación diferida (`PENDING_ASSIGNMENT → ASSIGNED`, manual vía `PUT
+/reservations/:id`, vía "Auto Assign All" (Fase 3 del diseño de 4.3) o vía
+check-in — tercer camino, Decisión 2/H1, `stay.service.ts::checkIn()`,
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6, sub-alcance
+"check-in confirma la asignación" (nombre re-derivado en la octava ronda
+de gate del 24/09/2026 — la reescritura normativa de la Ronda 7 de ese
+documento retiró la numeración "§6 sub-alcance 2b" que esta fila citaba
+antes; el sub-alcance sigue existiendo, solo cambió de nombre a uno sin
+número, ver el Anexo de ese documento),
+corregido en la quinta ronda de gate del 24/09/2026 al notar que el
+párrafo original solo nombraba dos de los tres caminos que aplican la
+misma regla) a un recurso con una tarifa especial `customer_rates` propia
+de ESE
+recurso puntual sigue sin recotizar el componente de precio que depende
+del recurso — pero esto ya no es un residuo "aceptado": la Decisión 1
+(tercera ronda de `AskUserQuestion`, grounding ERP post-gate,
+refinada por H3 de la ronda de correcciones) lo convierte en una regla
+explícita y acotada, no en un desajuste tolerado. La regla vigente desde
+el 18/08/2026 (A3.9, `reservation.service.ts::updateReservation()`,
+recotiza solo si `existing.status === 'PENDING'`; para `CONFIRMED` el
+precio queda congelado a propósito) sigue sin cambiar para reasignaciones
+que NO pasan por asignación diferida (drag-to-move de una reserva ya
+`ASSIGNED`). Lo que sí cambia es que, para la reasignación diferida
+específicamente, la excepción de no-recotización queda **declarada como
+regla de diseño, acotada al componente de precio por recurso** — y un
+`PUT` que combine esa reasignación con un cambio de fechas/`ratePlanId`
+se **rechaza con error tipado** (H3) en vez de dejar un residuo de precio
+silencioso. Sin acción de código adicional más allá de implementar esa
+regla (ya no es "sin acción de código" — la regla nueva SÍ es la acción).
+Anclas (re-derivadas con `grep`/`sed` sobre el archivo real de
+`app-main` recién antes de esta escritura, no de memoria — este párrafo
+ya tuvo el problema de anclas mal citadas CINCO veces en rondas
+anteriores, ver SCHEMA-ANCHOR-DRIFT-001; esta es la corrección de la
+OCTAVA ronda de gate, 24/09/2026 — la Ronda 7 de ese documento (la
+reescritura normativa) desplazó ambas anclas otra vez, mismo modo de
+falla que las cuatro correcciones previas — **las anclas de línea sobre
+un documento que sigue en gate activo caducan con cada ronda que lo
+edita; re-derivarlas en el momento de leerlas, no confiar en lo que este
+párrafo dice, es la única forma confiable — **re-derivadas de nuevo en la
+Ronda 14 (C-6), las dos habían vuelto a moverse desde la octava ronda de
+gate, y otra vez DENTRO de la propia Ronda 14 (el cuerpo del documento
+siguió creciendo con N-1/N-2/D-1/D-2 después de la primera pasada de esta
+misma ronda) — el conteo total de forks pasó de 14 a 15 (Ronda 10, N4) y
+de 15 a 17 (Ronda 14, D-1/D-2) sin que esta cita se hubiera actualizado en
+el momento — mismo modo de falla, séptima vez**): la
+fila de pricing de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md:1395` (matriz de
+impacto, §7, fila de `reservation-pricing.service.ts`) y el bullet 6
+("No-recotización en asignación diferida...") de la lista de **17** forks
+resueltos, en
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md:2375-2378` (§9) — el
+texto del bullet cambió de redacción entre rondas (ya no dice "Una
+tercera ronda de `AskUserQuestion`...", esa frase no sobrevivió a la
+reescritura de la Ronda 7), pero sigue siendo la misma decisión —
+ambas ya actualizadas para reflejar esta resolución (y la corrección H3
+del discriminador, la corrección de justificación de N5, y H4 sobre Fase
+3, en las rondas correspondientes).
+
+**Re-derivadas de nuevo en la Ronda 15 (25/09/2026), octava vez —
+mismo modo de falla, `SCHEMA-ANCHOR-DRIFT-001`.** El gate 15 de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` reescribió §7 (ítem
+12, "Resumen de lo que hay que tocar") y §8 ("D-1'", que reemplaza a
+"D-1") con texto sustancialmente más largo que las versiones anteriores —
+las dos anclas de este párrafo volvieron a moverse: la fila de pricing
+(§7, fila de `reservation-pricing.service.ts`) pasó de `:1395` a
+`:1474`; el bullet 6 ("No-recotización en asignación diferida...") de la
+lista de forks pasó de `:2375-2378` a `:2643-2646` (el conteo total de
+forks NO cambió — sigue en 17: D-1' reemplaza a D-1, no agrega un fork
+nuevo). Mismo criterio que las siete correcciones anteriores: re-derivado
+con `grep -n` contra el archivo real en el momento de escribir esto, no
+copiado de la cita anterior.
+
+**Re-derivadas de nuevo en la Ronda 16 (25/09/2026), novena vez — mismo
+modo de falla, `SCHEMA-ANCHOR-DRIFT-001`.** El gate 16/17 de
+`docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` reescribió §8 otra vez
+— "D-1'" volvió a llamarse "D-1" (la columna `priced_with_resource_id`
+que diseñaba se revirtió por completo: redundante con `resource_id`,
+verificado matemáticamente — el dueño pidió "no construir nada aún, solo
+un test de regresión") — y las dos anclas de este párrafo volvieron a
+moverse: la fila de pricing (§7, fila de `reservation-pricing.service.ts`)
+pasó de `:1474` a `:1535`; el bullet 6 ("No-recotización en asignación
+diferida...") de la lista de forks pasó de `:2643-2646` a `:2634-2637`
+(el conteo total de forks sigue sin cambiar — 17: D-1 vuelve a ser no-op,
+no se agrega ni se saca ningún fork). Mismo criterio que las ocho
+correcciones anteriores: re-derivado con `grep -n` contra el archivo real
+en el momento de escribir esto, no copiado de la cita anterior.
+
 **Fuentes externas** (repos públicos, rama `develop`/`main`, revalidadas
 esta sesión — no reusadas de grounding previo sin chequear):
 `frappe/frappe` (`core/doctype/user/user.{json,py}`,
@@ -6070,3 +6170,208 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
   de `Customer`/`Identity`, desactivación de membership) e implementar esos
   call-sites como bloque aparte, con su propio gate.
 
+## Wave 14 — 4.3, hallazgo no bloqueante del segundo re-gate de docs (24/09/2026)
+
+- **`CRITERIOS-NEGOCIO-A6.2-STALE-001`** (24/09/2026, hallazgo no
+  bloqueante del segundo re-gate `architecture-governor` sobre las 3
+  condiciones de docs de 4.3 — ver
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §8, A6.2). El texto
+  de `docs/criterios-negocio.md:303-307` (A6.2 — "el backend expone
+  `allowedTransitions[]` en el DTO... hoy el frontend duplica a mano las
+  máquinas de `Reservation`, `HousekeepingTask` y `Order`") está
+  desactualizado para dos de esas tres entidades, verificado en código:
+  `Reservation.status` ya expone `allowedTransitions` (`Reservation.ts:78`
+  `ALLOWED_TRANSITIONS` / `:361` getter, servido en
+  `reservation.mapper.ts:121`, consumido en
+  `appfrontend/dashboard/reservas/page.tsx:364-382` y
+  `reservas/[id]/page.tsx:684-717`) y `Order` también
+  (`appfrontend/ordenes/[id]/page.tsx:350`). No se verificó si
+  `HousekeepingTask` sigue siendo el caso real que motiva la regla —
+  puede que sea el único de los tres que todavía la incumple. **Acción
+  puntual que lo cierra:** re-leer `criterios-negocio.md` A6.2 contra el
+  código real de las tres entidades y corregir el texto (o retirar el
+  ejemplo de `Reservation`/`Order` si `HousekeepingTask` solo sigue
+  incumpliendo esa) — bloque de docs aparte, no depende de 4.3.
+
+## Wave 14 — 4.3, hallazgo colateral de mecánica (quinta ronda de gate, 24/09/2026)
+
+- **`OCCUPANCY-DOUBLE-COUNT-ON-COMPLETE-001`** (24/09/2026, hallazgo
+  colateral del gate `architecture-governor` sobre la quinta ronda de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — hallazgo N1, ver
+  §7/§8 de ese documento para la resolución de "diferir" que sí es parte
+  de 4.3. **Este ítem es independiente de 4.3 a propósito** — el bug
+  existe hoy, en el código actual, sin ningún cambio de este diseño;
+  4.3 no lo introduce, solo lo encontró de paso al revisar
+  `recordOccupancy()`. `src/reservas/reservation.service.ts::confirmReservation()`
+  (línea 913, llama a `this.availability.recordOccupancy(reservation)` en
+  la línea 1009 — corregido, C-6, Ronda 14 de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`, gate
+  `architecture-governor`: decía 834/930, re-derivado con `grep -n` contra
+  el archivo real) Y `::completeReservation()` (línea 1089, llama a la
+  misma `recordOccupancy()` en la línea 1121 — corregido, mismo motivo:
+  decía 1010/1042) llaman AMBAS a
+  `recordOccupancy()` sobre la MISMA reserva. Como `COMPLETED` solo se
+  alcanza desde `CONFIRMED` (`Reservation.ts:78`,
+  `ALLOWED_TRANSITIONS[CONFIRMED] = [CANCELLED, COMPLETED]` — no hay otro
+  camino a `COMPLETED`), toda reserva que se completa pasa por las dos
+  llamadas: una vez al confirmarse, otra vez al completarse.
+  `recordOccupancy()` → `SqlOccupancyRepository.recordReservation()`
+  (`sql.occupancy.repository.ts:90-99`) hace
+  `booked_minutes = occupancy_records.booked_minutes + $N` sobre un
+  `ON CONFLICT (resource_id, date) DO UPDATE` — es un CONTADOR AGREGADO,
+  no un `INSERT` idempotente, así que la segunda llamada SUMA de nuevo
+  los mismos minutos en vez de no hacer nada. **Consecuencia concreta:**
+  toda reserva `COMPLETED` deja `occupancy_records.booked_minutes` del
+  rango de fechas de esa reserva DUPLICADO — los reportes de ocupación
+  (`report.service.ts::getOccupancyByDateRange()`/
+  `getAverageOccupancyByResource()`, que leen esta tabla directamente)
+  sobreestiman la ocupación real para cualquier fecha con al menos una
+  reserva completada, sin ningún error visible. **Verificación pendiente
+  que lo confirma:** correr una reserva real por el ciclo completo
+  (`PENDING → CONFIRMED → COMPLETED`) contra una BD real y comparar
+  `booked_minutes` antes/después de `completeReservation()` — no se corrió
+  todavía en esta sesión, así que este ítem describe el bug verificado
+  en código (dos call-sites reales, guard `UNIQUE`/`+= $N` verificado en
+  el repositorio), no un efecto medido en runtime. **No se resuelve
+  acá** — señalado, no corregido, para no mezclarlo con el alcance de
+  4.3 (que ya tiene su propio bloque, más arriba en este documento, en la
+  fila `4.3` de la Tabla resumen). Motivo por el que 4.3 no lo hereda como
+  su propio problema: la resolución de N1 ("diferir" la escritura hasta
+  `ASSIGNED`) no toca el hecho de que `confirmReservation()`/
+  `completeReservation()` llaman ambas a `recordOccupancy()` — ese doble
+  llamado sigue existiendo igual, con o sin 4.3, para toda reserva
+  (alojamiento o no) que se complete.
+
+  **Nota de conexión (actualizada en la séptima ronda de edición de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`, 24/09/2026 — la
+  versión anterior de esta nota solo consideraba 2 de los 4 puntos de
+  entrada reales, ver la corrección más abajo):** si en el futuro se
+  arregla este bug sacando UNA de las dos llamadas (la candidata obvia es
+  sacar la de `confirmReservation()` y dejar solo la de
+  `completeReservation()`, ya que toda reserva completada pasó por
+  confirmarse antes), quien lo arregle tiene que considerar la interacción
+  con el mecanismo de asignación diferida (4.3) — no es un bug aislado del
+  resto de esta sesión: `recordOccupancy()` ya NO es un paso de
+  `assignDeferred()` — cada uno de sus 4 callers (`PUT
+  /reservations/:id`, "Auto Assign All", check-in y "completar") la invoca
+  por su cuenta, DESPUÉS de su propio commit. Eso quiere decir que
+  `recordOccupancy()` pasa a tener, con 4.3, **6 puntos de entrada reales
+  en total** — no 2: los 2 originales
+  (`confirmReservation()`/`completeReservation()`, el bug que este ítem
+  describe) más los 4 nuevos de la asignación diferida
+  (`updateReservation()`, "Auto Assign All", `checkIn()`, y otra vez
+  `completeReservation()` — que ya estaba en los 2 originales, pero ahora
+  puede además invocar `assignDeferred()` antes, en el mismo método, si la
+  reserva seguía `PENDING_ASSIGNMENT` al completarse). **Corrección sobre
+  la nota anterior:** decía "uno de los 4 puntos", dando a entender que
+  solo `completeReservation()` quedaba afectado por la interacción con
+  4.3 — falso: `updateReservation()`, "Auto Assign All" y `checkIn()`
+  llaman a `recordOccupancy()` por PRIMERA vez (no existía esa llamada
+  antes de 4.3), así que cualquier arreglo futuro de este bug tiene que
+  auditar los 4 puntos de entrada de 4.3, no solo re-verificar el caso de
+  `completeReservation()`. Sacar la llamada de `confirmReservation()`
+  sigue siendo la corrección más simple para el bug original (no toca el
+  acoplamiento con 4.3, porque `confirmReservation()` no es uno de los 4
+  callers de `assignDeferred()`), pero quien la haga tiene que verificar
+  que ninguno de los otros 3 puntos de entrada nuevos (`updateReservation()`,
+  "Auto Assign All", `checkIn()`) reintroduce un doble conteo por una vía
+  distinta — no alcanza con re-verificar solo el caso
+  `CONFIRMED → COMPLETED` sin asignación diferida de por medio.
+
+## Wave 14 — 4.3, hallazgo preexistente encontrado en la novena ronda de gate (24/09/2026)
+
+- **`MAINTENANCE-WINDOW-STALE-SAVE-001`** (24/09/2026, hallazgo N3 del
+  gate `architecture-governor` sobre la novena ronda de
+  `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — ver §7, fila de
+  `maintenance-window.service.ts`, y el prerrequisito nuevo de Fase 2 en
+  §6). **Este ítem es independiente de 4.3 a propósito, mismo criterio que
+  `OCCUPANCY-DOUBLE-COUNT-ON-COMPLETE-001` más arriba** — el bug existe
+  hoy, en el código actual, sin ningún cambio de este diseño; 4.3 no lo
+  introduce, solo lo encontró de paso al auditar quién escribe
+  `reservations` con o sin lock.
+  `src/pms-estadias/maintenance-window.service.ts::createWindow()` lee
+  reservas SIN lock y FUERA de cualquier transacción vía
+  `getActiveForResourceInRange()` (`reservationRepository.getActiveForResourceInRange()`,
+  que a su vez usa `this.sqlClient` directo, sin `client` de transacción —
+  `sql.reservation.repository.ts:351-357`), en **4 call-sites** dentro de
+  `createWindow()` (líneas 107, 125, 134 y 142 — corregido, 24/09/2026,
+  Ronda 10: una versión anterior de este ítem decía "3 call-sites" pero
+  siempre listó las 4 líneas. De esas 4, **solo 2 alimentan el UPSERT
+  final** (verificado con `grep -n`/`sed -n` contra el archivo real): la
+  línea 107 (`conflicting`) y la línea 125 (`certainConflicts`) solo se
+  usan para el chequeo de conflicto — si hay resultados, lanzan
+  `MaintenanceWindowConflictError` y no se guarda nada; las líneas 134 y
+  142 son las dos únicas que asignan a `toFlag`, la variable que el loop
+  de más abajo recorre para escribir). Las reservas que esas 2 lecturas
+  (134/142) devuelven (`toFlag`) se guardan de vuelta, UPSERT completo de
+  cada una, recién DESPUÉS, dentro de una transacción que abre en la línea
+  160 (`await this.transactionManager.run(...)`):
+  `await this.reservationRepository.saveWithClient(client, reservation);`
+  en la línea 164, tras `reservation.markNeedsMaintenanceReview()` en la
+  línea 163. **Consecuencia concreta:** si otra operación concurrente
+  (un `PUT` de reasignación, un `assignDeferred()` una vez que exista,
+  cualquier otro escritor de `reservations`) cambia y comitea esa misma
+  reserva en la ventana entre la lectura sin lock (líneas 107-144) y el
+  commit de esta transacción (línea 160-166), el UPSERT de la línea 164
+  pisa esos cambios con el snapshot viejo — incluido `resource_id` y
+  (desde que exista la columna, Fase 1 de 4.3) `assignment_status` —
+  revirtiendo en silencio una reasignación real y violando la transición
+  de una sola vía de `assignment_status` (A6.4 del diseño de 4.3). Es,
+  verificado contra los otros 12 escritores reales de `reservations` (los
+  que usan `requireReservationWithLock()`/`getByIdWithLock()` —
+  `confirmReservation()`, `completeReservation()`, `cancelReservation()`,
+  `confirmPriceAdjustment()`, `requestScheduleChange()`,
+  `rejectScheduleChange()`, `approveScheduleChange()`,
+  `reservation-cancel-for-credit-note.ts:94/109`,
+  `reservation-hold-expiry.worker.ts:104-106/122` — todos relockean la
+  fila dentro de su propia transacción inmediatamente antes de escribir),
+  **vuelve a ser el ÚNICO escritor real de `reservations` que hoy lee
+  sin lock y fuera de transacción antes de un UPSERT completo —
+  corregido, Ronda 14 de `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md`
+  (C-6, gate `architecture-governor`, 24/09/2026).** Historial de esta
+  cifra, para no repetir el mismo error de arrastre: hasta el 24/09/2026
+  (Ronda 10 de ese documento) se corrigió de "el ÚNICO" a "uno de, al
+  menos, DOS" — el otro era `updateReservation()` (`reservation.service.ts`),
+  con el mismo patrón (bug `UPDATE-RESERVATION-LOST-STATUS-001`: armaba lo
+  que terminaba grabando a partir de `existing`, leída SIN lock, ANTES de
+  abrir la transacción real). **Ese bug ya se arregló y commiteó
+  (`6178d70`, ver más abajo) el mismo día** — así que, a partir de ese
+  commit, `updateReservation()` deja de compartir este patrón y
+  `createWindow()` vuelve a ser el único. La corrección de descripción de
+  la Ronda 12 de ese documento (sobre CÓMO es el arreglo de
+  `updateReservation()`, no sobre CUÁNTOS escritores hay) sigue vigente:
+  el arreglo (`UPDATE-RESERVATION-LOCK-ORDER-001`) es una RELECTURA bajo
+  lock dentro de la transacción (`requireReservationWithLock()`); la
+  única comparación que trae es la del guard de coherencia
+  `resource.id`/`serviceId` — acotada a decidir qué recurso lockear, no
+  una comparación optimista general de estado. Fuera del alcance de 4.3,
+  registrado en `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6
+  (nota "C-b"); no se duplica el detalle acá, solo esta referencia
+  cruzada.
+  **`UPDATE-RESERVATION-LOCK-ORDER-001` ya está resuelto y COMMITEADO,
+  `6178d70`** ("fix(reservas): updateReservation() lost-update bajo
+  concurrencia + orden de locks correcto") — la Ronda 11 de gate sobre 4.3
+  ya había confirmado que el arreglo terminaba con el orden recurso →
+  fila, exactamente lo que 4.3 daba por supuesto en su propio paso 6 (§8
+  A6.1), y el commit real lo confirma línea por línea (verificado con
+  `git show 6178d70 --stat` y `git log 6178d70 -1`). El orden de locks YA
+  NO sigue pendiente de decidirse NI de commitear; lo que sigue vigente
+  como nombre de referencia es `UPDATE-RESERVATION-LOST-STATUS-001`, el
+  bug original que motivó el arreglo — también resuelto por el mismo
+  commit, no solo el orden de locks. **Ya es un
+  bug hoy, independiente de 4.3** — puede revertir un drag-to-move normal
+  (`PUT /reservations/:id`) si un `createWindow()` corre en paralelo sobre
+  el mismo recurso. 4.3 lo agrava porque las ventanas `PENDING_ASSIGNMENT`
+  (Fase 2 de 4.3) hacen más frecuente el escenario de "la reserva cambió
+  mientras este código la tenía leída sin lock". **No se resuelve acá** —
+  señalado, no corregido: arreglarlo (releer con lock dentro de una
+  transacción, inmediatamente antes de guardar, mismo patrón que los
+  otros 12 escritores) es cambio de código fuera del alcance actual de
+  4.3. El diseño de 4.3 lo declara como PRERREQUISITO explícito antes de
+  activar su Fase 2 (el marcado real de `PENDING_ASSIGNMENT`) — arreglar
+  este método, o aceptar explícitamente el riesgo ya documentado. **Acción
+  puntual que lo confirma/cierra:** modificar `createWindow()` para que
+  relea cada reserva de `toFlag` con lock (`getByIdWithLock()` o
+  equivalente) DENTRO de la transacción que ya abre en la línea 160,
+  inmediatamente antes de `saveWithClient()`, en vez de reusar la entidad
+  leída sin lock más arriba en el método.
