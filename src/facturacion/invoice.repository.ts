@@ -297,18 +297,11 @@ export interface InvoiceRepository {
    * DENTRO de la transacción de `reverseTransfer()`, no en una conexión
    * separada del pool (a diferencia de `resolveInvoiceLinkage()`, que sí
    * corre sobre `this.db` en sus demás callers).
-   *
-   * `uncertainClearedAt` agregado en el Bloque 2c del ADR
-   * `ISSUE-BEFORE-REVERSE-WINDOW-001` (§3.1 "corrección al implementar el
-   * bloque 1" + §3.8) -- el bloque 1 devolvía esta tupla sin ese campo a
-   * propósito (no hacía falta todavía). El guard 8-bis lo usa para no
-   * bloquear una fila `FAILED_UNCERTAIN`+`afipContacted` que ya fue
-   * limpiada por una revisión manual (`markUncertainClearedWithClient()`).
    */
   getAllLinkedInvoicesWithClient(
     client: SqlClient,
     financialTransactionId: string,
-  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean; uncertainClearedAt: Date | null }>>;
+  ): Promise<Array<{ id: string; status: InvoiceStatus; afipContacted: boolean }>>;
   /**
    * `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001` (23/09/2026, gate
    * `architecture-governor`, ronda 2, `docs/pendientes-2026-09-12.md`) --

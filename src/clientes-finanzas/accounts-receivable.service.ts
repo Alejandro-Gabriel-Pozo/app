@@ -789,10 +789,7 @@ export class AccountsReceivableService {
    * fila equivocada cuando hay más de una) -- evalúa TODAS
    * (`getAllLinkedInvoicesWithClient()`) con la regla completa: cualquier
    * `ISSUED` no reconciliada bloquea, cualquier `PENDING` bloquea,
-   * cualquier `FAILED_UNCERTAIN` con `afipContacted` bloquea **salvo que ya
-   * haya sido limpiada por revisión manual** (`uncertainClearedAt != null`
-   * -- Bloque 2c, ADR §3.8, agregado 23/09/2026: mismo criterio que
-   * `retryExisting()` ya aplica en su propio chequeo temprano);
+   * cualquier `FAILED_UNCERTAIN` con `afipContacted` bloquea;
    * `FAILED_UNCERTAIN` sin contactar y `REJECTED` no bloquean. Si
    * cualquier fila bloquea, rechaza con `ArReversalRequiresCreditNoteError`
    * y no escribe nada. La reconciliación de la rama `ISSUED` sigue
@@ -898,15 +895,8 @@ export class AccountsReceivableService {
           throw new ArReversalRequiresCreditNoteError(lockedAr.id, 'ISSUED');
         }
       }
-      // Bloque 2c (ADR ISSUE-BEFORE-REVERSE-WINDOW-001, §3.8) -- una fila
-      // FAILED_UNCERTAIN con afipContacted que YA fue limpiada por revisión
-      // manual (uncertainClearedAt != null) deja de bloquear. Mismo
-      // criterio que retryExisting() ya aplica en su propio chequeo
-      // temprano. Depende de que markFailedWithClient() (sql.invoice.repository.ts)
-      // resetee uncertain_cleared_at a NULL en cada re-falla (§3.5) --
-      // implementado en el mismo commit, ver su docblock.
       const blockingNotIssued = linkedInvoices.find(
-        (inv) => inv.status === 'PENDING' || (inv.status === 'FAILED_UNCERTAIN' && inv.afipContacted && inv.uncertainClearedAt == null),
+        (inv) => inv.status === 'PENDING' || (inv.status === 'FAILED_UNCERTAIN' && inv.afipContacted),
       );
       if (blockingNotIssued) {
         throw new ArReversalRequiresCreditNoteError(lockedAr.id, blockingNotIssued.status);

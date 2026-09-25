@@ -357,38 +357,6 @@ describe('SqlInvoiceRepository — pending_since (Bloque 2a)', () => {
   });
 });
 
-// ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.1 ("corrección al
-// implementar el bloque 1") / §3.8 -- getAllLinkedInvoicesWithClient() ahora
-// trae uncertainClearedAt, que el guard 8-bis de reverseTransfer()
-// (accounts-receivable.service.ts) usa para no bloquear una fila ya
-// limpiada por revisión manual.
-describe('SqlInvoiceRepository — getAllLinkedInvoicesWithClient() trae uncertainClearedAt (ADR Bloque 2c, §3.1/§3.8)', () => {
-  it('mapea uncertain_cleared_at (no-nulo) desde la fila cruda a uncertainClearedAt', async () => {
-    const clearedAt = new Date('2026-09-20T12:00:00Z');
-    const mockSqlClient = mockClient([
-      { id: 'inv-1', status: 'FAILED_UNCERTAIN', afip_contacted: true, uncertain_cleared_at: clearedAt },
-    ]);
-    const repo = new SqlInvoiceRepository(mockSqlClient);
-
-    const rows = await repo.getAllLinkedInvoicesWithClient(mockSqlClient, 'ft-1');
-
-    expect(rows).toEqual([{ id: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: clearedAt }]);
-    const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
-    expect(sql).toContain('uncertain_cleared_at');
-  });
-
-  it('mapea uncertain_cleared_at = NULL desde la fila cruda a uncertainClearedAt: null (caso "todavía no limpiada", sigue bloqueando)', async () => {
-    const mockSqlClient = mockClient([
-      { id: 'inv-1', status: 'FAILED_UNCERTAIN', afip_contacted: true, uncertain_cleared_at: null },
-    ]);
-    const repo = new SqlInvoiceRepository(mockSqlClient);
-
-    const rows = await repo.getAllLinkedInvoicesWithClient(mockSqlClient, 'ft-1');
-
-    expect(rows).toEqual([{ id: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true, uncertainClearedAt: null }]);
-  });
-});
-
 // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3 -- guards
 // nuevos de A-2/N6/P-1 y los tres métodos nuevos. `mockClient()` de arriba
 // devuelve SIEMPRE la misma fila sin importar cuántas veces se llame a
