@@ -13,7 +13,6 @@ import {
   InvoiceUncertainClearPreconditionError,
   InvoiceVoucherNumberAlreadyRegisteredError,
   AfipReconciliationPreconditionError,
-  RetryInvoiceInFlightError,
 } from '../domain/errors.js';
 
 interface InvoiceRow {
@@ -248,35 +247,6 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       throw new Error(`getRefundableForUpdate: factura "${invoiceId}" no existe -- invariante roto, se validó su existencia antes de entrar a la transacción`);
     }
     return parseFloat(rows[0]!.refundable);
-  }
-
-  /**
-   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 2c, §3.2/§3.16 -- ver el
-   * docblock de la interfaz (`invoice.repository.ts`) para el mecanismo
-   * completo. Una sola sentencia: el `UPDATE` en sí ES el lock (Postgres
-   * toma el lock de fila implícito de cualquier `UPDATE` que matchea antes
-   * de aplicar el `SET`) -- a diferencia de `getOutstandingForUpdate()`/
-   * `getRefundableForUpdate()`, acá no hace falta separar "tomar el lock" de
-   * "leer" en dos sentencias: no hay ninguna subconsulta correlacionada
-   * corriendo DESPUÉS del lock que pueda quedar con una foto vieja (ese era
-   * el motivo real de la separación en O2-F2, ver el docblock de
-   * `getOutstandingForUpdate()` arriba) -- acá el propio predicado del
-   * `WHERE` ya se evalúa con el snapshot MVCC correcto en el momento en
-   * que Postgres consigue el lock de la fila.
-   */
-  async takeRetryClaimWithClient(client: SqlClient, invoiceId: string): Promise<void> {
-    const { rows } = await client.query<{ id: string }>(
-      `UPDATE invoices
-          SET status = 'PENDING', pending_since = NOW()
-        WHERE id = $1
-          AND (
-            status = 'REJECTED'
-            OR (status = 'FAILED_UNCERTAIN' AND (NOT afip_contacted OR uncertain_cleared_at IS NOT NULL))
-          )
-        RETURNING id`,
-      [invoiceId],
-    );
-    if (!rows[0]) throw new RetryInvoiceInFlightError(invoiceId);
   }
 
   async getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>> {

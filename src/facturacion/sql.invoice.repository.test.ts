@@ -9,7 +9,6 @@ import {
   InvoiceManualResolutionPreconditionError,
   InvoiceVoucherNumberAlreadyRegisteredError,
   AfipReconciliationPreconditionError,
-  RetryInvoiceInFlightError,
 } from '../domain/errors.js';
 
 // Regresión: cae_vto es DATE en Postgres -- el driver `pg` lo devuelve como
@@ -430,31 +429,6 @@ describe('SqlInvoiceRepository — markUncertainClearedWithClient() (ADR Bloque 
 
     await expect(repo.markUncertainClearedWithClient(mockSqlClient, 'inv-inexistente', { clearedBy: 'identity-1' }))
       .rejects.toThrow(/no encontrada al limpiar uncertain_cleared/);
-  });
-});
-
-describe('SqlInvoiceRepository — takeRetryClaimWithClient() (ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.2/§3.16)', () => {
-  it('RETURNING con fila -- toma la marca, no lanza', async () => {
-    const mockSqlClient = mockClient([{ id: 'inv-1' }]);
-    const repo = new SqlInvoiceRepository(mockSqlClient);
-
-    await expect(repo.takeRetryClaimWithClient(mockSqlClient, 'inv-1')).resolves.toBeUndefined();
-
-    const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
-    expect(sql).toMatch(/UPDATE invoices/);
-    expect(sql).toMatch(/SET status = 'PENDING', pending_since = NOW\(\)/);
-    expect(sql).toMatch(/status = 'REJECTED'/);
-    expect(sql).toMatch(/status = 'FAILED_UNCERTAIN' AND \(NOT afip_contacted OR uncertain_cleared_at IS NOT NULL\)/);
-    expect(sql).toMatch(/RETURNING id/);
-    expect(params).toEqual(['inv-1']);
-  });
-
-  it('RETURNING vacío (doble click, o la factura ya no es reintentable) -- lanza RetryInvoiceInFlightError', async () => {
-    const mockSqlClient = mockClient([]);
-    const repo = new SqlInvoiceRepository(mockSqlClient);
-
-    await expect(repo.takeRetryClaimWithClient(mockSqlClient, 'inv-1')).rejects.toThrow(RetryInvoiceInFlightError);
-    await expect(repo.takeRetryClaimWithClient(mockSqlClient, 'inv-1')).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
   });
 });
 

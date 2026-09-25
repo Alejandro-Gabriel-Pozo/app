@@ -393,47 +393,6 @@ export interface InvoiceRepository {
    */
   getRefundableForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
   /**
-   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 2c, §3.2/§3.16 (23/09/2026,
-   * gate `architecture-governor`, ronda 15-bis) — toma exclusiva de la
-   * factura ANTES de reintentarla: `UPDATE ... SET status = 'PENDING',
-   * pending_since = NOW() WHERE id = $1 AND (<reintentable>) RETURNING id`,
-   * una sola sentencia (a diferencia de `getOutstandingForUpdate()`/
-   * `getRefundableForUpdate()`, que separan "tomar el lock" de "leer" en dos
-   * sentencias porque necesitan una foto fresca DESPUÉS del lock -- acá no
-   * hace falta: el propio `UPDATE` sobre la fila que se está tomando es a la
-   * vez el lock y la escritura, sin subconsultas correlacionadas de por
-   * medio que puedan quedar stale). Mismo criterio de nombre que
-   * `markIssuedWithClient()`/`markIssuedFromManualResolutionWithClient()`
-   * (sufijo `WithClient`, no `ForUpdate`): este método MUTA estado
-   * (`status`), no solo lo lee bajo lock -- `ForUpdate` en este archivo está
-   * reservado para lecturas que lockean sin escribir.
-   *
-   * Reintentable = `status = 'REJECTED'` O (`status = 'FAILED_UNCERTAIN'` Y
-   * (`NOT afip_contacted` O `uncertain_cleared_at IS NOT NULL`)) -- la
-   * condición completa de §3.2, evaluada en el momento del `UPDATE`, no el
-   * `status` leído afuera de la transacción (esa lectura previa tiene su
-   * propia ventana, ver el docblock del ADR). Si `RETURNING` no da fila,
-   * lanza `RetryInvoiceInFlightError` -- puede ser un doble click (otro
-   * reintento ya ganó la toma) o que la factura ya no sea reintentable por
-   * otro motivo (`ISSUED`, `PENDING` ya asentado, `FAILED_UNCERTAIN` sin
-   * limpiar) -- las dos causas son indistinguibles a propósito, ninguna le
-   * pide al operador una acción distinta (honest-degradation, ver el
-   * docblock de la clase de error en `domain/errors.ts`).
-   *
-   * **Único caller real:** `InvoiceService.retryExisting()`, DENTRO del
-   * mismo `transactionManager.run()` que hoy envuelve solo a
-   * `assertChargesStillInvoiceable()` -- corre DESPUÉS de esa llamada, como
-   * cuarto eslabón del orden AR→órdenes→reservas→factura-propia que §3.16
-   * verificó contra los demás callers de `invoices`/`accounts_receivable`
-   * del repo (`AR-INVOICE-LOCK-ORDER-001`,
-   * `src/tests/architecture/invoice-ar-cross-lock-order.test.ts`). Recibe
-   * `client` (nunca corre fuera de una transacción explícita) y no expone
-   * una variante `take(id)` sin `client` -- a diferencia de
-   * `markIssued()`/`markIssuedWithClient()`, este método no tiene un caller
-   * fuera de transacción que lo justifique.
-   */
-  takeRetryClaimWithClient(client: SqlClient, invoiceId: string): Promise<void>;
-  /**
    * ADR común cancelar-con-NC (06/09/2026, N1 / predicado **F4**) — suma el
    * `imp_total` de las Notas de Crédito **`ISSUED`** que compensan la
    * factura `invoiceId`. Mitad SQL de F4; la mitad de doctrina es

@@ -22,7 +22,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError, InvoiceAlreadyIssuedError, InvoiceManualResolutionPreconditionError, InvoiceUncertainClearPreconditionError, AfipReconciliationPreconditionError, CreditNoteRequestNotInManualReviewError, InvoiceResolutionCaeMismatchError, InvoiceResolutionStateConflictError, InvoiceReconciliationUnexpectedStateError, InvoiceHasOpenCreditNoteRequestError, AfipReconciliationUnavailableError, AfipVoucherNotFoundError, AfipVoucherMismatchError, InvoiceNotFoundError, RetryInvoiceInFlightError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError, CreditNoteRequestInvalidTransitionError, CreditNoteRequestNotFoundError, InvoiceAlreadyIssuedError, InvoiceManualResolutionPreconditionError, InvoiceUncertainClearPreconditionError, AfipReconciliationPreconditionError, CreditNoteRequestNotInManualReviewError, InvoiceResolutionCaeMismatchError, InvoiceResolutionStateConflictError, InvoiceReconciliationUnexpectedStateError, InvoiceHasOpenCreditNoteRequestError, AfipReconciliationUnavailableError, AfipVoucherNotFoundError, AfipVoucherMismatchError, InvoiceNotFoundError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO, DOC_TIPO_CONSUMIDOR_FINAL } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -59,25 +59,6 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
   async getOutstandingForUpdate(): Promise<number> { return 0; }
   async getRefundableForUpdate(): Promise<number> { return 0; }
-  /**
-   * ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.2/§3.16 -- espeja el
-   * predicado real del `UPDATE ... RETURNING` (misma condición exacta que
-   * `sql.invoice.repository.ts::takeRetryClaimWithClient()`): reintentable
-   * SOLO si `REJECTED`, o `FAILED_UNCERTAIN` con `NOT afipContacted` o
-   * `uncertainClearedAt` poblado. `PENDING`/`ISSUED`/`FAILED_UNCERTAIN` sin
-   * limpiar no matchean ninguna rama -- mismo "sin fila" que el SQL real,
-   * mapeado acá a `RetryInvoiceInFlightError` en vez de un `rows[0]`
-   * ausente (el fake no tiene filas, solo el mapa en memoria).
-   */
-  async takeRetryClaimWithClient(_client: SqlClient, invoiceId: string): Promise<void> {
-    const existing = this.invoices.get(invoiceId);
-    if (!existing) throw new Error(`takeRetryClaimWithClient: factura "${invoiceId}" no existe en el fake`);
-    const reintentable =
-      existing.status === 'REJECTED' ||
-      (existing.status === 'FAILED_UNCERTAIN' && (!existing.afipContacted || existing.uncertainClearedAt !== null));
-    if (!reintentable) throw new RetryInvoiceInFlightError(invoiceId);
-    this.invoices.set(invoiceId, { ...existing, status: 'PENDING', pendingSince: new Date() });
-  }
   // ADR común cancelar-con-NC (06/09/2026, F4) -- sin caller todavía en InvoiceService.
   async getIssuedCreditNoteCompensationTotal(): Promise<number> { return 0; }
   // Bloque 2.4 (tope N5, 08/09/2026) -- SÍ tiene caller real (buildCreditNote()).
@@ -3014,94 +2995,6 @@ describe('InvoiceService', () => {
 
       expect(invoice.status).toBe('ISSUED');
       expect(createNextVoucher).toHaveBeenCalledOnce();
-    });
-
-    describe('ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 2c, §3.2/§3.16 -- toma exclusiva de retryExisting(), plegada dentro de la transacción de assertChargesStillInvoiceable()', () => {
-      it('la toma exclusiva corre DESPUÉS del lock de AR, en la MISMA transacción (orden AR→factura, congelado por AR-INVOICE-LOCK-ORDER-001)', async () => {
-        seedRetriableInvoice();
-        arRepo.rows.set('ar-1', makeArRow());
-        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(9));
-        const service = buildService({
-          tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
-          client: fakeArcaClient({ createNextVoucher }),
-        });
-
-        // Complementa (no reemplaza) la cerca de arquitectura
-        // `invoice-ar-cross-lock-order.test.ts` (AR-INVOICE-LOCK-ORDER-001):
-        // esa cerca congela el ORDEN TEXTUAL de los dos `await`; este test
-        // prueba, a nivel de comportamiento del fake, que cuando la toma
-        // exclusiva corre, el lock de AR YA ocurrió -- no solo que el texto
-        // esté en el orden correcto. `chargeTxs.length === 1` acá (un solo
-        // cargo), así que assertChargesStillInvoiceable() pasa por
-        // getByFinancialTransactionIdWithLock() (rama single-lock), no por
-        // getByIdWithLock() (rama loop, la única que alimenta `lockCalls`)
-        // -- se espía directo el método real en vez de leer `lockCalls`.
-        const callOrder: string[] = [];
-        const originalArLock = arRepo.getByFinancialTransactionIdWithLock.bind(arRepo);
-        vi.spyOn(arRepo, 'getByFinancialTransactionIdWithLock').mockImplementation(async (client, ftId) => {
-          callOrder.push('AR_LOCK');
-          return originalArLock(client, ftId);
-        });
-        const originalTake = invoiceRepo.takeRetryClaimWithClient.bind(invoiceRepo);
-        const takeSpy = vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient').mockImplementation(async (client, id) => {
-          callOrder.push('INVOICE_CLAIM');
-          return originalTake(client, id);
-        });
-
-        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
-
-        expect(invoice.status).toBe('ISSUED');
-        expect(takeSpy).toHaveBeenCalledTimes(1);
-        expect(takeSpy).toHaveBeenCalledWith(expect.anything(), 'inv-retry');
-        // El lock de AR corrió ANTES que la toma exclusiva -- prueba el
-        // orden AR→factura, no solo que las dos cosas hayan pasado.
-        expect(callOrder).toEqual(['AR_LOCK', 'INVOICE_CLAIM']);
-      });
-
-      it('factura ya PENDING (doble click / reintento ya en curso) -- takeRetryClaimWithClient() no devuelve fila, retryExisting() rechaza con RetryInvoiceInFlightError SIN llamar a AFIP', async () => {
-        // §3.2: un PENDING "ya asentado" no matchea ninguna rama del WHERE
-        // de la toma exclusiva (ni REJECTED ni FAILED_UNCERTAIN) -- mismo
-        // mecanismo que protege contra dos retryExisting() concurrentes
-        // sobre la misma fila REJECTED/FAILED_UNCERTAIN (el segundo en
-        // llegar encuentra la fila que el primero ya dejó PENDING). Acá se
-        // simula el caso más simple: la fila YA estaba PENDING cuando este
-        // retryExisting() arrancó (ninguno de los dos guards de status del
-        // principio del método la intercepta -- solo miran ISSUED/
-        // FAILED_UNCERTAIN-sin-limpiar).
-        seedRetriableInvoice({ status: 'PENDING', afipContacted: false, pendingSince: new Date() });
-        arRepo.rows.set('ar-1', makeArRow());
-        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(9));
-        const service = buildService({
-          tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
-          client: fakeArcaClient({ createNextVoucher }),
-        });
-
-        await expect(
-          service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
-        ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
-        await expect(
-          service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
-        ).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
-        expect(createNextVoucher).not.toHaveBeenCalled();
-        // La fila sigue PENDING -- la toma exclusiva no la tocó (RETURNING
-        // vacío, ningún UPDATE aplicado).
-        expect(invoiceRepo.invoices.get('inv-retry')?.status).toBe('PENDING');
-      });
-
-      it('alcance de este bloque: un reintento de NC pura (REFUND, sin CHARGE en el lote) NO pasa por la toma exclusiva (Bloque 5, §3.11, fuera de alcance acá)', async () => {
-        seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
-        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
-        const service = buildService({
-          tx: makeTx({ id: 'ft-1', type: 'REFUND' }),
-          client: fakeArcaClient({ createNextVoucher }),
-        });
-        const takeSpy = vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient');
-
-        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
-
-        expect(invoice.status).toBe('ISSUED');
-        expect(takeSpy).not.toHaveBeenCalled();
-      });
     });
 
     describe('WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001 (23/09/2026, gate `architecture-governor`, ronda 2, docs/pendientes-2026-09-12.md) -- retryExisting() re-chequea vínculos vivos por el OTRO camino de emisión (camino individual)', () => {
