@@ -17,52 +17,63 @@ const resource = new BookableResource('room-1', 'Habitación 1', 50, 'cat-1', {
   shape: 'RECTANGLE', width: 100, height: 100, positionX: 0, positionY: 0, rotationDegrees: 0,
 }, 2);
 
-class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
+/**
+ * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026, gate
+ * `architecture-governor`) — `lockByIds` ahora es parte del tipo que exige
+ * `MaintenanceWindowService` (ver ese archivo) — implementado acá de
+ * verdad (no un no-op) porque el `callOrder` compartido con
+ * `FakeReservationRepository`/el spy de `saveWithClient` de la ventana
+ * necesita registrar CUÁNDO ocurre el lock del recurso relativo a las
+ * demás llamadas, mismo criterio que `STALE-SAVE-001` ya usó para
+ * `FakeReservationRepository`.
+ */
+class FakeResourceRepository implements Pick<ResourceRepository, 'getById' | 'lockByIds'> {
+  lockedCalls: { client: SqlClient; ids: string[] }[] = [];
+  /** `callOrder` compartido -- inyectado por el test en `beforeEach()` (mismo array que `reservationRepo.callOrder`). */
+  callOrder: string[] = [];
+
   async getById(id: string) {
     return id === 'missing' ? undefined : resource;
+  }
+
+  async lockByIds(client: SqlClient, ids: string[]): Promise<void> {
+    this.lockedCalls.push({ client, ids });
+    this.callOrder.push('resource.lockByIds');
   }
 }
 
 /**
- * D-03 (15/09/2026) — a diferencia de la versión anterior (devolvía un
- * único `conflicts` fijo para CUALQUIER rango), ahora `createWindow()`
- * llama a `getActiveForResourceInRange()` hasta dos veces con rangos
- * DISTINTOS (tramo cierto / tramo incierto) — el fake necesita
- * diferenciar por rango para poder probar los dos tramos por separado.
- * `resolver` recibe el rango pedido y decide qué devolver; default: nada.
- * `saveWithClient` solo registra la llamada (no hay estado real que
- * mutar acá — el fake de más abajo, FailingOnMarkedReservationRepository,
- * es el que necesita fallar a propósito para el test de atomicidad).
+ * D-03 (15/09/2026) — `resolver` recibe el rango pedido y decide qué
+ * devolver; default: nada. `saveWithClient` solo registra la llamada (no
+ * hay estado real que mutar acá).
  *
- * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) — el tramo cierto
- * (líneas ~107/125 de `createWindow()`, SIN TOCAR por este fix) sigue
- * leyendo por `getActiveForResourceInRange()` (SIN lock, fuera de la
- * transacción) — eso sigue registrado en `calls`. El tramo incierto
- * (`toFlag`) ahora se lee DENTRO de la transacción con
- * `getActiveForResourceInRangeWithLock()` — implementado acá de verdad
- * (ya no opcional en el tipo que exige `MaintenanceWindowService`,
- * `Required<Pick<...>>`) y registrado por separado en `lockedCalls`
- * (con el `client` recibido) y en el `callOrder` COMPARTIDO que también
- * usa el spy de `saveWithClient` de la ventana en `beforeEach()` — así
- * un test puede afirmar que el INSERT de la ventana ocurrió ANTES del
- * relock de reservas (condición (b) del gate), no solo que ambos
- * ocurrieron.
+ * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026, gate
+ * `architecture-governor`) — `getActiveForResourceInRange` (SIN lock) sale
+ * del tipo exigido por `MaintenanceWindowService` (ver ese archivo): las
+ * DOS ramas del chequeo del tramo cierto (antes sin lock, afuera de la
+ * transacción) ahora leen con `getActiveForResourceInRangeWithLock`,
+ * DENTRO de la transacción, después de `resource.lockByIds()` — igual que
+ * ya hacía el tramo incierto desde `STALE-SAVE-001`. Ya no hace falta
+ * distinguir "lectura con lock" de "lectura sin lock": TODA lectura de
+ * conflicto pasa por `lockedCalls` ahora, sea del tramo cierto o del
+ * incierto — el `resolver` sigue diferenciando por rango para poder
+ * probar los dos tramos por separado.
+ *
+ * `callOrder` es COMPARTIDO con `FakeResourceRepository` (mismo array,
+ * asignado en `beforeEach()`) y con el spy de `saveWithClient` de la
+ * ventana — así un test puede afirmar el orden completo: lock del
+ * recurso → chequeo del tramo cierto → INSERT de la ventana → relock del
+ * tramo incierto (condición (b)/(c) del gate, 4 pasos).
  */
 class FakeReservationRepository implements Required<Pick<
   ReservationRepository,
-  'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'
+  'saveWithClient' | 'getActiveForResourceInRangeWithLock'
 >> {
-  calls: { start: Date; end: Date }[] = [];
   lockedCalls: { client: SqlClient; start: Date; end: Date }[] = [];
   saved: Reservation[] = [];
   resolver: (start: Date, end: Date) => Reservation[] = () => [];
-  /** Orden compartido entre esta clase y el spy de `repo.saveWithClient` en `beforeEach()`. */
+  /** `callOrder` compartido -- inyectado por el test en `beforeEach()` (mismo array que `resourceRepo.callOrder`). */
   callOrder: string[] = [];
-
-  async getActiveForResourceInRange(_resourceId: string, start: Date, end: Date): Promise<Reservation[]> {
-    this.calls.push({ start, end });
-    return this.resolver(start, end);
-  }
 
   async getActiveForResourceInRangeWithLock(client: SqlClient, _resourceId: string, start: Date, end: Date): Promise<Reservation[]> {
     this.lockedCalls.push({ client, start, end });
@@ -121,6 +132,13 @@ describe('MaintenanceWindowService', () => {
     repo = new InMemoryMaintenanceWindowRepository();
     resourceRepo = new FakeResourceRepository();
     reservationRepo = new FakeReservationRepository();
+    // MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026) -- mismo
+    // array de `callOrder` para las dos clases (antes solo lo tenía
+    // `reservationRepo`) para poder afirmar el orden de las 4 llamadas:
+    // resource.lockByIds → reservations.getActiveForResourceInRangeWithLock
+    // (tramo cierto) → window.saveWithClient →
+    // reservations.getActiveForResourceInRangeWithLock (tramo incierto).
+    reservationRepo.callOrder = resourceRepo.callOrder;
     businessProfileRepo = new FakeBusinessProfileRepository();
     txManager = new InMemoryTransactionManager();
     service = new MaintenanceWindowService(repo, resourceRepo, reservationRepo, businessProfileRepo, txManager, FROZEN_TODAY);
@@ -128,9 +146,9 @@ describe('MaintenanceWindowService', () => {
     // MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) -- spy que preserva el
     // comportamiento real de InMemoryMaintenanceWindowRepository.saveWithClient()
     // pero además registra el `client` recibido y empuja al `callOrder`
-    // COMPARTIDO de `reservationRepo` (condición (b) del gate: el INSERT
-    // de la ventana tiene que quedar ANTES del relock de reservas en ese
-    // orden).
+    // COMPARTIDO de `reservationRepo`/`resourceRepo` (condición (b) del
+    // gate: el INSERT de la ventana tiene que quedar ANTES del relock de
+    // reservas en ese orden).
     windowSaveClient = undefined;
     const originalSaveWithClient = repo.saveWithClient.bind(repo);
     vi.spyOn(repo, 'saveWithClient').mockImplementation(async (client, window) => {
@@ -186,12 +204,15 @@ describe('MaintenanceWindowService', () => {
         }),
       ).rejects.toThrow(MaintenanceWindowConflictError);
 
-      // Un solo llamado a getActiveForResourceInRange, con el rango
+      // Un solo llamado a getActiveForResourceInRangeWithLock, con el rango
       // completo pedido -- confirma que no se partió en tramos.
-      expect(reservationRepo.calls).toHaveLength(1);
-      expect(reservationRepo.calls[0]!.start.toISOString().slice(0, 10)).toBe('2026-08-24');
+      // MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 -- antes era `calls`
+      // (sin lock); ahora el chequeo del tramo cierto también corre con
+      // lock, dentro de la transacción, así que queda en `lockedCalls`.
+      expect(reservationRepo.lockedCalls).toHaveLength(1);
+      expect(reservationRepo.lockedCalls[0]!.start.toISOString().slice(0, 10)).toBe('2026-08-24');
       // 2026-12-31 23:59:59 ART (UTC-3) = 2027-01-01T02:59:59Z.
-      expect(reservationRepo.calls[0]!.end.toISOString().slice(0, 10)).toBe('2027-01-01');
+      expect(reservationRepo.lockedCalls[0]!.end.toISOString().slice(0, 10)).toBe('2027-01-01');
     });
 
     // ------------------------------------------------------------------
@@ -248,30 +269,40 @@ describe('MaintenanceWindowService', () => {
       expect(farReservation.needsMaintenanceReview).toBe(true);
       expect(reservationRepo.saved).toContain(farReservation);
 
-      // MAINTENANCE-WINDOW-STALE-SAVE-001, condición (a) del gate -- el
-      // tramo incierto se leyó CON LOCK (getActiveForResourceInRangeWithLock,
-      // no getActiveForResourceInRange) y con el `client` TRANSACCIONAL
-      // (el mismo que recibió el INSERT de la ventana), no con un client
-      // suelto ni con el pool.
-      expect(reservationRepo.lockedCalls).toHaveLength(1);
+      // MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026) -- el
+      // recurso se lockeó primero, y AMBAS lecturas (tramo cierto vacío +
+      // tramo incierto con la reserva lejana) corrieron CON LOCK
+      // (getActiveForResourceInRangeWithLock) y con el `client`
+      // TRANSACCIONAL (el mismo que recibió el `lockByIds()` y el INSERT
+      // de la ventana), no con un client suelto ni con el pool.
+      expect(reservationRepo.lockedCalls).toHaveLength(2);
+      expect(resourceRepo.lockedCalls).toHaveLength(1);
+      expect(resourceRepo.lockedCalls[0]!.ids).toEqual(['room-1']);
       expect(reservationRepo.lockedCalls[0]!.client).toBe(windowSaveClient);
+      expect(reservationRepo.lockedCalls[1]!.client).toBe(windowSaveClient);
+      expect(resourceRepo.lockedCalls[0]!.client).toBe(windowSaveClient);
       expect(windowSaveClient).toBeDefined();
 
-      // Condición (b) del gate -- esa lectura con lock ocurrió DESPUÉS del
-      // INSERT de la ventana (orden de locks: ventana primero, relock de
-      // reservas después -- invertirlo reprodujo un deadlock real contra
-      // Postgres, ver el comentario en maintenance-window.service.ts).
+      // El primer lockedCalls es el tramo cierto (vacío en este escenario,
+      // rango [startDate, horizonEnd]); el segundo es el tramo incierto
+      // (con la reserva lejana).
+      expect(reservationRepo.lockedCalls[0]!.start.toISOString().slice(0, 10)).toBe('2026-08-24');
+      expect(reservationRepo.lockedCalls[1]!.start.getTime()).toBeGreaterThan(
+        new Date('2026-09-23T12:00:00Z').getTime(),
+      );
+
+      // Orden completo esperado (MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001,
+      // 4 pasos): lock del recurso → chequeo del tramo cierto → INSERT de
+      // la ventana → relock del tramo incierto. Invertir "ventana antes
+      // que relock de reservas" reprodujo un deadlock real contra Postgres
+      // (ver el comentario en maintenance-window.service.ts) -- ese orden
+      // relativo entre los dos últimos pasos se conserva.
       expect(reservationRepo.callOrder).toEqual([
+        'resource.lockByIds',
+        'reservations.getActiveForResourceInRangeWithLock',
         'window.saveWithClient',
         'reservations.getActiveForResourceInRangeWithLock',
       ]);
-
-      // Condición (c) del gate -- el tramo cierto (líneas ~107/125, sin
-      // tocar) sigue leyendo SIN lock: un solo `calls` (el tramo cierto),
-      // cero `lockedCalls` de más -- ya afirmado arriba -- y el rango del
-      // tramo cierto no lockeado sigue siendo el mismo de siempre.
-      expect(reservationRepo.calls).toHaveLength(1);
-      expect(reservationRepo.calls[0]!.start.toISOString().slice(0, 10)).toBe('2026-08-24');
     });
 
     it('startDate ya más allá del horizonte de entrada: todo el rango pedido es tramo incierto, nada bloquea', async () => {

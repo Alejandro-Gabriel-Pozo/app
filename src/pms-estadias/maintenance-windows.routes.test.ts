@@ -28,8 +28,16 @@ const resource = new BookableResource('room-1', 'Habitación 1', 50, 'cat-1', {
   shape: 'RECTANGLE', width: 100, height: 100, positionX: 0, positionY: 0, rotationDegrees: 0,
 }, 2);
 
-class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
+/**
+ * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026) — `lockByIds`
+ * ahora es obligatorio en el tipo que exige `MaintenanceWindowService` (ver
+ * ese archivo) — se agrega acá como no-op, mismo criterio que el resto de
+ * este fake (esta suite ejercita la capa de rutas, no el lock real; eso lo
+ * cubre `maintenance-window.service.test.ts`).
+ */
+class FakeResourceRepository implements Pick<ResourceRepository, 'getById' | 'lockByIds'> {
   async getById(id: string) { return id === 'missing' ? undefined : resource; }
+  async lockByIds(): Promise<void> {}
 }
 
 /**
@@ -38,17 +46,14 @@ class FakeResourceRepository implements Pick<ResourceRepository, 'getById'> {
  * se devuelve para CUALQUIER rango, así que solo sirve para el caso
  * "hay conflicto en el tramo cierto" que ya cubrían los tests existentes.
  *
- * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026) — `getActiveForResourceInRangeWithLock`
- * ahora es obligatorio en el tipo que exige `MaintenanceWindowService`
- * (`Required<Pick<...>>`, ver ese archivo) — se agrega acá solo para
- * compilar y mantener el mismo comportamiento simplificado que el resto
- * del fake (devuelve `conflicts` sin distinguir tramo); el detalle de
- * ORDEN/LOCK real de esa lectura lo cubre exclusivamente
- * `maintenance-window.service.test.ts`, no esta suite de rutas.
+ * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026) —
+ * `getActiveForResourceInRange` (SIN lock) sale del tipo exigido por
+ * `MaintenanceWindowService` (ver ese archivo): el chequeo del tramo
+ * cierto ahora también lee con `getActiveForResourceInRangeWithLock`, así
+ * que este fake ya no necesita implementar la variante sin lock.
  */
-class FakeReservationRepository implements Pick<ReservationRepository, 'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'> {
+class FakeReservationRepository implements Pick<ReservationRepository, 'saveWithClient' | 'getActiveForResourceInRangeWithLock'> {
   conflicts: Reservation[] = [];
-  async getActiveForResourceInRange(): Promise<Reservation[]> { return this.conflicts; }
   async getActiveForResourceInRangeWithLock(): Promise<Reservation[]> { return this.conflicts; }
   async saveWithClient(): Promise<void> {}
 }

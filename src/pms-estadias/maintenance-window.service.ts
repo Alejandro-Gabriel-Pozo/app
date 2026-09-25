@@ -49,7 +49,16 @@ export interface CreateMaintenanceWindowResult {
 export class MaintenanceWindowService {
   constructor(
     private readonly maintenanceWindowRepository: MaintenanceWindowRepository,
-    private readonly resourceRepository: Pick<ResourceRepository, 'getById'>,
+    /**
+     * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026, gate
+     * `architecture-governor`) — `lockByIds` pasa a ser parte del tipo
+     * exigido acá: `createWindow()` ahora lockea el recurso (`SELECT ...
+     * FOR UPDATE` sobre `resources`) como PRIMERA sentencia dentro de la
+     * transacción, mismo mecanismo que `ReservationService.createReservation()`/
+     * `updateReservation()` — un fake de test que no lo implemente tiene que
+     * romper la compilación, no "pasar por accidente" sin lockear nada.
+     */
+    private readonly resourceRepository: Pick<ResourceRepository, 'getById' | 'lockByIds'>,
     /**
      * MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026, gate
      * `architecture-governor`) — `getActiveForResourceInRangeWithLock` pasa
@@ -60,10 +69,19 @@ export class MaintenanceWindowService {
      * guard), pero acá el fix DEPENDE de que exista — un fake de test viejo
      * que no lo implemente tiene que romper la compilación, no "pasar por
      * accidente" leyendo el tramo incierto sin lock.
+     *
+     * MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026) —
+     * `getActiveForResourceInRange` (SIN lock) sale de este tipo: las dos
+     * ramas del chequeo del tramo cierto que antes la usaban ahora leen con
+     * `getActiveForResourceInRangeWithLock` dentro de la transacción, así
+     * que ya no queda ningún call site de la variante sin lock en este
+     * servicio. Sacarla del tipo es protección estructural — una futura
+     * vuelta a la lectura sin lock rompe la compilación en vez de colarse
+     * en silencio.
      */
     private readonly reservationRepository: Required<Pick<
       ReservationRepository,
-      'getActiveForResourceInRange' | 'saveWithClient' | 'getActiveForResourceInRangeWithLock'
+      'saveWithClient' | 'getActiveForResourceInRangeWithLock'
     >>,
     private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
     /**
@@ -111,14 +129,23 @@ export class MaintenanceWindowService {
     const rangeStart = combineDateAndTime(new Date(input.startDate), '00:00:00', profile.timezone);
     const isOpenEnded = input.endDate == null;
 
-    // MAINTENANCE-WINDOW-STALE-SAVE-001 -- esto NO se toca: sigue siendo
-    // solo aritmética de fechas + el chequeo de conflicto del tramo cierto
-    // (líneas ~107/125, MaintenanceWindowConflictError), que queda AFUERA
-    // de la transacción a propósito -- es una carrera adyacente pero
-    // DISTINTA (check-then-insert, clase A8.3), registrada aparte, no
-    // resuelta acá. Lo único que este fix cambia es CUÁNDO y CON QUÉ LOCK
-    // se lee el tramo incierto (`uncertainRange` de acá abajo) -- ver el
-    // comentario junto a `transactionManager.run()`.
+    // MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026, gate
+    // `architecture-governor`) -- hasta este fix, el chequeo de conflicto
+    // del tramo cierto (`MaintenanceWindowConflictError`) corría ACÁ, SIN
+    // LOCK y AFUERA de la transacción (check-then-insert clásico, clase
+    // A8.3): dos `createWindow()` concurrentes sobre el mismo recurso, o
+    // una creación de reserva concurrente, podían pasar el chequeo antes
+    // de que ninguna escritura hubiera comiteado todavía, y terminar con
+    // una ventana de mantenimiento y una reserva activa solapadas.
+    //
+    // Fix: acá SOLO queda la ARITMÉTICA de rangos (sin tocar Postgres) --
+    // `certainRange` (qué rango hay que chequear por conflicto, `null` si
+    // no hay tramo cierto) y `uncertainRange` (qué rango hay que releer
+    // para `needsMaintenanceReview`, sin cambios de comportamiento). El
+    // chequeo real (lectura + `throw`) se movió DENTRO de
+    // `transactionManager.run()`, DESPUÉS de lockear el recurso -- ver el
+    // comentario junto a `transactionManager.run()` más abajo.
+    let certainRange: { start: Date; end: Date } | null = null;
     let uncertainRange: { start: Date; end: Date } | null = null;
 
     if (!isOpenEnded) {
@@ -126,30 +153,20 @@ export class MaintenanceWindowService {
       // se evaluaba antes de este cambio. Sin tramo incierto: nada que
       // marcar para revisión.
       const rangeEnd = combineDateAndTime(new Date(input.endDate as string), '23:59:59', profile.timezone);
-      const conflicting = await this.reservationRepository.getActiveForResourceInRange(
-        input.resourceId, rangeStart, rangeEnd,
-      );
-      if (conflicting.length > 0) {
-        throw new MaintenanceWindowConflictError(input.resourceId, conflicting.map((r) => r.id));
-      }
+      certainRange = { start: rangeStart, end: rangeEnd };
     } else {
       // Techo práctico para la query del tramo incierto -- no hay un
       // límite de negocio real ("hasta nuevo aviso" es indefinido), pero
-      // getActiveForResourceInRange() necesita un Date concreto. Ya NO
-      // decide bloqueo (eso lo hace el horizonte de abajo), solo acota la
-      // búsqueda de reservas a marcar -- mismo valor "unbounded" práctico
-      // que usaba este método completo antes de D-03.
+      // getActiveForResourceInRangeWithLock() necesita un Date concreto. Ya
+      // NO decide bloqueo (eso lo hace el horizonte de abajo), solo acota
+      // la búsqueda de reservas a marcar -- mismo valor "unbounded"
+      // práctico que usaba este método completo antes de D-03.
       const practicalInfinity = DateTime.fromJSDate(rangeStart).plus({ years: 10 }).toJSDate();
       const horizonEnd = this.resolveHorizonEndInstant(profile);
 
       if (horizonEnd.getTime() >= rangeStart.getTime()) {
         // La ventana empieza dentro del horizonte -- hay tramo cierto real.
-        const certainConflicts = await this.reservationRepository.getActiveForResourceInRange(
-          input.resourceId, rangeStart, horizonEnd,
-        );
-        if (certainConflicts.length > 0) {
-          throw new MaintenanceWindowConflictError(input.resourceId, certainConflicts.map((r) => r.id));
-        }
+        certainRange = { start: rangeStart, end: horizonEnd };
 
         const uncertainStart = new Date(horizonEnd.getTime() + 1000);
         if (uncertainStart.getTime() <= practicalInfinity.getTime()) {
@@ -172,32 +189,56 @@ export class MaintenanceWindowService {
       createdBy: input.createdBy,
     });
 
-    // atomic-state-mutation: el INSERT de la ventana y el UPDATE de
+    // atomic-state-mutation: el lock del recurso, el chequeo de conflicto
+    // del tramo cierto, el INSERT de la ventana y el UPDATE de
     // needs_maintenance_review de cada reserva del tramo incierto son una
-    // sola operación lógica -- si cualquiera falla, ninguna queda creada.
+    // sola operación lógica -- si cualquiera falla (incluido el throw de
+    // conflicto), nada queda creado.
+    //
+    // MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001 (25/09/2026, gate
+    // `architecture-governor`) -- primera sentencia del callback:
+    // `lockByIds()` sobre el recurso (`SELECT ... FOR UPDATE` sobre
+    // `resources`), mismo mecanismo que `ReservationService.createReservation()`/
+    // `updateReservation()` usan antes de chequear disponibilidad (Bug 2,
+    // 25/08/2026, ver `resource.repository.ts::lockByIds()`). Serializa
+    // `createWindow()` contra cualquier otro escritor que TAMBIÉN lockee
+    // este recurso primero -- los 5 sitios reales:
+    // `ReservationService.createReservation()`/`updateReservation()`,
+    // `assignDeferred()` (vía sus 3 callers `completeReservation()`/
+    // `updateReservation()`/`StayService.checkIn()`) y `StayService.checkIn()`
+    // directo.
+    //
+    // El chequeo de conflicto del tramo cierto (antes AFUERA de la
+    // transacción, `MaintenanceWindowConflictError`) ahora corre ACÁ, con
+    // `getActiveForResourceInRangeWithLock()`, DESPUÉS del lock del
+    // recurso -- ya no es un check-then-insert sin protección: con el
+    // recurso lockeado, ninguna reserva nueva puede insertarse sobre este
+    // rango mientras esta transacción sigue abierta (los escritores que
+    // lockean el recurso primero -- ver los 5 sitios de arriba -- quedan
+    // esperando ESTE lock).
+    // Si hay conflicto, el `throw` desde DENTRO del callback dispara
+    // ROLLBACK limpio -- mismo mecanismo que `assertAllResourcesAvailable()`
+    // usa en `ReservationService`.
     //
     // MAINTENANCE-WINDOW-STALE-SAVE-001 (25/09/2026, gate
-    // `architecture-governor`) -- hasta este fix, el tramo incierto se leía
-    // SIN LOCK y AFUERA de esta transacción (arriba, con
-    // `getActiveForResourceInRange`), y esas entidades en memoria se
-    // mutaban (`markNeedsMaintenanceReview()`) y grababan acá con
-    // `saveWithClient()`. El hallazgo ampliado del gate: `saveWithClient()`
-    // también corre `syncLines()` (DELETE+INSERT de `reservation_lines`),
-    // así que ese snapshot viejo no solo pisaba el flag de mantenimiento --
-    // pisaba CUALQUIER cambio concurrente (reasignación de recurso,
-    // cambio de `assignment_status`/`total_price`/líneas, cancelación)
-    // comiteado entre la lectura sin lock de arriba y el commit de acá.
-    //
-    // Fix: el tramo incierto se re-lee ACÁ, DENTRO de la transacción, con
-    // `getActiveForResourceInRangeWithLock()` (SELECT ... FOR UPDATE) --
-    // pero recién DESPUÉS de `saveWithClient(client, window)`. Orden de
-    // locks CRÍTICO, no cosmético: INSERT de la ventana primero, relock de
-    // reservas después -- invertir el orden (relockear reservas antes de
-    // insertar la ventana) reprodujo un deadlock real contra Postgres,
-    // verificado por el gate (ABBA -- dos transacciones que toman los
-    // mismos dos recursos en orden opuesto). El resto del servicio ya
-    // sigue esta misma convención (ventana antes que reservas) -- este fix
-    // no la introduce, la hace explícita también acá.
+    // `architecture-governor`, fix previo -- SIN CAMBIOS acá) -- el tramo
+    // incierto se sigue releyendo DENTRO de la transacción, con
+    // `getActiveForResourceInRangeWithLock()`, recién DESPUÉS de
+    // `saveWithClient(client, window)`. Orden de locks: recurso primero
+    // (arriba), ventana después, relock de reservas del tramo incierto al
+    // final. Con el `lockByIds()` de arriba, el recurso ya queda lockeado
+    // ANTES que cualquier reserva, así que el `FOR KEY SHARE` implícito
+    // del INSERT (FK contra `resources`) cae sobre una fila que esta
+    // misma transacción ya tiene: el orden INSERT→relock ya no es el que
+    // evita el deadlock ABBA original -- se conserva por convención con
+    // el resto del servicio. El motivo por el que este fix sigue siendo
+    // necesario, incluso con el recurso lockeado, es
+    // distinto: hay escritores que mutan una reserva SIN lockear el
+    // recurso primero -- `cancelReservation`, `confirmReservation`,
+    // `confirmPriceAdjustment`, `reservation-hold-expiry.worker`, cancelar
+    // con Nota de Crédito, cambio de horario -- y el lock del recurso de
+    // arriba no serializa contra esos. Para esos, el relock del tramo
+    // incierto sigue siendo necesario, exactamente como ya estaba.
     //
     // Relock por RANGO (no por id de las `toFlag` calculadas arriba):
     // `getActiveForResourceInRangeWithLock()` re-filtra por
@@ -212,6 +253,17 @@ export class MaintenanceWindowService {
     // devuelve en silencio (decisión del dueño, ver docs/resuelto.md).
     let toFlag: Reservation[] = [];
     await this.transactionManager.run(async (client: SqlClient) => {
+      await this.resourceRepository.lockByIds(client, [input.resourceId]);
+
+      if (certainRange) {
+        const certainConflicts = await this.reservationRepository.getActiveForResourceInRangeWithLock(
+          client, input.resourceId, certainRange.start, certainRange.end,
+        );
+        if (certainConflicts.length > 0) {
+          throw new MaintenanceWindowConflictError(input.resourceId, certainConflicts.map((r) => r.id));
+        }
+      }
+
       await this.maintenanceWindowRepository.saveWithClient(client, window);
 
       if (uncertainRange) {

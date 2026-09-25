@@ -22,6 +22,96 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ## 25/09/2026
 
+- **`MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001`** (hallazgo del gate
+  `architecture-governor` al aprobar el fix de `MAINTENANCE-WINDOW-STALE-SAVE-001`
+  — carrera ADYACENTE pero DISTINTA a esa, ver la entrada de abajo) — ✅
+  **RESUELTO EN CÓDIGO, gate `architecture-governor`, introducido en este
+  mismo commit — buscar el hash con
+  `git log --oneline --grep "MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001"`.**
+  `MaintenanceWindowService.createWindow()` chequeaba el tramo CIERTO
+  (rango `[startDate, min(endDate, hoy + horizonte)]`) con
+  `getActiveForResourceInRange()` **SIN lock** y **AFUERA** de la
+  transacción, y recién si venía vacío hacía el `INSERT` de la ventana —
+  check-then-insert clásico (clase A8.3, `docs/criterios-negocio.md`). Dos
+  transacciones concurrentes (una creando una reserva sobre el recurso R,
+  otra creando una ventana de mantenimiento sobre ese mismo R y rango
+  solapado) podían pasar sus respectivos chequeos antes de que ninguna
+  hubiera comiteado nada, y terminar con una ventana activa y una reserva
+  PENDING/CONFIRMED solapadas — sin `MaintenanceWindowConflictError` (409)
+  y sin ninguna marca (el tramo cierto nunca pasa por
+  `markNeedsMaintenanceReview()`, exclusivo del tramo incierto).
+  **Fix:** `createWindow()` ahora toma el lock del RECURSO
+  (`resourceRepository.lockByIds(client, [resourceId])`, `SELECT ... FOR
+  UPDATE` sobre `resources`) como PRIMERA sentencia dentro de la
+  transacción — mismo mecanismo que
+  `ReservationService.createReservation()`/`updateReservation()` ya usan
+  antes de chequear disponibilidad (Bug 2, 25/08/2026). El chequeo del
+  tramo cierto se relee DESPUÉS de ese lock, con
+  `getActiveForResourceInRangeWithLock()`, dentro de la misma transacción,
+  y el `throw` de `MaintenanceWindowConflictError` corre DESDE DENTRO del
+  callback (dispara ROLLBACK limpio, mismo mecanismo que
+  `assertAllResourcesAvailable()`). Orden final: lock del recurso →
+  chequeo del tramo cierto → INSERT de la ventana → relock del tramo
+  incierto (`STALE-SAVE-001`, sin cambios). El relock del tramo incierto
+  se conserva íntegro — el lock del recurso solo serializa contra
+  escritores que TAMBIÉN lockean el recurso primero (`createReservation`/
+  `updateReservation`/`assignDeferred`/`StayService.checkIn`); escritores
+  que mutan una reserva sin lockear el recurso (`cancelReservation`,
+  `confirmReservation`, `confirmPriceAdjustment`,
+  `reservation-hold-expiry.worker`, cancelar con Nota de Crédito, cambio
+  de horario) siguen sin serializar contra el lock del recurso, así que el
+  relock del tramo incierto sigue siendo necesario para ellos.
+  Constructor: `resourceRepository` pasa de `Pick<..., 'getById'>` a
+  `Pick<..., 'getById' | 'lockByIds'>`; `getActiveForResourceInRange` (sin
+  lock) sale del tipo `Required<Pick<...>>` del `reservationRepository` —
+  ya no queda ningún call site de la variante sin lock en el servicio, así
+  que una futura vuelta atrás rompe la compilación en vez de colarse en
+  silencio.
+  **Verificado:**
+  - Unitario (`src/pms-estadias/maintenance-window.service.test.ts`,
+    `src/pms-estadias/maintenance-windows.routes.test.ts`) — el fake de
+    `ResourceRepository` implementa `lockByIds()` de verdad, registrando
+    en un `callOrder` COMPARTIDO con el fake de `ReservationRepository` y
+    el spy de `saveWithClient` de la ventana; asserts nuevos confirman el
+    orden de 4 pasos (`resource.lockByIds` →
+    `reservations.getActiveForResourceInRangeWithLock` tramo cierto →
+    `window.saveWithClient` →
+    `reservations.getActiveForResourceInRangeWithLock` tramo incierto) y
+    que ambas lecturas de conflicto corren con el `client` transaccional.
+  - Integración contra Postgres real
+    (`src/tests/integration/maintenance-window-certain-segment-toctou.integration.test.ts`,
+    nuevo) — dos conexiones reales: `connA` toma el lock del recurso
+    (mismo orden que `ReservationService.createReservation()`) e inserta
+    una reserva CONFIRMED dentro del tramo cierto, sin commitear;
+    `createWindow()` corre en paralelo y se confirma (con
+    `pg_blocking_pids()`, espera activa, no `setTimeout`) que se queda
+    esperando ESE lock sobre `resources`; `connA` comitea; se afirma que
+    `createWindow()` rechaza con `MaintenanceWindowConflictError` y que no
+    quedó ninguna ventana persistida. **Demostrado corriendo el test
+    contra el código previo al fix** (`git stash` de
+    `maintenance-window.service.ts` + los 2 archivos de test unitario —
+    sin tocar los cambios ajenos de `docs/` que ya estaban sin commitear
+    en el árbol, el stash fue selectivo por path; se corrió el test, y se
+    restauró con `git stash pop`): **FALLA** (`promise resolved { window:
+    ... }` en vez de rechazar — la ventana se creaba igual pese a la
+    reserva conflictiva en vuelo, evidencia directa del defecto: el
+    chequeo del tramo cierto corre sin lock y ya pasó ANTES de que
+    `createWindow()` llegue al `INSERT` de la ventana — ese `INSERT` sí
+    espera el `FOR KEY SHARE` implícito que su FK contra `resources` toma,
+    pero para entonces la decisión de "no hay conflicto" ya se tomó con
+    datos viejos). Con el fix aplicado: **PASA**. Se confirmó además que
+    `maintenance-window-stale-save.integration.test.ts` (el fix anterior)
+    sigue en verde con este cambio encima.
+  - `npx tsc --noEmit -p .`, `npm run lint -- --max-warnings 0`,
+    `npm run lint:arch`, `npx vitest run` (suite unitaria completa, 185
+    archivos / 2684 tests) y `npm run test:integration` (suite de
+    integración completa contra Postgres real, 62 archivos / 477 tests) —
+    todo verde.
+  **Documentación actualizada en el mismo cambio:** este ítem se corta de
+  `docs/pendientes-2026-09-12.md` (sección "Wave 14 — 4.3, hallazgos
+  encontrados auditando `createWindow()`") y se pega acá — no queda
+  ninguna sección "Wave 14" con ítems abiertos remanente en ese archivo.
+
 - **`MAINTENANCE-WINDOW-STALE-SAVE-001`** (hallazgo N3 del gate
   `architecture-governor`, 24/09/2026, sobre la novena ronda de
   `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` — prerrequisito de
