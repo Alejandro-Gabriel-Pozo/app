@@ -1838,40 +1838,63 @@ export class AfipReconciliationPreconditionError extends DomainError {
 }
 
 /**
- * Bloque 4 (23/09/2026, ADR `docs/diseno-invoice-retry-reverse-window-guard-
- * 2026-09-23.md` §3.7/§6, hallazgo `ISSUE-BEFORE-REVERSE-WINDOW-001`) --
- * `InvoiceService.retryExisting()` rechaza cualquier reintento contra una
- * factura que YA está `PENDING` en el momento en que se leyó `existing`
- * (guard de solo lectura, sin query nueva, corre junto a los otros dos
- * guards tempranos del método -- `ISSUED`/`FAILED_UNCERTAIN` sin limpiar).
+ * Reconciliación de Bloque 4 + Bloque 2c sobre la MISMA clase (26/09/2026,
+ * merge de `bloque-4-invoice-pending-expiry` a `main` con reaplicación de
+ * 2c/5/§3.8) -- **residuo declarado por el propio docblock de 2c cuando se
+ * implementó** ("cuando la rama de Bloque 4 se mergee, va a intentar
+ * declarar esta misma clase otra vez -- reconciliar en ese momento, nombre
+ * y código ya coinciden a propósito"). Este momento es ahora.
  *
- * Nace en este bloque, no en el Bloque 2c (la toma exclusiva de
- * `pending_since`, todavía sin implementar) -- cuando 2c exista, su propio
- * `UPDATE ... RETURNING` sin fila REUSA este mismo error sin redefinirlo
- * (§3.7 del ADR): las dos ventanas que cada uno cierra son DISTINTAS (este
- * guard ve un `PENDING` YA asentado al momento de leer `existing`; 2c cierra
- * la carrera de dos `retryExisting()` concurrentes sobre una fila
- * `REJECTED`/`FAILED_UNCERTAIN` limpiada que los dos leen como reintentable),
- * pero el desenlace observable para el caller es el MISMO 409 en los dos
- * casos -- "hay un intento en vuelo, esperá a que se resuelva o venza".
+ * Dos guards DISTINTOS de `InvoiceService.retryExisting()` lanzan esta MISMA
+ * clase, con el MISMO código (`RETRY_INVOICE_IN_FLIGHT`, 409):
+ *
+ * 1. **Bloque 4** (§3.7/§6, `ISSUE-BEFORE-REVERSE-WINDOW-001`) -- guard de
+ *    solo lectura, sin query nueva, al principio del método: rechaza
+ *    cualquier reintento contra una factura que YA está `PENDING` en el
+ *    momento en que se leyó `existing`. Cierra la ventana ANTES de abrir
+ *    ninguna transacción -- corta temprano, evita el viaje a Postgres.
+ * 2. **Bloque 2c** (§3.2/§3.16, misma ADR) -- lanzado cuando la toma
+ *    exclusiva (`InvoiceRepository.takeRetryClaimWithClient()`) no devuelve
+ *    fila: la factura no está en ninguna de las dos ramas reintentables del
+ *    `WHERE` (`REJECTED`, o `FAILED_UNCERTAIN` con
+ *    `NOT afip_contacted OR uncertain_cleared_at IS NOT NULL`). Dos causas
+ *    reales, indistinguibles desde acá a propósito (las dos significan "no
+ *    hay nada que hacer todavía, reintentá más tarde"): (a) otro
+ *    `retryExisting()` concurrente sobre la MISMA fila ya ganó la toma y
+ *    todavía no terminó (el "doble click"); (b) la factura ya no es
+ *    reintentable por otro motivo que el guard de lectura de Bloque 4 no
+ *    vio (ej. pasó a `PENDING` DESPUÉS de leer `existing`, o quedó
+ *    `FAILED_UNCERTAIN` sin limpiar).
+ *
+ * **Las dos ventanas que cada guard cierra son DISTINTAS, ninguna
+ * redundante con la otra** (§3.7 del ADR): el guard de Bloque 4 ve un
+ * `PENDING` YA asentado al momento de leer `existing`, sin tomar lock; la
+ * toma exclusiva de 2c cierra la carrera de dos `retryExisting()`
+ * concurrentes sobre una fila `REJECTED`/`FAILED_UNCERTAIN` limpiada que
+ * los dos leen como reintentable. La de 2c es la PRIMERA línea real de
+ * defensa contra el doble click, con independencia de que el guard de
+ * Bloque 4 corra antes o no -- el de Bloque 4 es la optimización de cortar
+ * temprano cuando alcanza. El desenlace observable para el caller es el
+ * MISMO 409 en los dos casos.
  *
  * **409, no 422** (`AR_REVERSAL_REQUIRES_CREDIT_NOTE`-style, que sí es
  * 422): es una precondición TEMPORAL que se resuelve sola con el tiempo (el
- * `InvoicePendingExpiryWorker` del Bloque 4 vence la marca a los N minutos,
- * ver `src/config/env.ts::getInvoicePendingExpiryThresholdMs()`), no una
- * regla de negocio violada. Mismo grupo semántico que el resto de errores
- * 409 de "carrera en curso" ya listados en `error.middleware.ts`.
+ * `InvoicePendingExpiryWorker` del Bloque 4 vence la marca `PENDING` a los N
+ * minutos, ver `src/config/env.ts::getInvoicePendingExpiryThresholdMs()`;
+ * la toma exclusiva de 2c se libera cuando el intento en curso termina), no
+ * una regla de negocio violada. Mismo grupo semántico que el resto de
+ * errores 409 de "carrera en curso" ya listados en `error.middleware.ts`.
  *
  * Política confirmada por el dueño (ADR §2): siempre 409 mientras la marca
  * esté fresca, sin excepción -- no hay liberación manual antes del
  * vencimiento automático del worker (a propósito: un operador liberando la
  * marca mientras la llamada a AFIP sigue realmente en curso reabriría la
- * ventana retry-vs-reverse que este bloque entero viene a cerrar).
+ * ventana retry-vs-reverse que este ADR entero viene a cerrar).
  */
 export class RetryInvoiceInFlightError extends DomainError {
   constructor(public readonly invoiceId: string) {
     super(
-      `La factura "${invoiceId}" ya tiene un intento de emisión en vuelo (PENDING) -- ` +
+      `La factura "${invoiceId}" ya tiene un intento de emisión en vuelo, o un reintento concurrente ya está en curso sobre ella -- ` +
       `esperá a que se resuelva o a que el vencimiento automático la libere antes de reintentar.`,
       'RETRY_INVOICE_IN_FLIGHT',
     );

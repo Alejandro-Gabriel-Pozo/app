@@ -113,7 +113,7 @@ import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 import { SqlCreditNoteRequestRepository } from '../../facturacion/sql.credit-note-request.repository.js';
 
-import { AccountsReceivableService } from '../../clientes-finanzas/accounts-receivable.service.js';
+import { AccountsReceivableService, ArReversalRequiresCreditNoteError } from '../../clientes-finanzas/accounts-receivable.service.js';
 import type { AccountReceivable } from '../../clientes-finanzas/accounts-receivable.repository.js';
 import { canonicalAccountsReceivableLockOrder } from '../../clientes-finanzas/payment-application.js';
 import { InvoiceService } from '../../facturacion/invoice.service.js';
@@ -476,8 +476,29 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
   // posibles es incorrecto, así que no hace falta forzar el orden real
   // para cerrar este ítem, solo demostrar que CADA orden por separado se
   // comporta como el diseño promete).
+  //
+  // **CORRECCIÓN 23/09/2026 (Bloque 2c, ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`
+  // §3.2/§3.16, gate `architecture-governor` -- encontrado al implementar
+  // 2c, no al diseñarlo): el "residuo aceptado por §2.1" que el sub-test
+  // "orden β" de acá abajo documentaba (los dos terminan con éxito) queda
+  // CERRADO por Bloque 2c, no aceptado más.** Antes de 2c,
+  // `retryExisting()` no tocaba la fila `invoices` hasta `markIssued()`
+  // (después de hablar con AFIP) -- así que mientras el guard
+  // (`assertChargesStillInvoiceable()`) sostenía el lock de AR, la factura
+  // seguía viéndose `REJECTED` para cualquier lector externo, incluido el
+  // guard 8-bis de `reverseTransfer()`. Desde 2c, la toma exclusiva
+  // (`takeRetryClaimWithClient()`) corre DENTRO de esa MISMA transacción,
+  // así que para cuando el guard SUELTA el lock de AR (commit), la factura
+  // YA es `PENDING` -- exactamente el estado que el guard 8-bis de
+  // `reverseTransfer()` trata como "comprobante fiscal vinculado" y
+  // rechaza. El sub-test de acá abajo se actualiza para reflejar el cierre
+  // real: `reverseTransfer()` ahora rechaza con
+  // `ArReversalRequiresCreditNoteError`, la AR NUNCA queda `REVERTIDO`, y
+  // el retry sigue de largo y emite normal (nadie le devuelve el error a
+  // ÉL). Es exactamente la ventana que el ADR entero existe para cerrar --
+  // no una coincidencia de este test puntual.
   // -------------------------------------------------------------------
-  it('retry consolidado, orden β -- el guard de retry gana el lock de AR primero, lo suelta, y reverseTransfer() revierte la AR mientras el retry todavía habla con AFIP: los dos terminan con éxito (residuo aceptado por §2.1 del diseño, no un bug -- antes NUNCA se forzaba este orden)', async () => {
+  it('retry consolidado, orden β -- el guard de retry gana el lock de AR primero y toma la marca "en vuelo" (Bloque 2c) ANTES de soltarlo: reverseTransfer() ve la factura PENDING y rechaza, la AR nunca queda REVERTIDO (cierra el residuo que §2.1 aceptaba antes de 2c)', async () => {
     const pgTxManager = new PgTransactionManager(pool);
     const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
     const rejectFirstCall = { count: 1 };
@@ -534,26 +555,26 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
 
       await holder.query('ROLLBACK');
 
-      // El retry entra a `createNextVoucher()` recién DESPUÉS de que su
-      // propia transacción de guard (`assertChargesStillInvoiceable()`)
-      // ya soltó el lock de AR (`transactionManager.run()` se espera
-      // completo, commit incluido, antes de llamar `issue()` --
-      // `invoice.service.ts::retryExisting()`, cita por nombre). En este
-      // punto `reverseTransfer()` ya pudo tomar el lock y correr su
-      // lectura 8-bis -- pero la compuerta mantiene al retry pausado ANTES
-      // de escribir `markIssued()`, así que esa lectura ve la factura
-      // todavía `REJECTED`, sin depender de qué tan rápido respondería un
-      // AFIP real.
+      // Bloque 2c (23/09/2026, §3.2/§3.16) -- a diferencia de antes de 2c,
+      // `reverseTransfer()` YA NO depende de que el retry llegue a
+      // `createNextVoucher()`: en cuanto la transacción de guard del
+      // retry (`assertChargesStillInvoiceable()` + `takeRetryClaimWithClient()`,
+      // MISMA transacción desde 2c) commitea y suelta el lock de AR, la
+      // factura YA es `PENDING` -- `reverseTransfer()` toma el lock de AR
+      // que queda libre, corre su lectura 8-bis, ve `PENDING`, y rechaza
+      // DE INMEDIATO con `ArReversalRequiresCreditNoteError`, sin esperar
+      // a AFIP. La compuerta (`raceGate`) sigue usándose para observar,
+      // de forma determinística, que la factura YA está `PENDING` (por la
+      // toma exclusiva) ANTES incluso de que el retry termine de hablar
+      // con AFIP -- no para sincronizar la lectura de `reverseTransfer()`
+      // contra `markIssued()` (esa ventana ya no existe: 8-bis rechaza
+      // antes de que el retry llegue tan lejos).
       //
-      // Fail-fast en vez de `await raceGate.entered` a secas (gate,
-      // ronda 3 de pre-commit, condición C1): si el retry alguna vez
-      // rechaza ANTES de llegar a `createNextVoucher()` -- por ejemplo,
-      // una regresión que reintroduce el orden equivocado -- `entered`
-      // nunca se resuelve y el test colgaba hasta el timeout de 30s, sin
-      // pasar nunca por `finally` (conexión y BD de test quedaban
-      // huérfanas, confirmado corriendo M-C antes de este fix). Se
-      // resuelve la carrera entre "llegó a AFIP" y "el retry ya terminó
-      // (de cualquier forma)" explícitamente.
+      // Fail-fast en vez de `await raceGate.entered` a secas (gate, ronda 3
+      // de pre-commit, condición C1, heredado sin cambios): si el retry
+      // alguna vez rechaza ANTES de llegar a `createNextVoucher()` --
+      // regresión de 2c, o de este mismo bloque -- `entered` nunca se
+      // resuelve y el test colgaría hasta el timeout.
       const first = await Promise.race([
         raceGate.entered.then(() => 'entered' as const),
         retryPromise.then(
@@ -567,11 +588,17 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
           'orden β: el retry terminó sin llegar a createNextVoucher() -- el orden forzado no se sostuvo.',
         );
       }
-      const reverseResult = await reversePromise;
-      expect(reverseResult).toBeTruthy(); // reverseTransfer() no lanzó
+
+      // Cierre real de la ventana (Bloque 2c): reverseTransfer() rechaza,
+      // no "no lanza" -- la AR jamás queda REVERTIDO mientras hay un
+      // comprobante en vuelo.
+      await expect(reversePromise).rejects.toBeInstanceOf(ArReversalRequiresCreditNoteError);
 
       const { rows: midRows } = await db.query<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [seededInvoiceId]);
-      expect(midRows[0]!.status).toBe('REJECTED'); // el retry todavía no marcó ISSUED en este punto
+      // PENDING, no REJECTED -- la toma exclusiva de 2c ya corrió, DENTRO
+      // de la transacción de guard, ANTES de que el retry hablara con
+      // AFIP. Es justamente lo que hizo posible que 8-bis rechazara arriba.
+      expect(midRows[0]!.status).toBe('PENDING');
 
       raceGate.release();
       const retryResult = await retryPromise;
@@ -585,8 +612,11 @@ describe.skipIf(skipIfNoDb)('Wave 13, Zona 2 (21/09/2026, gate `architecture-gov
       holder.release();
     }
 
+    // Bloque 2c: la AR NUNCA queda REVERTIDO -- reverseTransfer() rechazó
+    // antes de tocarla. Sigue PENDIENTE_FACTURAR, el estado que
+    // seedTransferredScenario()/transferStayBalanceToReceivable() le dio.
     const { rows: arRows } = await db.query<{ status: string }>(`SELECT status FROM accounts_receivable WHERE id = $1`, [ar.id]);
-    expect(arRows[0]!.status).toBe('REVERTIDO');
+    expect(arRows[0]!.status).toBe('PENDIENTE_FACTURAR');
 
     const { rows: issuedRows } = await db.query<{ count: string }>(
       `SELECT COUNT(*) AS count FROM invoices WHERE customer_id = $1 AND status = 'ISSUED'`, [company.id],

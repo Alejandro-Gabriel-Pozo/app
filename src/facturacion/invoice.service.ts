@@ -1579,6 +1579,21 @@ export class InvoiceService {
    * reintento de la consolidada (que recalcula el mismo hash y entra por
    * acá) no puede seguir de largo y emitir un segundo CAE real sobre el
    * mismo cargo -- y simétricamente para el camino individual.
+   *
+   * ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 2c, §3.2/§3.16 (23/09/2026,
+   * gate `architecture-governor`, ronda 15-bis) -- DESPUÉS de
+   * `assertChargesStillInvoiceable()` (cuando `chargeTxs.length > 0`), este
+   * método toma la marca "en vuelo" (`invoiceRepo.takeRetryClaimWithClient()`)
+   * sobre la PROPIA fila, en la MISMA transacción: es la única protección
+   * real contra dos `retryExisting()` concurrentes sobre la misma factura
+   * (doble click) -- el `UPDATE ... RETURNING` condicionado es a la vez el
+   * lock y la toma, así que el segundo en llegar no encuentra fila para
+   * actualizar y se rechaza con `RetryInvoiceInFlightError` (409) sin haber
+   * llamado a AFIP. **Alcance de este bloque: solo el camino `CHARGE`** (el
+   * `if (chargeTxs.length > 0)` de abajo) -- un reintento de NC pura
+   * (`REFUND`/`ADJUSTMENT`, sin ningún `CHARGE` en el lote) todavía NO pasa
+   * por la toma exclusiva; extenderla ahí es Bloque 5 (§3.11, "depende de
+   * 2c, extiende el mismo mecanismo"), fuera de alcance de este cambio.
    */
   private async retryExisting(existing: Invoice): Promise<Invoice> {
     if (existing.status === 'ISSUED') return existing;
@@ -1613,7 +1628,21 @@ export class InvoiceService {
       // ciertos, pero solo uno describe la causa real de por qué este
       // reintento no puede proceder).
       await this.assertNoOtherLiveInvoiceForCharges(existing, chargeTxs);
-      await this.transactionManager.run((client) => this.assertChargesStillInvoiceable(client, chargeTxs));
+      // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.2/§3.16 (23/09/2026,
+      // gate `architecture-governor`, ronda 15-bis) -- la toma exclusiva de
+      // la factura (`takeRetryClaimWithClient()`) corre DENTRO de la MISMA
+      // transacción que `assertChargesStillInvoiceable()`, DESPUÉS de ella:
+      // cuarto eslabón del orden AR→órdenes→reservas (sin cambios, ya
+      // aprobado e implementado dentro de assertChargesStillInvoiceable())
+      // →factura-propia. Nunca "adyacente" en una transacción separada --
+      // ver §3.2 del ADR para por qué eso dejaría una ventana contra
+      // `reverseTransfer()`. El orden de los dos `await` de abajo es
+      // load-bearing y está congelado por
+      // `AR-INVOICE-LOCK-ORDER-001` (`src/tests/architecture/invoice-ar-cross-lock-order.test.ts`).
+      await this.transactionManager.run(async (client) => {
+        await this.assertChargesStillInvoiceable(client, chargeTxs);
+        await this.invoiceRepo.takeRetryClaimWithClient(client, existing.id);
+      });
     }
 
     const credentials = await this.afipCredentialsRepo.getDecrypted();
