@@ -1886,9 +1886,10 @@ anteriores.
      después (con LSN real de Neon). Detalle
      completo (LSN, hora, deploy ID): `docs/conocimiento/runbook-deploy-render.md`,
      sección "Split de push del ADR reintento-vs-reversa". Sigue acá (no se
-     corta a `resuelto.md`) porque el resto de este bullet -- ítem 2 -- no
-     está verificado todavía; cortar solo la mitad ya confirmada es un
-     bloque de docs aparte, no incluido en este cambio.
+     corta a `resuelto.md`) porque el resto de este bullet -- ítem 3 -- no
+     está verificado todavía (ítem 2, B-1, ya corrió -- ver más abajo);
+     cortar solo la mitad ya confirmada es un bloque de docs aparte, no
+     incluido en este cambio.
   2. **Antes de DESPLEGAR el Bloque 4 completo (guard de solo lectura de
      `retryExisting()` + worker, los dos juntos -- B-1, ronda 7 del ADR;
      no solo antes de activar el worker dentro de él, §4 del ADR):**
@@ -1898,12 +1899,52 @@ anteriores.
      no convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron
      realmente coladas (el worker deriva ese volumen a las salidas
      manuales del Bloque 3 en cuanto arranca).
-     **Sigue sin correr (26/09/2026) -- el código de Bloque 4 ya está
-     mergeado a `main` local y 2c/5/§3.8 reaplicados encima (ver
-     `docs/resuelto.md`, `## 26/09/2026`, y el ADR, Historial de revisión,
-     ronda 21), pero esta consulta sigue siendo la condición B-1 antes de
-     desplegar ESE código -- código listo y gate-aprobado no es lo mismo
-     que la consulta corrida.**
+     **Corrida 26/09/2026, contra los dos tenants reales** (autorización
+     permanente del dueño para SQL de solo lectura contra Neon, esta
+     sesión). Query ejecutada (CHARGE vs. NC se toma de
+     `financial_transactions.type`; las facturas consolidadas --
+     `invoices.financial_transaction_id IS NULL`, vínculo real vía
+     `invoice_charges` -- van en su propio grupo con `LEFT JOIN`, porque
+     el worker las alcanza igual: `sql.invoice.repository.ts` polea
+     `WHERE status = 'PENDING' AND pending_since < ...` sin ningún join.
+     Una primera corrida con `INNER JOIN` (que dejaba a las consolidadas
+     fuera del conteo) fue corregida en la ronda 1 del gate antes de
+     registrarse acá):
+     ```sql
+     SELECT
+       CASE WHEN i.financial_transaction_id IS NULL THEN 'CONSOLIDADA'
+            WHEN ft.type = 'CHARGE' THEN 'CHARGE' ELSE 'NC' END AS tipo,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE i.status = 'PENDING') AS pending,
+       COUNT(*) FILTER (WHERE i.status = 'FAILED_UNCERTAIN' AND i.afip_contacted AND i.uncertain_cleared_at IS NULL) AS failed_uncertain_sin_limpiar,
+       now() AS medido_en
+     FROM invoices i
+     LEFT JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+     GROUP BY 1 ORDER BY 1;
+     ```
+     Demo (`br-snowy-tree-ax5wmq70`), medido `2026-09-26T18:08:41.815Z`:
+     una sola fila, CHARGE -- `total: 13`, 0 `PENDING`, 0
+     `FAILED_UNCERTAIN` sin limpiar; sin NC ni consolidadas. `total`
+     reconciliado contra `SELECT count(*) FROM invoices` (también 13,
+     corrida aparte en la misma sesión, sin timestamp propio) -- ninguna
+     fila se pierde en el join. Consistente con lo registrado en §6 de
+     `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`:
+     13 facturas, todas `ISSUED`, 0 `FAILED_UNCERTAIN` (~13:42 UTC del
+     mismo día). Hotel los Álamos
+     (`br-square-leaf-axzvu903`): la query B-1 devolvió `[]` (sin filas);
+     query de control `count(*)` sobre `invoices` y `financial_transactions`
+     medida `2026-09-26T18:01:48.046Z` da `0` en las dos tablas -- tenant
+     sin ninguna factura todavía, cubre por construcción cualquier
+     variante (CHARGE/NC/consolidada). **Luz verde para B-1**: a los
+     timestamps citados, ningún tenant real tenía una `PENDING` ni una
+     `FAILED_UNCERTAIN` sin limpiar (incluidas consolidadas) -- a esa
+     hora, desplegar el guard de solo lectura + el worker juntos no tenía
+     nada que convertir. Es una foto con timestamp, no una garantía para
+     un deploy posterior -- re-correr esta query con timestamp fresco
+     justo antes de ejecutar el push (mismo criterio que el hotfix D4+§3.5
+     aplicó en su propio §6). No reemplaza el punto 3 de acá abajo
+     (verificación post-deploy), que sigue sin poder correr hasta que se
+     autorice y ejecute el push.
   3. **Verificación post-deploy del Bloque 4, una vez que la consulta del
      punto 2 dé luz verde y se autorice el push (nueva, 26/09/2026 --
      no existía como punto separado hasta este bloque de docs):**
@@ -1918,17 +1959,17 @@ anteriores.
      que el build pasó. Sin esto, "el deploy quedó `live`" no distingue
      entre "el worker corre" y "el worker nunca se instanció" (un error
      de wiring silencioso en `outbox.registry.ts` no tumba el build).
-  **De las 3 verificaciones listadas acá, la 1 (consistencia 0/0) ya está
-  corrida y citada arriba; las 2 y 3 (pre-flight B-1, verificación
-  post-deploy completa) siguen sin correr.** El backfill de
-  2a en sí ya fue seguro (punto 1, cerrado); el Bloque 4 (guard + worker)
-  puede implementarse y testearse sin el dato de (2), pero no
-  DESPLEGARSE sin correrla antes contra cada tenant real -- no es solo
-  el worker el que espera este dato, es el deploy completo del bloque
-  (B-1: el guard de `retryExisting()` y el worker se activan juntos, en
-  el mismo deploy, para no dejar una `PENDING` colgada sin ninguna
-  salida en la ventana intermedia). El punto 3 no puede correr antes de
-  que (2) dé luz verde y se autorice y ejecute el push.
+  **De las 3 verificaciones listadas acá, las 1 y 2 (consistencia 0/0,
+  pre-flight B-1) ya están corridas y citadas arriba; la 3 (verificación
+  post-deploy completa) sigue sin correr -- depende de que se autorice y
+  ejecute el push.** El backfill de 2a en sí ya fue seguro (punto 1,
+  cerrado); B-1 (punto 2) dio luz verde el 26/09/2026 contra los dos
+  tenants reales -- la medición es una foto con timestamp, no una
+  garantía para un deploy posterior (re-correr con timestamp fresco justo
+  antes del push, mismo criterio que el hotfix D4+§3.5 en su propio §6);
+  con esa salvedad, el Bloque 4 (guard + worker) queda habilitado para
+  desplegarse en cuanto se autorice el push. El punto 3 no puede correr
+  antes de que se autorice y ejecute ese push.
   **Decisión de orden de deploy -- YA TOMADA por el dueño, registrada
   como decisión cerrada, no como pregunta abierta (26/09/2026).**
   **D4 (`548c432`) no forma parte de este remanente (se pusheó antes, ver
@@ -1942,10 +1983,14 @@ anteriores.
   reaplicación de 2c/5/§3.8, y lo que se le sume encima antes de
   pushear) -- no se enumera acá para no tener que mantener la lista
   sincronizada; confirmar con `git log origin/main..<punta> --oneline`
-  en el momento. Esto NO reemplaza los puntos 2/3 de acá arriba (la
-  condición B-1 sigue aplicando igual, corrida una sola vez, antes de
-  ESE deploy único) -- solo fija que Bloque 4 no se despliega como paso
-  aislado separado del resto. Detalle: ADR
+  en el momento. Esto NO reemplaza los puntos 2/3 de acá arriba -- la
+  condición B-1 sigue aplicando igual, una sola vez PARA ESE DEPLOY ÚNICO
+  (no una vez por paso del split original que ya no existe), pero esa
+  única corrida que cuenta es la fresca, con timestamp tomado justo antes
+  de ejecutar ese push -- la corrida de las 18:08 del 26/09/2026 ya
+  citada en el punto 2 confirma que hoy no hay nada bloqueante, no
+  reemplaza esa re-corrida obligatoria -- solo fija que Bloque 4 no se
+  despliega como paso aislado separado del resto. Detalle: ADR
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
   Historial de revisión, ronda 21. Contexto de por qué Bloque 2c/5
   habían quedado revertidos hasta este punto (no la decisión de orden de
