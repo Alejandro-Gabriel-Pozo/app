@@ -1954,6 +1954,39 @@ anteriores.
   introduce `getOtherLiveInvoiceLinksForCharges()`, y registrar el
   resultado acá antes de cortar este ítem a `docs/resuelto.md`.
 
+- **`credit_note_request` Bloque 6 -- worker de SLA/escalamiento, código
+  completo y gate-aprobado (`architecture-governor`, 26/09/2026, 2
+  bloqueantes chicos aplicados en el mismo cambio), sin correr contra
+  Postgres real ni contra el envío de mail real** --
+  `src/workers/credit-note-review-sla.worker.ts` +
+  `listEligibleForSlaAlert()`/`markSlaAlertSent()` en
+  `sql.credit-note-request.repository.ts`/`in-memory.credit-note-request.repository.ts`.
+  El estado de commit/push se responde con `git log`/`git status` en el
+  momento, no acá. `tsc --noEmit`, `lint`, `lint:arch` y la suite
+  unitaria completa (2689/2689, incluye 20 tests de este bloque -- 12 del
+  worker con `InMemoryCreditNoteRequestRepository` + 4 de cada
+  repositorio, sql e in-memory, para los dos métodos nuevos) pasan --
+  eso es lo que cierra "código listo y gate-aprobado", no lo que falta
+  acá. Lo que NO se corrió: (a) `listEligibleForSlaAlert()`/`markSlaAlertSent()`
+  contra Postgres real -- el mock de
+  `sql.credit-note-request.repository.test.ts` no ejercita el índice
+  parcial `idx_credit_note_request_state` ni el compare-and-swap de
+  `markSlaAlertSent()` bajo dos conexiones concurrentes de verdad; (b) el
+  worker arrancando de punta a punta dentro de `ensureTenantWorker()`
+  contra un tenant real, con una fila `EN_REVISION_MANUAL` sembrada a
+  mano cruzando las 48hs; (c) un envío de mail real vía `EmailSender`
+  (hoy solo se probó con `emailSender` fake en el unit test). Acción
+  puntual que cierra cada una: (a)/(b) un test de integración nuevo
+  (mismo patrón que `credit-note-request-repository.integration.test.ts`,
+  Bloque 1) contra `TEST_DATABASE_URL`; (c) correr el worker contra un
+  tenant con `RESEND_API_KEY` configurada y confirmar la llegada real del
+  mail, o aceptar que `NoopEmailSender` (sin credenciales) es la
+  cobertura suficiente para este bloque y dejarlo anotado como decisión,
+  no como hueco. Se separa este residuo del bloque de código (que, al
+  estar gate-aprobado, puede pasar a `resuelto.md`) siguiendo el criterio
+  ya declarado en el `CLAUDE.md` de `app-main` ("un ítem con residuo no
+  es cerrado -- dividí el residuo, no lo entierres").
+
 ---
 
 ## Deuda de tests declarada por el gate (no bloqueante, no es verificación de entorno)
@@ -6520,3 +6553,55 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
   "Auto Assign All", `checkIn()`) reintroduce un doble conteo por una vía
   distinta — no alcanza con re-verificar solo el caso
   `CONFIRMED → COMPLETED` sin asignación diferida de por medio.
+
+## `credit_note_request` Bloque 6 — 3 hallazgos del gate (`architecture-governor`, 26/09/2026)
+
+- **Decisión de negocio pendiente — `created_at` no mide "tiempo en
+  revisión" tal como el dueño formuló el SLA** (`src/workers/credit-note-review-sla.worker.ts:58`,
+  docblock de `CREDIT_NOTE_REVIEW_SLA_MS`; método usado en
+  `src/facturacion/credit-note-request.repository.ts:90`,
+  `listEligibleForSlaAlert()`). Una fila de `credit_note_request` nace
+  `PENDIENTE`, y si `issue()` cae en la rama `afipContacted: false` (no se
+  pudo consultar `FECompUltimoAutorizado`) queda en `PENDIENTE` sin
+  transición hasta un `retryExisting()` posterior que recién ahí la mueve
+  a `EN_REVISION_MANUAL` — posiblemente días después. Con `created_at`
+  como proxy de "hace cuánto está en revisión" (que es lo que
+  `listEligibleForSlaAlert()` usa hoy), el aviso de SLA puede salir ANTES
+  de las 48hs reales de estar en `EN_REVISION_MANUAL` (nunca después, así
+  que no es peligroso, pero no cumple la decisión A del dueño tal como la
+  formuló: "48 horas desde que la fila entra a `EN_REVISION_MANUAL`").
+  **Pregunta para el dueño, sin resolver acá:** ¿acepta el aviso
+  temprano tal cual, o hace falta una columna `entered_review_at` nueva
+  (bump de schema, bloque aparte)? No se toma la decisión en este ítem —
+  solo se registra.
+
+- **Defecto latente ya existente (no de este bloque, encontrado en el
+  camino) — `ReservationHoldExpiryWorker.poll()` sin `catch`, mismo
+  problema que BLOCKING 1 de este bloque** (`src/workers/reservation-hold-expiry.worker.ts:76-91`).
+  `poll()` tiene `try/finally` pero no `catch` — si
+  `getPendingWithExpiredDeposit()` tira (fuera del `try/catch` por fila
+  que sí envuelve `expireOne()`), la promesa rechaza sin handler y puede
+  tumbar el proceso, mismo mecanismo que `CreditNoteReviewSlaWorker` tenía
+  antes del fix de este bloque (ver `src/workers/credit-note-review-sla.worker.ts`,
+  método `handlePollError()`, que ahora sí lo tiene). **Solo registrado
+  como hallazgo — NO se corrige acá**, es de otro worker, otro alcance.
+  Acción puntual que lo cierra: agregar un `catch` a `poll()` de
+  `ReservationHoldExpiryWorker` que loguee, mismo patrón que
+  `OutboxWorker.handlePollError()`/`CreditNoteReviewSlaWorker.handlePollError()`,
+  + un test que reproduzca el rechazo sin handler.
+
+- **Decisión de negocio pendiente — ¿un envío de mail fallido debería
+  dejar la fila SIN marcar, para reintentar en el próximo poll?**
+  (`src/workers/credit-note-review-sla.worker.ts`, rama que llama a
+  `markSlaAlertSent()` después de resolver destinatarios). Hoy, si
+  `getManagementEmails()` responde con al menos un destinatario pero el
+  envío del mail en sí falla (`EmailSender` caído), la fila IGUAL queda
+  marcada — la decisión C del dueño ("único, no reiterado") se aplicó
+  también a este caso, no solo al de "sin destinatarios". En la práctica
+  este tramo no puede tirar (el `send()` del `EmailSender` de producción
+  no propaga), así que el escenario es hipotético hoy. **Pregunta para el
+  dueño, sin resolver acá:** ¿el aviso único aplica también si el envío en
+  sí falla (mantener como está), o en ese caso puntual conviene reintentar
+  en el próximo poll (dejar la fila sin marcar solo cuando el propio
+  `send()` tira, no cuando faltan destinatarios)? No se toma la decisión
+  en este ítem — solo se registra.

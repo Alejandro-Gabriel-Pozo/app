@@ -113,6 +113,23 @@ export class InMemoryCreditNoteRequestRepository implements CreditNoteRequestRep
     return results;
   }
 
+  async listEligibleForSlaAlert(olderThan: Date): Promise<CreditNoteRequest[]> {
+    return [...this.requests.values()]
+      .filter((r) => r.state === 'EN_REVISION_MANUAL' && r.createdAt < olderThan && r.slaAlertSentAt === null)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async markSlaAlertSent(id: string): Promise<boolean> {
+    const current = this.requests.get(id);
+    // `state === 'EN_REVISION_MANUAL'` (26/09/2026, gate `architecture-governor`)
+    // -- mismo guard que el CAS real (`sql.credit-note-request.repository.ts`):
+    // evita reclamar una fila que pasó a otro estado entre el listado y el
+    // reclamo.
+    if (!current || current.slaAlertSentAt !== null || current.state !== 'EN_REVISION_MANUAL') return false;
+    this.requests.set(id, { ...current, slaAlertSentAt: new Date(), updatedAt: new Date() });
+    return true;
+  }
+
   /** Helper de test — carga una fila directo sin pasar por createWithClient(). */
   seed(request: CreditNoteRequest): void {
     this.requests.set(request.id, request);

@@ -8,9 +8,11 @@
  * callers, mismo primitivo idempotente (`ensureTenantWorker`). Esto garantiza
  * que cada worker lea de la base de datos correcta para cada tenant.
  *
- * Trade-off: `ensureTenantWorker` arranca DOS timers por tenant activo, no
- * uno -- `OutboxWorker` a 5 s (abajo) y `ReservationHoldExpiryWorker` a 60 s
- * (`:134-143`). Con N tenants activos son 2N timers.
+ * Trade-off: `ensureTenantWorker` arranca TRES timers por tenant activo, no
+ * uno -- `OutboxWorker` a 5 s (abajo), `ReservationHoldExpiryWorker` a 60 s
+ * y `CreditNoteReviewSlaWorker` a 15 min (Bloque 6 de credit_note_request,
+ * §6.5 bis -- SLA de 48hs no necesita la misma precisión). Con N tenants
+ * activos son 3N timers.
  * Aceptable hasta ~200 tenants (mismo techo que MAX_TENANT_POOLS).
  * Más allá, considerar un único worker que itere sobre tenants activos
  * o migrar el outbox a LISTEN/NOTIFY.
@@ -43,9 +45,12 @@ import { SqlStayRepository }                   from '../pms-estadias/stay.reposi
 import { SqlAccountsReceivableRepository }     from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
 import { getFrontendOrigin }                   from '../config/env.js';
+import { SqlCreditNoteRequestRepository }      from '../facturacion/sql.credit-note-request.repository.js';
+import { CreditNoteReviewSlaWorker }           from './credit-note-review-sla.worker.js';
 
 const workers = new Map<string, OutboxWorker>();
 const holdExpiryWorkers = new Map<string, ReservationHoldExpiryWorker>();
+const creditNoteReviewSlaWorkers = new Map<string, CreditNoteReviewSlaWorker>();
 
 // Un solo EmailSender para todo el proceso -- no es config por tenant
 // (A2.9: la cuenta de envío es infraestructura de la plataforma, ver
@@ -163,6 +168,33 @@ export function ensureTenantWorker(
   );
   holdExpiryWorker.start();
   holdExpiryWorkers.set(businessId, holdExpiryWorker);
+
+  // Bloque 6 de credit_note_request (§6.5 bis, pregunta 2) -- worker de
+  // SLA/escalamiento, mismo ciclo de vida por tenant que los dos de
+  // arriba (start() acá, stop() en stopTenantWorker/stopAllWorkers).
+  // `getManagementEmails`/`emailSender`/`frontendBase` son los mismos ya
+  // resueltos arriba para el aviso de dead-letter (B2/B, mismo grupo
+  // MANAGEMENT, pregunta B de §6.5 bis ya resuelta con ese mismo método
+  // sin generalizar). `dashboardUrl` apunta a `dashboard/facturacion`, el
+  // dominio donde §6.5 bis planea la pantalla de la bandeja -- esa pantalla
+  // YA EXISTE en appfrontend-main (confirmado por el gate `architecture-governor`,
+  // 26/09/2026), pero todavía no tiene la bandeja de revisión manual DENTRO
+  // de ella: el link del mail no da 404, cae en una pantalla real sin nada
+  // que mostrar (callejón sin salida, no un error). Mismo criterio honesto
+  // que el resto de este worker: hasta que esa bandeja se construya, la
+  // única superficie visible es la API cruda (GET /api/credit-note-requests)
+  // más los logs -- no una pantalla que un operador mire.
+  const creditNoteRequestRepo = new SqlCreditNoteRequestRepository(db);
+  const creditNoteReviewSlaWorker = new CreditNoteReviewSlaWorker({
+    businessId,
+    creditNoteRequestRepo,
+    getManagementEmails: (id) => platformRepo.getManagementEmails(id),
+    getBusinessDisplayName: async () => (await businessProfileRepo.get()).displayName,
+    emailSender,
+    dashboardUrl: `${frontendBase}/dashboard/facturacion`,
+  });
+  creditNoteReviewSlaWorker.start();
+  creditNoteReviewSlaWorkers.set(businessId, creditNoteReviewSlaWorker);
 }
 
 /**
@@ -174,6 +206,8 @@ export async function stopAllWorkers(): Promise<void> {
   workers.clear();
   await Promise.allSettled([...holdExpiryWorkers.values()].map((w) => w.stop()));
   holdExpiryWorkers.clear();
+  await Promise.allSettled([...creditNoteReviewSlaWorkers.values()].map((w) => w.stop()));
+  creditNoteReviewSlaWorkers.clear();
 }
 
 /**
@@ -193,5 +227,11 @@ export async function stopTenantWorker(businessId: string): Promise<void> {
   if (holdExpiryWorker) {
     holdExpiryWorkers.delete(businessId);
     await holdExpiryWorker.stop();
+  }
+
+  const creditNoteReviewSlaWorker = creditNoteReviewSlaWorkers.get(businessId);
+  if (creditNoteReviewSlaWorker) {
+    creditNoteReviewSlaWorkers.delete(businessId);
+    await creditNoteReviewSlaWorker.stop();
   }
 }

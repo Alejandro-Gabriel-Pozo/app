@@ -167,4 +167,34 @@ export class SqlCreditNoteRequestRepository implements CreditNoteRequestReposito
     const { rows } = await this.db.query<CreditNoteRequestRow>(sql, params);
     return rows.map(rowToEntity);
   }
+
+  async listEligibleForSlaAlert(olderThan: Date): Promise<CreditNoteRequest[]> {
+    // Cubierta por idx_credit_note_request_state (state, created_at)
+    // WHERE state = 'EN_REVISION_MANUAL' -- created_at < $2 y
+    // sla_alert_sent_at IS NULL son filtros adicionales sobre ese mismo
+    // rango, no un índice nuevo (ver comentario del índice en schema.sql).
+    const { rows } = await this.db.query<CreditNoteRequestRow>(
+      `SELECT * FROM credit_note_request
+       WHERE state = 'EN_REVISION_MANUAL' AND created_at < $1 AND sla_alert_sent_at IS NULL
+       ORDER BY created_at ASC`,
+      [olderThan],
+    );
+    return rows.map(rowToEntity);
+  }
+
+  async markSlaAlertSent(id: string): Promise<boolean> {
+    // Compare-and-swap -- WHERE sla_alert_sent_at IS NULL, no un UPDATE
+    // incondicional (ver docblock de la interfaz). rowCount === 0 significa
+    // "otra instancia ya la reclamó" (o la fila ya no está en
+    // EN_REVISION_MANUAL), no un error. `AND state = 'EN_REVISION_MANUAL'`
+    // (26/09/2026, gate `architecture-governor`) evita reclamar una fila que
+    // pasó a otro estado (p. ej. `CERRADA` vía `resolveCreditNoteRequestManually()`)
+    // entre el listado de `listEligibleForSlaAlert()` y este reclamo.
+    const { rowCount } = await this.db.query(
+      `UPDATE credit_note_request SET sla_alert_sent_at = NOW()
+       WHERE id = $1 AND sla_alert_sent_at IS NULL AND state = 'EN_REVISION_MANUAL'`,
+      [id],
+    );
+    return (rowCount ?? 0) > 0;
+  }
 }

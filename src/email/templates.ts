@@ -157,6 +157,51 @@ export function deadLetterAlertEmail(
   };
 }
 
+/**
+ * Bloque 6 del ADR común cancelar-con-NC (§6.5 bis, pregunta 2, RESUELTA
+ * 15/09/2026: SLA 48hs, destinatario MANAGEMENT, escalamiento único no
+ * reiterado) -- aviso a los usuarios de gestión de que hay solicitudes de
+ * Nota de Crédito (`credit_note_request`) trabadas en revisión manual hace
+ * más de lo esperado. `items[].summary` lo arma el worker
+ * (`workers/credit-note-review-sla.worker.ts`) -- mismo criterio que
+ * `deadLetterAlertEmail`: sin datos crudos de la factura ni del cliente,
+ * solo el id de la solicitud, a qué orden/reserva pertenece y hace cuánto
+ * está abierta (A7.1, nada de eso es PII).
+ */
+export interface CreditNoteReviewSlaAlertEmailParams {
+  /** Nombre del negocio -- mismo motivo que en DeadLetterAlertEmailParams (B2). */
+  businessName: string;
+  /** URL de la bandeja de revisión (`dashboard/facturacion/...`), no del banner de outbox. */
+  dashboardUrl: string;
+  /** Una solicitud `credit_note_request` que cruzó el SLA en este ciclo de poll. */
+  items: { summary: string }[];
+}
+
+export function creditNoteReviewSlaAlertEmail(
+  params: CreditNoteReviewSlaAlertEmailParams,
+): { subject: string; html: string } {
+  const { businessName, dashboardUrl, items } = params;
+  const n = items.length;
+  const solicitud = n === 1 ? 'una solicitud de Nota de Crédito' : `${n} solicitudes de Nota de Crédito`;
+
+  return {
+    subject: `${businessName} — hay ${solicitud} esperando revisión manual`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
+        <h2 style="margin-bottom: 4px;">Revisión manual pendiente</h2>
+        <p>En el panel de <strong>${escapeHtml(businessName)}</strong> hay ${solicitud} que lleva más del tiempo esperado sin resolverse.</p>
+        <ul style="padding-left: 18px; margin: 16px 0;">
+          ${items.map((it) => `<li style="margin: 6px 0;">${escapeHtml(it.summary)}</li>`).join('')}
+        </ul>
+        <p style="margin: 24px 0;">
+          <a href="${escapeHtml(dashboardUrl)}" style="background: #1a1a1a; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block;">Abrir la bandeja</a>
+        </p>
+        <p style="color: #666; font-size: 13px;">Este es un único aviso por solicitud -- no se repite mientras siga sin resolver. Este aviso se envía a los usuarios con permisos de gestión del negocio.</p>
+      </div>
+    `.trim(),
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')

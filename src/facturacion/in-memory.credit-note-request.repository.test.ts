@@ -152,4 +152,55 @@ describe('InMemoryCreditNoteRequestRepository', () => {
       expect(results.map((r) => r.id)).toEqual(['cnr-1', 'cnr-2']);
     });
   });
+
+  describe('listEligibleForSlaAlert() / markSlaAlertSent() (Bloque 6, §6.5 bis)', () => {
+    function seedRow(repo: InMemoryCreditNoteRequestRepository, overrides: Partial<Record<string, unknown>> = {}) {
+      repo.seed({
+        id: 'cnr-1', businessId: 'b', invoiceId: 'i1', reversedInvoiceId: 'io1', orderId: null,
+        reservationId: 'r1', state: 'EN_REVISION_MANUAL', resolutionOutcome: null, resolvedBy: null,
+        resolvedAt: null, resolutionNote: null, slaAlertSentAt: null,
+        createdAt: new Date('2026-09-01T00:00:00Z'), updatedAt: new Date('2026-09-01T00:00:00Z'),
+        ...overrides,
+      } as never);
+    }
+
+    it('devuelve solo EN_REVISION_MANUAL, creada antes del corte, sin aviso previo', async () => {
+      const repo = new InMemoryCreditNoteRequestRepository();
+      seedRow(repo, { id: 'cnr-eligible' }); // 2026-09-01, antes del corte
+      seedRow(repo, { id: 'cnr-too-new', createdAt: new Date('2026-09-20T00:00:00Z') }); // después del corte
+      seedRow(repo, { id: 'cnr-already-alerted', slaAlertSentAt: new Date('2026-09-05T00:00:00Z') });
+      seedRow(repo, { id: 'cnr-cerrada', state: 'CERRADA' });
+
+      const eligible = await repo.listEligibleForSlaAlert(new Date('2026-09-10T00:00:00Z'));
+
+      expect(eligible.map((r) => r.id)).toEqual(['cnr-eligible']);
+    });
+
+    it('markSlaAlertSent() -- primera llamada reclama (true), llamadas siguientes no (false, compare-and-swap)', async () => {
+      const repo = new InMemoryCreditNoteRequestRepository();
+      seedRow(repo);
+
+      const first = await repo.markSlaAlertSent('cnr-1');
+      const second = await repo.markSlaAlertSent('cnr-1');
+
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+      const row = await repo.findById('cnr-1');
+      expect(row!.slaAlertSentAt).not.toBeNull();
+    });
+
+    it('markSlaAlertSent() sobre id inexistente -- false, no lanza', async () => {
+      const repo = new InMemoryCreditNoteRequestRepository();
+      await expect(repo.markSlaAlertSent('nope')).resolves.toBe(false);
+    });
+
+    it('markSlaAlertSent() sobre una fila que ya no está EN_REVISION_MANUAL -- false, no la reclama (guard de estado, 26/09/2026)', async () => {
+      const repo = new InMemoryCreditNoteRequestRepository();
+      seedRow(repo, { state: 'CERRADA' });
+
+      await expect(repo.markSlaAlertSent('cnr-1')).resolves.toBe(false);
+      const row = await repo.findById('cnr-1');
+      expect(row!.slaAlertSentAt).toBeNull();
+    });
+  });
 });

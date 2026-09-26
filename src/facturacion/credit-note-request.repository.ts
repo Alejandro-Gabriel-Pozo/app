@@ -76,4 +76,32 @@ export interface CreditNoteRequestRepository {
    * de `InvoiceRepository`).
    */
   findByIdForUpdate(client: SqlClient, id: string): Promise<CreditNoteRequest | null>;
+
+  /**
+   * Bloque 6 (§6.5 bis, pregunta 2) -- poll de `CreditNoteReviewSlaWorker`.
+   * Reusa el índice parcial `idx_credit_note_request_state` (`WHERE state =
+   * 'EN_REVISION_MANUAL'`): `created_at` es el proxy de antigüedad en
+   * revisión (única transición de entrada, sin camino de vuelta a
+   * `PENDIENTE` -- ver el comentario del índice en `schema.sql`).
+   * `olderThan` ya viene resuelto por el caller (`now - SLA`) -- este
+   * método no conoce el valor del SLA. Orden `created_at ASC`, mismo
+   * criterio que `listByState()`.
+   */
+  listEligibleForSlaAlert(olderThan: Date): Promise<CreditNoteRequest[]>;
+
+  /**
+   * Bloque 6 -- marca `sla_alert_sent_at = NOW()` como compare-and-swap
+   * (`WHERE sla_alert_sent_at IS NULL AND state = 'EN_REVISION_MANUAL'`), no
+   * un UPDATE incondicional: sin el primer filtro, dos instancias del
+   * proceso (o dos ciclos de poll solapados) podrían mandar el aviso dos
+   * veces para la misma fila antes de que cualquiera de las dos termine de
+   * escribir; sin el segundo (26/09/2026, gate `architecture-governor`), se
+   * podría reclamar una fila que pasó a otro estado (p. ej. `CERRADA`) entre
+   * el `listEligibleForSlaAlert()` del caller y este reclamo. Devuelve
+   * `true` solo si ESTA llamada fue la que reclamó la fila (0 filas
+   * afectadas -> ya estaba marcada o ya no está en `EN_REVISION_MANUAL`,
+   * `false`) -- el caller usa el resultado para decidir si de verdad tiene
+   * que mandar el mail.
+   */
+  markSlaAlertSent(id: string): Promise<boolean>;
 }

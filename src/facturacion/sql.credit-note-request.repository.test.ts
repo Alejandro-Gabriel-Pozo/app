@@ -231,4 +231,60 @@ describe('SqlCreditNoteRequestRepository', () => {
       expect(calls[0]!.params).toEqual(['EN_REVISION_MANUAL']);
     });
   });
+
+  describe('listEligibleForSlaAlert() (Bloque 6, §6.5 bis)', () => {
+    it('filtra por EN_REVISION_MANUAL + created_at < corte + sla_alert_sent_at IS NULL, ordena por created_at ASC', async () => {
+      const olderThan = new Date('2026-09-24T12:00:00Z');
+      const { client, calls } = sequenceClient([[makeRow({ id: 'cnr-1' })]]);
+      const repo = new SqlCreditNoteRequestRepository(client);
+
+      const results = await repo.listEligibleForSlaAlert(olderThan);
+
+      expect(results).toHaveLength(1);
+      expect(calls[0]!.sql).toContain("state = 'EN_REVISION_MANUAL'");
+      expect(calls[0]!.sql).toContain('created_at < $1');
+      expect(calls[0]!.sql).toContain('sla_alert_sent_at IS NULL');
+      expect(calls[0]!.sql).toContain('ORDER BY created_at ASC');
+      expect(calls[0]!.params).toEqual([olderThan]);
+    });
+  });
+
+  describe('markSlaAlertSent() (Bloque 6, §6.5 bis) -- compare-and-swap', () => {
+    it('rowCount > 0 -> true (reclamó la fila)', async () => {
+      const calls: RecordedCall[] = [];
+      const client: SqlClient = {
+        query: (async (sql: string, params: unknown[] = []) => {
+          calls.push({ sql, params });
+          return { rows: [], rowCount: 1 };
+        }) as unknown as SqlClient['query'],
+      };
+      const repo = new SqlCreditNoteRequestRepository(client);
+
+      const claimed = await repo.markSlaAlertSent('cnr-1');
+
+      expect(claimed).toBe(true);
+      expect(calls[0]!.sql).toContain('SET sla_alert_sent_at = NOW()');
+      expect(calls[0]!.sql).toContain('WHERE id = $1 AND sla_alert_sent_at IS NULL');
+      expect(calls[0]!.sql).toContain("AND state = 'EN_REVISION_MANUAL'");
+      expect(calls[0]!.params).toEqual(['cnr-1']);
+    });
+
+    it('rowCount === 0 -> false (ya estaba marcada, otra instancia la reclamó primero)', async () => {
+      const client: SqlClient = {
+        query: (async () => ({ rows: [], rowCount: 0 })) as unknown as SqlClient['query'],
+      };
+      const repo = new SqlCreditNoteRequestRepository(client);
+
+      await expect(repo.markSlaAlertSent('cnr-1')).resolves.toBe(false);
+    });
+
+    it('rowCount undefined (driver que no lo informa) -> false, nunca lanza', async () => {
+      const client: SqlClient = {
+        query: (async () => ({ rows: [] })) as unknown as SqlClient['query'],
+      };
+      const repo = new SqlCreditNoteRequestRepository(client);
+
+      await expect(repo.markSlaAlertSent('cnr-1')).resolves.toBe(false);
+    });
+  });
 });
