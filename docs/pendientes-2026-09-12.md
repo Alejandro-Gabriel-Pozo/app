@@ -1847,8 +1847,8 @@ anteriores.
   `## 26/09/2026`) -- `guard 8-bis` de `reverseTransfer()` vuelve a leer `uncertainClearedAt` y a
   bloquear la reversa solo cuando la `FAILED_UNCERTAIN` contactada sigue sin limpiar
   (`uncertainClearedAt == null`; `PENDING` sigue bloqueando siempre). La premisa ORIGINAL del ítem
-  (23/09/2026) vuelve a valer tal cual estaba escrita: la limpieza manual vuelve a "funcionar" en
-  `main` local (no en producción hasta el deploy grande) solo contra
+  (23/09/2026) vuelve a valer tal cual estaba escrita: la limpieza manual vuelve a "funcionar"
+  (en producción desde el deploy grande, `394ee2a`, `live` `2026-09-26T18:42:52Z`) solo contra
   `reverseTransfer()` -- `transferStayBalanceToReceivable()`, `markInvoiced()` y `markCollected()`
   siguen sin conocer `uncertainClearedAt`, exactamente como el hallazgo original describía. La nota
   de la ronda R' (25/09/2026, arriba) queda como historia de la ventana en que estuvo revertido --
@@ -1886,8 +1886,9 @@ anteriores.
      después (con LSN real de Neon). Detalle
      completo (LSN, hora, deploy ID): `docs/conocimiento/runbook-deploy-render.md`,
      sección "Split de push del ADR reintento-vs-reversa". Sigue acá (no se
-     corta a `resuelto.md`) porque el resto de este bullet -- ítem 3 -- no
-     está verificado todavía (ítem 2, B-1, ya corrió -- ver más abajo);
+     corta a `resuelto.md`) porque el resto de este bullet -- ítem 3 -- está
+     parcialmente verificado (siguen abiertos: `/health`/`/health/db` de
+     a, f-Hotel los Álamos y g.2; b/c/d/e ya cerrados, ver ese ítem);
      cortar solo la mitad ya confirmada es un bloque de docs aparte, no
      incluido en este cambio.
   2. **Antes de DESPLEGAR el Bloque 4 completo (guard de solo lectura de
@@ -1940,11 +1941,17 @@ anteriores.
      `FAILED_UNCERTAIN` sin limpiar (incluidas consolidadas) -- a esa
      hora, desplegar el guard de solo lectura + el worker juntos no tenía
      nada que convertir. Es una foto con timestamp, no una garantía para
-     un deploy posterior -- re-correr esta query con timestamp fresco
+     un deploy posterior -- por eso se re-corrió con timestamp fresco
      justo antes de ejecutar el push (mismo criterio que el hotfix D4+§3.5
-     aplicó en su propio §6). No reemplaza el punto 3 de acá abajo
-     (verificación post-deploy), que sigue sin poder correr hasta que se
-     autorice y ejecute el push.
+     aplicó en su propio §6). **Re-corrida real, 26/09/2026, minutos antes
+     del push de `394ee2a`:** Demo, medido `2026-09-26T18:40:32.081Z` --
+     misma fila, CHARGE, `total/pending/failed_uncertain_sin_limpiar` =
+     `13/0/0`. Hotel los Álamos, medido `2026-09-26T18:40:35.201Z` --
+     query de control `count(*)`: `0` en `invoices` y en
+     `financial_transactions`. Luz verde confirmada dos veces, la segunda
+     a solo minutos del push real. El punto 3 de acá abajo (verificación
+     post-deploy) ya corrió -- ver ese punto para el resultado real, el
+     deploy grande está `live` desde `2026-09-26T18:42:52Z`.
   3. **Verificación post-deploy del deploy grande (Bloque 4 + reaplicación
      de 2c/5/§3.8 + Bloque 6 de credit_note_request + Wave 15 ítems 1+2 y
      D-05 + Wave 14 ítem 4.3 Fases 0/1/2), una vez que la consulta del
@@ -1953,51 +1960,124 @@ anteriores.
      `architecture-governor` -- la versión anterior decía "al menos una
      vez por proceso arrancado", falso: ver (f)).** Todos necesarios, no
      alternativos:
-     a. Identidad del deploy: deploy ID nuevo de Render `live` con commit =
-        la punta pusheada (no alcanza con `/health`, mismo criterio que el
-        punto 1). Más `/health` y `/health/db?fresh=1`.
-     b. Log de BUILD: `migrate:tenants` con `Versión objetivo: v64` y
-        `2/2 OK, 0 fallo(s)`.
-     c. Log de BOOT del deploy nuevo (el DDL de plataforma corre en
-        `server.ts` antes de `listen`, no en el build):
-        `[migrate] ✅ platform.schema.sql aplicado.`
-     d. SQL contra la BD de plataforma: `identities.token_version`
-        (`is_nullable = 'NO'`, default `0`), `businesses.session_ttl_seconds`
-        (nullable), `to_regclass('company_link_requests') IS NOT NULL`, y
-        `businesses.schema_version = 64` para los 2 negocios.
-     e. SQL por tenant: `SELECT MAX(version) FROM schema_migrations` = 64
-        (`MAX`, nunca `count(*)`: Demo ya tenía 50 filas con máximo 62
-        antes del deploy); `customers.token_version` NOT NULL default 0;
-        más las 3 queries de v64 de
-        `docs/conocimiento/runbook-deploy-render.md` (sección "Wave 14,
-        ítem 4.3", "Verificación post-deploy").
-     f. Workers: `ensureTenantWorker()` (`src/workers/outbox.registry.ts`)
+     a. **Parcial.** Identidad de deploy confirmada: `dep-das13mnf3r2c73ahefa0`
+        `live`, commit `394ee2a` (terminado `2026-09-26T18:42:52Z`).
+        `/health` y `/health/db?fresh=1` **NO verificados** -- el proxy
+        de salida de este entorno de sesión rechaza
+        `app-chny.onrender.com` por política de organización; pendiente
+        que el dueño los confirme directo desde su navegador/curl.
+     b. **✅ Confirmado**, texto literal del log real:
+        `[migrate-tenants] 2 negocio(s) con BD asignada. Versión objetivo:
+        v64.` (`18:41:58.897Z`) y `[migrate-tenants] 2/2 OK, 0 fallo(s).`
+        (`18:41:59.621Z`).
+     c. **✅ Confirmado**, texto literal del log real:
+        `[migrate] ✅ platform.schema.sql aplicado.` (`18:42:46.273Z`).
+     d. **✅ Confirmado con SQL real** (proyecto plataforma
+        `morning-unit-50056927`): `identities.token_version` NOT NULL
+        default `0`; `businesses.session_ttl_seconds` nullable;
+        `to_regclass('company_link_requests') IS NOT NULL` = true;
+        `businesses.schema_version = 64` para `demo` y `hotel-los-alamos`.
+     e. **✅ Confirmado con SQL real, las 3 queries del runbook, en los 2
+        tenants** (`ancient-king-17098519`): `MAX(version) = 64` en los
+        dos; `reservations.assignment_status` -- NOT NULL, default
+        `'ASSIGNED'::character varying`, en los dos; constraint
+        `chk_reservations_assignment_status` existe en los dos;
+        `GROUP BY assignment_status` -- Demo: `PENDING_ASSIGNMENT` 3,
+        `ASSIGNED` 43. Las 3 `PENDING_ASSIGNMENT` tienen `created_at`
+        entre `18:54:38Z` y `18:56:06Z`, posterior al deploy `live`
+        (`18:42:52Z`) -- son las 3 reservas de prueba de Fase 2, no
+        residuo de antes del deploy; las 43 `ASSIGNED` cubren todo lo
+        pre-existente, ninguna fila huérfana. Hotel los Álamos: sin
+        filas (tenant sin reservas). `customers.token_version` NOT NULL
+        default `0` confirmado en los dos.
+     f. **Parcial.** `ensureTenantWorker()` (`src/workers/outbox.registry.ts`)
         NO corre en el boot -- corre en el primer request autenticado de
         staff (`tenant.middleware.ts`) o del portal (`customer.routes.ts`)
-        de CADA negocio. Precedente reportado el 26/09/2026: tras el deploy
-        de `b9cb815` (live 15:26Z), el primer "Iniciado" de `biz-demo-01`
-        fue a las 16:50:51Z y Hotel los Álamos no tuvo ninguno. Ausencia
-        antes del primer request NO es falla. Tras un login real de staff
-        en cada negocio, filtrar los logs por `businessId` y confirmar
-        `[InvoicePendingExpiryWorker] Iniciado` Y
-        `[CreditNoteReviewSlaWorker] Iniciado` (texto literal del log).
-     g. Los corre el dueño (requieren login real, un agente no los puede
-        originar): (1) una sesión de staff abierta ANTES del deploy sigue
-        válida DESPUÉS (coerción `tv ?? 0`); (2) validación funcional de
-        Fase 2 del runbook ("Fase 2 queda activa EN CUANTO SE DEPLOYA"):
-        crear por categoría → `PENDING_ASSIGNMENT` con recurso candidato →
-        reasignar por `PUT` → check-in confirmando la asignación.
-  **De las 3 verificaciones listadas acá, las 1 y 2 (consistencia 0/0,
-  pre-flight B-1) ya están corridas y citadas arriba; la 3 (verificación
-  post-deploy completa) sigue sin correr -- depende de que se autorice y
-  ejecute el push.** El backfill de 2a en sí ya fue seguro (punto 1,
-  cerrado); B-1 (punto 2) dio luz verde el 26/09/2026 contra los dos
-  tenants reales -- la medición es una foto con timestamp, no una
-  garantía para un deploy posterior (re-correr con timestamp fresco justo
-  antes del push, mismo criterio que el hotfix D4+§3.5 en su propio §6);
-  con esa salvedad, el Bloque 4 (guard + worker) queda habilitado para
-  desplegarse en cuanto se autorice el push. El punto 3 no puede correr
-  antes de que se autorice y ejecute ese push.
+        de CADA negocio. **Demo confirmado**: `[InvoicePendingExpiryWorker]
+        Iniciado` y `[CreditNoteReviewSlaWorker] Iniciado` para
+        `biz-demo-01`, ambos a las `18:47:33.941Z`. **Hotel los Álamos
+        todavía sin ninguno** -- no es falla, solo falta el primer
+        request autenticado ahí; se resuelve solo con el primer login de
+        staff en ese negocio.
+     g. Requieren login real del dueño (un agente no los puede originar):
+        (1) **✅ Confirmado por el dueño** (26/09/2026): una sesión de
+        staff abierta ANTES del deploy sigue válida DESPUÉS (coerción
+        `tv ?? 0`) -- "Si ok me deja". (2) **NO corrido** -- validación
+        funcional de Fase 2 del runbook (crear por categoría →
+        `PENDING_ASSIGNMENT` con recurso candidato → reasignar por `PUT`
+        → check-in confirmando la asignación): decisión explícita del
+        dueño de diferirla ("tengo planes para esto"), no una omisión --
+        sigue abierta acá hasta que se corra o el dueño decida otra cosa.
+     **Hallazgo durante la exploración de Fase 2 en Demo (26/09/2026,
+     investigado con datos reales, no descartado a ojo):** el dueño
+     reportó que una reserva nueva "sobreescribió" reservas `COMPLETED`.
+     Verificado contra `br-snowy-tree-ax5wmq70`: 2 de 3 reservas de
+     prueba (`PENDING`/`PENDING_ASSIGNMENT`) quedaron asignadas a un
+     recurso que ya tenía una reserva `COMPLETED` con fechas superpuestas
+     (ej. nueva `2026-09-28→30` vs. `COMPLETED` `2026-09-29→30`, mismo
+     `resource_id`). Confirmado que NINGÚN campo de las reservas
+     `COMPLETED` cambió -- mismo `updated_at` de agosto antes y después,
+     testigo suficiente porque la tabla tiene un trigger `BEFORE UPDATE`
+     (`reservations_updated_at`, cita por nombre) y el propio repositorio
+     también fija `updated_at = CURRENT_TIMESTAMP` en cada UPDATE
+     (`sql.reservation.repository.ts:191`) -- cualquier escritura habría
+     movido esa columna. **No es un bug de este deploy, y la fecha de
+     origen NO es el 25/08/2026 ni el 08/08/2026** (corregido dos veces
+     en este mismo bloque -- la primera redacción decía 25/08, la
+     segunda 08/08, las dos mal atribuidas). La lista
+     `blockingStatuses = [PENDING, CONFIRMED]`
+     (`sql.reservation.repository.ts:366`) que excluye `COMPLETED` de la
+     disponibilidad viene, sin cambios de fondo, desde `17c6b35`
+     ("Initial commit", 22/06/2026, `getActiveForResourceInRange` en
+     `reservations-main/src/repositories/sql.reservation.repository.ts`,
+     usada por `createReservation` y `checkAvailability` desde ese mismo
+     commit; `updateReservation` no existía todavía -- llegó en
+     `2f1617a` (02/07/2026) llamando a la misma función, con la misma
+     lista -- verificado con `git log --reverse -S'blockingStatuses'
+     --all`, no con el diff de un solo commit) -- el camino real de
+     reservas NUNCA bloqueó por `COMPLETED`, desde el primer commit del
+     repo. El 08/08/2026 (`57a8d49`) solo copió la misma lista, ya
+     existente, dentro de la variante con `FOR UPDATE`. El 25/08/2026
+     (`docs/auditoria-tecnica-infra-reservas.md` sección 5.2, "Bug 1") es
+     una reafirmación de esa misma regla, no su origen: ese hallazgo era
+     sobre `PhysicalResource.availableSlots()` (el método de cupo
+     compartido para `capacity > 1`), que SÍ contaba `COMPLETED`/`EXPIRED`
+     como ocupando lugar "para siempre" -- pero ese método no tenía
+     ningún call site real en ese momento, así que ese bug puntual nunca
+     se manifestó en producción; se corrigió alineando `availableSlots()`
+     a la misma lista que ya usaba `getActiveInRange()`. Una regla
+     relacionada pero MÁS NUEVA y más acotada está en el schema como
+     restricción de base: el `EXCLUDE` `reservations_no_overlap_exclusive`
+     (cita por nombre de constraint, no por línea -- criterio
+     `SCHEMA-ANCHOR-DRIFT-001`), agregado en v42 (25/08/2026, "Bug 2 --
+     doble booking bajo concurrencia"), cuyo predicado completo es
+     `status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource` --
+     solo cubre recursos EXCLUSIVOS (no los de cupo compartido), y es
+     más nueva que la regla de disponibilidad de arriba, no su origen.
+     Las reservas `COMPLETED` de Demo con fecha de fin
+     futura son datos de prueba poco realistas (alguna marcada completa
+     antes de su propia fecha de inicio, según `created_at`/`updated_at`)
+     -- no representan un checkout real. Riesgo operativo real, aunque no
+     de código ni nuevo en sí: Fase 2 auto-asigna el candidato sin que el
+     staff mire el calendario primero -- **posiblemente** exponga esta
+     regla preexistente de una forma más visible que antes (no se
+     verificó qué mostraba el calendario/UI en el flujo manual previo, es
+     una hipótesis, no un hecho confirmado). No bloqueante, no accionable
+     en este bloque -- decisión de UI/alerta futura, si el dueño la
+     quiere, queda para otro momento.
+  **De las 3 verificaciones listadas acá, la 1 y la 2 están cerradas; la 3
+  (verificación post-deploy) se corrió el 26/09/2026 con el deploy grande
+  ya `live` -- b, c, d, e, f (Demo) y g.1 confirmados con evidencia real.
+  Quedan abiertos: a (`/health` y `/health/db?fresh=1`, todavía sin
+  verificar -- identidad de deploy sí confirmada), f (Hotel los Álamos,
+  falta su primer login de staff) y g.2 (validación funcional de Fase 2,
+  diferida por decisión explícita del dueño -- tiene su propio plan para
+  correrla).** El backfill de 2a
+  en sí ya fue seguro (punto 1, cerrado); B-1 (punto 2) dio luz verde
+  tanto en la corrida original como en la re-corrida fresca justo antes
+  del push (`18:40Z`, ambos tenants en 0); el deploy grande está `live`
+  desde `18:42:52Z` (punto 3, casi completo -- ver arriba qué falta
+  exactamente).
   **Decisión de orden de deploy -- YA TOMADA por el dueño, registrada
   como decisión cerrada, no como pregunta abierta (26/09/2026).**
   **D4 (`548c432`) no forma parte de este remanente (se pusheó antes, ver
@@ -2007,18 +2087,19 @@ anteriores.
   la decisión real y su evidencia de deploy). Lo que sigue yendo junto,
   en un solo push y un solo deploy -- no el split `2a → 2b → 3 → 4 → 2c
   → 5` que proponía §6 original del ADR -- es todo
-  `origin/main..<punta>` al momento de ese push (hoy: Bloque 4 +
-  reaplicación de 2c/5/§3.8, y lo que se le sume encima antes de
-  pushear) -- no se enumera acá para no tener que mantener la lista
-  sincronizada; confirmar con `git log origin/main..<punta> --oneline`
-  en el momento. Esto NO reemplaza los puntos 2/3 de acá arriba -- la
-  condición B-1 sigue aplicando igual, una sola vez PARA ESE DEPLOY ÚNICO
-  (no una vez por paso del split original que ya no existe), pero esa
-  única corrida que cuenta es la fresca, con timestamp tomado justo antes
-  de ejecutar ese push -- la corrida de las 18:08 del 26/09/2026 ya
-  citada en el punto 2 confirma que hoy no hay nada bloqueante, no
-  reemplaza esa re-corrida obligatoria -- solo fija que Bloque 4 no se
-  despliega como paso aislado separado del resto. Detalle: ADR
+  `origin/main..<punta>` al momento de ese push -- ejecutado el
+  26/09/2026: 39 commits, `b9cb815..394ee2a` (Bloque 4 + reaplicación de
+  2c/5/§3.8 + Bloque 6 de credit_note_request + Wave 15 + Wave 14 ítem
+  4.3 Fases 0/1/2 + 2 fixes de concurrencia + docs de reconciliación).
+  Esto NO reemplazó los puntos 2/3 de acá arriba -- la condición B-1 se
+  corrió una sola vez PARA ESE DEPLOY ÚNICO (no una vez por paso del
+  split original, que ya no existe), y la corrida que contó fue la
+  fresca, con timestamp tomado minutos antes de ejecutar el push
+  (`18:40Z`, ver punto 2) -- la corrida de las 18:08 del 26/09/2026
+  citada en el punto 2 ya había confirmado que no había nada bloqueante,
+  pero no reemplazó esa re-corrida obligatoria justo antes del push, que
+  también se hizo. El punto 3 (verificación post-deploy) también ya
+  corrió -- ver ese punto para el resultado real. Detalle: ADR
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
   Historial de revisión, ronda 21. Contexto de por qué Bloque 2c/5
   habían quedado revertidos hasta este punto (no la decisión de orden de
