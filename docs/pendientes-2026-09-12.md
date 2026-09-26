@@ -1945,20 +1945,48 @@ anteriores.
      aplicó en su propio §6). No reemplaza el punto 3 de acá abajo
      (verificación post-deploy), que sigue sin poder correr hasta que se
      autorice y ejecute el push.
-  3. **Verificación post-deploy del Bloque 4, una vez que la consulta del
-     punto 2 dé luz verde y se autorice el push (nueva, 26/09/2026 --
-     no existía como punto separado hasta este bloque de docs):**
-     confirmar el SHA real que está sirviendo tráfico después del deploy
-     (mismo criterio que el punto 1 -- no alcanza con `/health`), y
-     confirmar en los logs de Render de cada tenant la línea
-     `logger.info` `'[InvoicePendingExpiryWorker] Iniciado'`
-     (`src/workers/invoice-pending-expiry.worker.ts:77`, cita por texto
-     literal del log, no por número de línea únicamente -- el número se
-     mueve) al menos una vez por proceso arrancado -- confirma que
-     `ensureTenantWorker()` instanció el worker nuevo de verdad, no solo
-     que el build pasó. Sin esto, "el deploy quedó `live`" no distingue
-     entre "el worker corre" y "el worker nunca se instanció" (un error
-     de wiring silencioso en `outbox.registry.ts` no tumba el build).
+  3. **Verificación post-deploy del deploy grande (Bloque 4 + reaplicación
+     de 2c/5/§3.8 + Bloque 6 de credit_note_request + Wave 15 ítems 1+2 y
+     D-05 + Wave 14 ítem 4.3 Fases 0/1/2), una vez que la consulta del
+     punto 2 dé luz verde con timestamp fresco y se autorice el push
+     (nueva, 26/09/2026; ampliada el mismo día por el gate
+     `architecture-governor` -- la versión anterior decía "al menos una
+     vez por proceso arrancado", falso: ver (f)).** Todos necesarios, no
+     alternativos:
+     a. Identidad del deploy: deploy ID nuevo de Render `live` con commit =
+        la punta pusheada (no alcanza con `/health`, mismo criterio que el
+        punto 1). Más `/health` y `/health/db?fresh=1`.
+     b. Log de BUILD: `migrate:tenants` con `Versión objetivo: v64` y
+        `2/2 OK, 0 fallo(s)`.
+     c. Log de BOOT del deploy nuevo (el DDL de plataforma corre en
+        `server.ts` antes de `listen`, no en el build):
+        `[migrate] ✅ platform.schema.sql aplicado.`
+     d. SQL contra la BD de plataforma: `identities.token_version`
+        (`is_nullable = 'NO'`, default `0`), `businesses.session_ttl_seconds`
+        (nullable), `to_regclass('company_link_requests') IS NOT NULL`, y
+        `businesses.schema_version = 64` para los 2 negocios.
+     e. SQL por tenant: `SELECT MAX(version) FROM schema_migrations` = 64
+        (`MAX`, nunca `count(*)`: Demo ya tenía 50 filas con máximo 62
+        antes del deploy); `customers.token_version` NOT NULL default 0;
+        más las 3 queries de v64 de
+        `docs/conocimiento/runbook-deploy-render.md` (sección "Wave 14,
+        ítem 4.3", "Verificación post-deploy").
+     f. Workers: `ensureTenantWorker()` (`src/workers/outbox.registry.ts`)
+        NO corre en el boot -- corre en el primer request autenticado de
+        staff (`tenant.middleware.ts`) o del portal (`customer.routes.ts`)
+        de CADA negocio. Precedente reportado el 26/09/2026: tras el deploy
+        de `b9cb815` (live 15:26Z), el primer "Iniciado" de `biz-demo-01`
+        fue a las 16:50:51Z y Hotel los Álamos no tuvo ninguno. Ausencia
+        antes del primer request NO es falla. Tras un login real de staff
+        en cada negocio, filtrar los logs por `businessId` y confirmar
+        `[InvoicePendingExpiryWorker] Iniciado` Y
+        `[CreditNoteReviewSlaWorker] Iniciado` (texto literal del log).
+     g. Los corre el dueño (requieren login real, un agente no los puede
+        originar): (1) una sesión de staff abierta ANTES del deploy sigue
+        válida DESPUÉS (coerción `tv ?? 0`); (2) validación funcional de
+        Fase 2 del runbook ("Fase 2 queda activa EN CUANTO SE DEPLOYA"):
+        crear por categoría → `PENDING_ASSIGNMENT` con recurso candidato →
+        reasignar por `PUT` → check-in confirmando la asignación.
   **De las 3 verificaciones listadas acá, las 1 y 2 (consistencia 0/0,
   pre-flight B-1) ya están corridas y citadas arriba; la 3 (verificación
   post-deploy completa) sigue sin correr -- depende de que se autorice y

@@ -1207,9 +1207,11 @@ versión real de producción al momento de ese push).
 
 **La verificación post-deploy de ESTA sección cubre solo v64 (BLOQUE
 29).** No valida los 2 cambios de `platform.schema.sql` (`061e1ed`,
-`5e6d4a8`) — este runbook todavía no tiene una sección separada para
-esos; falta agregarla (o verificarlos a mano) antes de dar el deploy
-completo por confirmado. **v61/v62/v63 SÍ están desglosados ahora** (ver
+`5e6d4a8`) — su verificación (log de boot + SQL contra la BD de
+plataforma) vive en `docs/pendientes-2026-09-12.md`, `## 🔍
+Verificaciones pendientes`, punto 3 del ítem del ADR reintento-vs-reversa
+(sub-puntos c/d); no se duplica acá. **v61/v62/v63 SÍ están desglosados
+ahora** (ver
 subsección inmediatamente debajo) — residuo cerrado el 25/09/2026.
 
 #### v61/v62/v63 — qué introdujo cada salto intermedio (desglose agregado 25/09/2026)
