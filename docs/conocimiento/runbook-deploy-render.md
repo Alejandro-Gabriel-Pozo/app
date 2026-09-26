@@ -551,20 +551,41 @@ del push (no inferida):
 - Plataforma: `businesses.schema_version = 62` en los 2 negocios
   `ACTIVE`.
 
-**D4 y el deploy grande — siguen PENDIENTES a la fecha de esta
-subsección.** Verificar antes de actuar, no asumir de este texto:
-`git log origin/main --oneline | grep 548c432` (0 líneas = todavía no
-llegó a `origin/main`). Mientras ese comando no tenga match, no tiene
-deploy ID, hora ni verificación contra la base porque no hay nada
-corrido que verificar. **D4 además tiene una decisión abierta del dueño
-sin resolver** — ver `docs/pendientes-2026-09-12.md`, ítem
-`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` — antes
-de autorizar su push:
+**D4 — ejecutado, como hotfix aislado junto con §3.5 (ya NO es el paso pendiente que este texto
+describía; "D4 (Bloque 3) | `548c432`" sale de la tabla de abajo).** La decisión abierta del dueño
+(`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`) se resolvió combinando D4
+(`548c432`) con el reset de §3.5 en un commit nuevo, hijo directo de `548c432` (Mecanismo B —
+`docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`, §1(b)/§5), pusheado
+por `git push origin b9cb815:refs/heads/main` — fast-forward de 4 commits (`f9af82f`, `6920479`,
+`548c432`, `b9cb815`) — y desplegado. Evidencia real, no inferida:
+
+- `git merge-base --is-ancestor 548c432 origin/main` y
+  `git merge-base --is-ancestor b9cb815 origin/main` → `true` los dos.
+- Deploy Render: `dep-daru7cm7bikc739mfhog` (servicio `srv-d8tdt41kh4rs73buo5ng`), status `live`,
+  terminado `2026-09-26T15:26:04Z`.
+- Neon, ambos tenants (Demo y Hotel los Álamos): `max(schema_migrations.version) = 62` — sin
+  cambio de schema, como se esperaba.
+- Invariante de seguridad de §6 del documento del hotfix
+  (`SELECT count(*) FROM invoices WHERE uncertain_cleared_at IS NOT NULL AND (status='REJECTED' OR
+  (status='FAILED_UNCERTAIN' AND NOT afip_contacted))`) = 0 en los dos tenants, medido
+  inmediatamente después del deploy.
+- **Pendiente todavía** (ver `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones
+  pendientes`): el smoke autenticado de `GET /api/invoices/uncertain` (§10.3 del documento del
+  hotfix) y el hallazgo RBAC RECEPTIONIST (§1(c)/§8.3 del mismo documento).
+
+Detalle completo de la decisión y del hallazgo que la motivó (D4 solo, sin §3.5, dejaba un hueco):
+`docs/resuelto.md`, ítem `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` (cortado
+ahí el 26/09/2026 — ya no vive en `pendientes-2026-09-12.md`).
+
+**El deploy grande sigue PENDIENTE a la fecha de esta subsección** (Bloque 4 — el worker de
+expiración `PENDING`, no D4/Bloque 3, que ya salió arriba — + la reaplicación de 2c/5/§3.8).
+Verificar antes de actuar, no asumir de este texto: `git log origin/main --oneline | grep 52abbeb`
+(0 líneas = todavía no llegó a `origin/main`). Mientras ese comando no tenga match, no tiene
+deploy ID, hora ni verificación contra la base porque no hay nada corrido que verificar:
 
 | Paso | Commit | Qué trae | Schema |
 |---|---|---|---|
-| D4 (Bloque 3) | `548c432` | Guards de resolución manual de `credit_note_request` + reconciliación con AFIP | sin schema |
-| Deploy grande | (varios, sin consolidar todavía) | Wave 15 (v62→v63), Wave 14 ítem 4.3 (v63→v64), Bloque 6 | v62→v64 |
+| Deploy grande | (varios, sin consolidar todavía) | todo `origin/main..<punta>` al momento de ese push — no enumerado acá a propósito, para no tener que mantenerlo sincronizado (hoy incluye al menos Bloque 4, worker de expiración `PENDING`, + reaplicación de Bloque 2c/5/§3.8; confirmar con `git log origin/main..<punta> --oneline`) | v62→v64 |
 
 **El revert-forward R' de Bloque 2c/5 no es parte del "deploy grande" en
 el sentido de traer contenido nuevo — ya está commiteado** (`8940467`→
@@ -576,6 +597,58 @@ depende de un Bloque 4 (worker de expiración de facturas `PENDING`)
 todavía sin mergear, hoy solo en la rama `bloque-4-invoice-pending-expiry`
 (tip `b5ed4cd`). No confundir "R' ya resuelto" con "2c/5 reaplicado" —
 son dos estados distintos del mismo mecanismo.
+
+**Corrección 26/09/2026 (continuación de sesión) — el párrafo de arriba
+quedó stale: Bloque 4 ya no vive solo en la rama lateral.** Esa rama
+(`bloque-4-invoice-pending-expiry`, tip `b5ed4cd`) se mergeó a `main`
+local (`5e4b8a8`, 5 conflictos reales resueltos conservando ambos lados
+— detalle completo en el propio mensaje de ese commit) y, con esa
+dependencia saldada, los 3 commits que R' había revertido se
+reaplicaron encima, en secuencia, cada uno sobre el anterior: Bloque 2c
+(`2d7e837`, revert-forward de `2db33f5`), §3.8 (`4112eec`,
+revert-forward parcial de `93ab083` — solo esa mitad, §3.5 ya viajaba
+conservado por R'), Bloque 5 (`300e8cc`, revert-forward de `a7d06be`).
+Un cuarto commit (`895ae27`) corrigió un comentario de test que había
+quedado describiendo el estado revertido. La punta local de esta
+secuencia, con las observaciones F1 del gate ya cerradas (tests
+reales contra Postgres, no mocks, para C2/C3; docblocks al estado
+actual), es `52abbeb` — **estado de push: verificar con
+`git log origin/main --oneline | grep 52abbeb` en el momento, no citar
+este párrafo como si ya estuviera desplegado.**
+
+Con esto, Bloque 4 y la reaplicación de 2c/5/§3.8 dejan de ser un paso
+separado del "deploy grande" (como el párrafo original de arriba los
+trataba, cuando Bloque 4 todavía era una rama sin mergear) — viajan
+DENTRO de él, como cualquier otro commit de la secuencia normal de
+`main` local. Es la misma decisión del dueño ya registrada en
+`docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones
+pendientes`, apartado "Decisión de orden de deploy -- YA TOMADA por el
+dueño" (el ítem `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001` del
+mismo archivo documenta el revert R' que precedió a esta decisión, no la
+decisión de orden de deploy en sí): todo junto, en un
+solo deploy — no el orden separado `4 → 2c/5` que el ADR original
+proponía en su §6. **D4 (`548c432`) no forma parte de este "todo
+junto"** — ver la corrección de arriba en esta misma subsección: salió
+antes, como hotfix aislado junto con §3.5.
+
+**Condición B-1 del ADR (§4/§6, ronda 7 del gate) — paso previo
+OBLIGATORIO antes de este push específico, no verificado todavía desde
+este entorno:** antes de desplegar el commit que trae el guard de solo
+lectura de `retryExisting()` y el worker `InvoicePendingExpiryWorker`
+juntos (los dos se activan en el MISMO deploy, por diseño — un deploy
+que dejara el guard activo con el worker todavía apagado le quitaría a
+una `PENDING` colgada su única salida sin haberle dado todavía la
+nueva), correr contra cada tenant real una consulta de solo lectura que
+cuente cuántas `invoices` están hoy `PENDING`, y cuántas
+`FAILED_UNCERTAIN` con `afip_contacted = true` y sin
+`uncertain_cleared_at`, separadas por `CHARGE` vs. NC — para no
+convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron realmente
+coladas. Detalle completo de la condición: §4/§6 del ADR
+`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`; registro
+de la verificación pendiente: `docs/pendientes-2026-09-12.md`, sección
+`## 🔍 Verificaciones pendientes`. No confundir con el pre-flight de
+§3.6 (D2/D3, ya ejecutado, ver más arriba) — son dos gates distintos, en
+momentos distintos, ninguno sustituye al otro.
 
 **Pero R' SÍ es obligatorio en cualquier push cuya punta llegue hasta los
 originales de 2c/5 o más allá — corrección del gate (re-ronda,
@@ -761,6 +834,10 @@ asumidos:
 
 ### Wave 14, ítem 4.3 — reserva por tipo de unidad con asignación diferida (schema v64)
 
+**Nota (26/09/2026): D4 (Bloque 3) ya se ejecutó como parte del hotfix `b9cb815` — ver sección
+"Split de push del ADR reintento-vs-reversa" más arriba, bloque "D4 — ejecutado". Las referencias a
+D4 como pendiente en esta sección están desactualizadas donde no se corrigieron explícitamente.**
+
 **Agregado el 25/09/2026**, antes de que estos commits se pusheen —
 `docs/diseno-reserva-por-tipo-unidad-2026-09-24.md` §6 registró en varias
 rondas de gate que este runbook necesitaba esta sección antes de
@@ -807,7 +884,7 @@ evidencia) y quedan **2 pendientes**: `061e1ed` (62→63, Wave 15 ítems
 esta Wave) — los dos siguen fuera de `origin/main` a la fecha de esta
 corrección (verificar con `git log origin/main --oneline | grep -E
 '061e1ed|f88dbdd'`, 0 líneas = ninguno pusheado), agrupados hoy en el
-"deploy grande" de la tabla de D4/deploy-grande de más arriba, no en un
+"deploy grande" de la tabla de deploy grande de más arriba, no en un
 push aislado. Además `5e6d4a8` toca `platform.schema.sql` sin bump de
 `CURRENT_SCHEMA_VERSION` de tenant (vínculo a empresa, Wave 15 D-05) y
 también sigue fuera de `origin/main` (mismo chequeo: `git log origin/main
@@ -818,16 +895,16 @@ origin main`) se llevaría TODOS los commits locales sin pushear de una
 sola vez — `migrate:tenants` correría entonces con
 `CURRENT_SCHEMA_VERSION = 64` y los 2 saltos restantes aplicados juntos,
 más todo el resto de la historia local — 2c/5 original + R' completo (que
-si viaja entero SÍ respeta el piso de push declarado más arriba) + D4.
-**La decisión abierta `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`
-(`docs/pendientes-2026-09-12.md`) es específicamente sobre D4 como DEPLOY
-AISLADO** (punta `548c432`, sin §3.5 todavía aplicada) — en un push de
-`HEAD` completo como este, D4 viaja junto con §3.5 (conservada por R',
-`93ab083`→`d43de3f`), así que el hueco que ese ítem describe no aplica de
-la misma forma acá. Este push de `HEAD` completo sigue necesitando su
-propia autorización como "deploy grande" (backup propio, verificación de
-los 2 saltos de `platform.schema.sql`, etc. — ver más abajo), pero no por
-el motivo de ese ítem puntual.
+si viaja entero SÍ respeta el piso de push declarado más arriba).
+**La decisión `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` — ya CERRADA, vive
+en `docs/resuelto.md`, no en `docs/pendientes-2026-09-12.md` — era específicamente sobre D4 como
+DEPLOY AISLADO** (punta `548c432`, sin §3.5 todavía aplicada). Se resolvió combinando D4 con §3.5 en
+un hotfix aislado (Mecanismo B, `b9cb815`), ya pusheado y desplegado ANTES de este remanente — ver
+"Split de push del ADR reintento-vs-reversa" más arriba, bloque "D4 — ejecutado" — así que D4 ya no
+es uno de los commits locales sin pushear que un `git push` de `HEAD` completo como este se llevaría,
+y el hueco que ese ítem describía no aplica acá. Este push de `HEAD` completo sigue necesitando su
+propia autorización como "deploy grande" (backup propio, verificación de los 2 saltos de
+`platform.schema.sql`, etc. — ver más abajo), pero no por el motivo de ese ítem puntual.
 
 **Dejar afuera estos 4 commits (o cualquier prefijo) SÍ es posible —
 no es "todo o nada".** `git push origin <hash>:main` es un push
@@ -946,11 +1023,18 @@ tienen éxito (respetan el piso de R', R' ya incluido). Un deploy cuya
 punta sea `548c432` (D4) o anterior no viola el
 piso de R' por sí solo (ver, sin embargo, el hallazgo separado más abajo
 sobre `548c432` específico). Con el plan de split — D3 (`2c9b423`) YA
-ejecutado, D4 (`548c432`) como su propio deploy pendiente, deploy grande
+ejecutado, D4 (`548c432` + `b9cb815`) YA ejecutado como hotfix aislado
+(ver "Split de push del ADR reintento-vs-reversa" más arriba, bloque
+"D4 — ejecutado"), deploy grande (Bloque 4 + reaplicación de 2c/5/§3.8)
 con punta en `3818910` o después — nunca debería existir en el
 historial de Render un deploy real que cumpla el criterio de arriba.
 
-**Hallazgo separado, sin resolver en este runbook: `548c432` (D4) cumple
+**Resuelto 26/09/2026 -- la pregunta que este párrafo deja abierta se cerró con el hotfix
+`b9cb815` (D4 + §3.5, Mecanismo B); ver bloque "D4 -- ejecutado" más arriba y `docs/resuelto.md`.
+El texto de abajo queda como historia, no como decisión pendiente; su premisa se confirmó después
+contra Postgres real (§7 del documento del hotfix, casos a1/b1 en rojo sobre `548c432`).**
+
+**Hallazgo separado (histórico): `548c432` (D4) cumple
 el piso de R' pero, por el código real de ese commit, parece reproducir
 el hueco que motivó elegir R' en primer lugar — inferido leyendo el
 código, no reproducido contra una base real.** El ADR
@@ -978,10 +1062,22 @@ acá) — queda como decisión abierta, a registrar en
 en este runbook. Sin reproducir esto contra Postgres real — basado en el
 texto del ADR/pendientes y en el código de `548c432`, no en una prueba.
 
-Elegir el botón Rollback hacia `548c432` (D4) SÍ respeta el piso de R' —
-pero es un rollback grueso: saca junto con 4.3 toda la Wave 15, el
-Bloque 6 y R' mismo, no solo 4.3 (y, por el hallazgo de arriba, vuelve a
-dejar expuesto el mismo hueco de facturación que motivó R'). Deja schema
+**Prohibido elegir el botón Rollback hacia `548c432` (D4) solo — contradice el §9 del documento del
+hotfix (`docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`: "Prohibido:
+rollback (por Render o por git) a `548c432` solo — es exactamente el estado medido en rojo
+(duplicado CHARGE, caso a1/b1 de §7)") y, por el hallazgo de arriba, reproduce el mismo hueco de
+facturación que motivó R'.** Además `548c432` NUNCA tuvo un deploy propio en Render — se pusheó
+junto con `b9cb815` en un solo fast-forward (Mecanismo B, ver "Split de push del ADR
+reintento-vs-reversa" más arriba, bloque "D4 — ejecutado") — no existe un deploy de Render con esa
+punta exacta para "elegir" desde el dashboard.
+
+**El punto de rollback real, anterior al deploy grande, es el deploy del hotfix: `dep-daru7cm7bikc739mfhog`
+/ commit `b9cb815`** (Render → Rollback a ese deploy específico) — nunca a `548c432` solo. Ese
+deploy ya incluye D4 + §3.5 combinados (Mecanismo B), sin el hueco. Es también un rollback grueso:
+saca junto con 4.3 toda la Wave 15, el Bloque 6, el Bloque 4 (worker de expiración `PENDING` +
+guard) y la reaplicación de 2c/5/§3.8 -- incluida la toma exclusiva de `retryExisting()`, así que
+vuelve a abrir el residuo de concurrencia §8.1 del documento del hotfix --, no solo 4.3 (respeta
+el piso de R': `git merge-base --is-ancestor 2db33f5 b9cb815` falla). Deja schema
 `v63`/`v64` puesto en la base sin que el código que corre después lo use
 (`tenant.middleware.ts` compara la versión de schema en modo fail-soft,
 solo `logger.warn`, no bloquea requests — verificado contra

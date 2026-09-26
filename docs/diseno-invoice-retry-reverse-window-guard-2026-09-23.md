@@ -3830,3 +3830,152 @@ revisar. 6 no revisado salvo el `motivo` nuevo de §3.10 (documentado, no implem
 
   Detalle completo (decisión, verificación contra Postgres real, registro anclado) en
   `docs/pendientes-2026-09-12.md`, `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`.
+
+- **26/09/2026, ronda 21 — Bloque 4 mergeado a `main` local y Bloque 2c/5/§3.8 reaplicados
+  (secuencia completa que destraba la dependencia que la ronda 20 dejó pendiente), más la
+  decisión del dueño de pushear todo junto en un solo deploy.** Cuatro commits, en orden:
+
+  - **Merge de Bloque 4 (`5e4b8a8`)** — mergea `bloque-4-invoice-pending-expiry` (tip `b5ed4cd`,
+    base `f9af82f`) sobre la punta de `main` local de ese momento (`cf96233`, hotfix D4+§3.5 de
+    producción `b9cb815` + Bloque 6 de `credit_note_request` `28e8d7c`). 5 conflictos reales,
+    resueltos conservando AMBOS lados en cada uno (ninguno pisó al otro): dos bloques de códigos
+    409 agregados en paralelo al mismo `switch` de `error.middleware.ts` (se combinan); la clase
+    `AfipReconciliationPreconditionError` de `src/domain/errors.ts` partida a mitad de su
+    constructor por el conflicto (se reconstruyó completa, y `RetryInvoiceInFlightError` de
+    Bloque 4 se agregó después, con su propio docblock); dos listas de imports en
+    `invoice.service.ts` (se combinan); dos bloques de tests puramente aditivos en
+    `sql.invoice.repository.test.ts` (se concatenan); dos workers de tenant agregados en paralelo
+    en `outbox.registry.ts` (`CreditNoteReviewSlaWorker` del Bloque 6, `InvoicePendingExpiryWorker`
+    de este Bloque 4 — se combinan los `Map`, se corrige el conteo de timers por tenant a CUATRO
+    en los tres comentarios que lo citan, `creditNoteRequestRepo` pasa a construirse una sola vez
+    y reusarse entre los dos workers). Verificado sobre el árbol mergeado: `tsc --noEmit` limpio;
+    `lint` limpio; `lint:arch` limpio (317 módulos, sin violaciones); unit 2705 tests / 186
+    archivos (1 skip preexistente), incluyendo `route-consumer-coverage` corrido de verdad con
+    `FRONTEND_REPO_DIR=/home/user/appfrontend` (3 tests, no saltado). Integración contra Postgres
+    real: no corrida en este commit puntual (siguiente paso de la misma sesión).
+
+  - **Reaplicación de Bloque 2c (`2d7e837`)** — `git revert -n 3818910` (que había revertido
+    `2db33f5` el 25/09/2026, R') sobre `main` con Bloque 4 ya mergeado. **Reconciliación de la
+    clase duplicada `RetryInvoiceInFlightError`** — Bloque 4 y Bloque 2c la declaraban con el
+    mismo nombre y el mismo código `RETRY_INVOICE_IN_FLIGHT`, a propósito (el propio docblock de
+    2c, escrito antes de este merge, ya anticipaba el conflicto: "cuando la rama de Bloque 4 se
+    mergee, va a intentar declarar esta misma clase otra vez -- reconciliar en ese momento").
+    Reconciliada en UNA sola declaración en `src/domain/errors.ts`: un docblock combinado que
+    documenta los DOS guards que hoy conviven en `retryExisting()` bajo el mismo error 409 y por
+    qué ninguno es redundante con el otro —
+    (1) el guard de solo lectura de Bloque 4 (`existing.status === 'PENDING'`, al principio del
+    método, corta ANTES de abrir ninguna transacción — cierra la ventana de un reintento fresco
+    contra una `PENDING` con un intento real en curso), y
+    (2) la toma exclusiva de Bloque 2c (`takeRetryClaimWithClient()`, dentro de la transacción —
+    cierra la ventana de doble click concurrente sobre una fila `REJECTED`/`FAILED_UNCERTAIN`
+    limpiada, caso que el guard de Bloque 4 no ve porque lee `existing.status` una sola vez, antes
+    de que exista ninguna carrera por la toma) —
+    más un mensaje de error combinado que cubre las dos causas. El `case 'RETRY_INVOICE_IN_FLIGHT'`
+    duplicado que había quedado en `error.middleware.ts` (uno del merge de Bloque 4, otro
+    reaparecido con este revert-forward) se redujo a un solo `case`. Verificado sobre el árbol
+    resultante: `tsc --noEmit` limpio; `lint` limpio; `lint:arch` limpio; unit 2713 tests / 187
+    archivos (1 skip preexistente) — incluye `lock-order.test.ts` (extendido) y el archivo nuevo
+    `invoice-ar-cross-lock-order.test.ts` (`AR-INVOICE-LOCK-ORDER-001`, cerca de orden de locks
+    AR↔factura), ambos verdes dentro de esa corrida. Integración: pendiente en ese momento.
+
+  - **Reaplicación de §3.8 (`4112eec`)** — `git revert -n d43de3f` (que había revertido solo la
+    mitad §3.8 de `93ab083`; §3.5 ya viajaba conservado por R' en el `main` local — el hotfix
+    `b9cb815` portó §3.5 por un camino distinto, directamente desde `93ab083` (una línea de SQL
+    aislada, ver Mecanismo B en `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`
+    §1(b)/§3), no a través de R') sobre `main` con Bloque 4 y Bloque 2c ya mergeados/reaplicados. 1 conflicto, solo de
+    comentario (el código mergeó limpio): el docblock de `markFailedWithClient()`
+    (`sql.invoice.repository.ts`) tenía dos versiones del mismo párrafo — la que describía el
+    estado revertido (R' vigente, guard 8-bis sin §3.8) y la que describía el estado con §3.8
+    activo — reconciliado a un solo docblock que describe el estado ACTUAL (§3.8 reaplicado) y
+    deja la cronología completa como historia. Efecto de código: el guard 8-bis de
+    `reverseTransfer()` (`accounts-receivable.service.ts`) vuelve a excluir del bloqueo de reversa
+    cualquier `FAILED_UNCERTAIN` contactada que YA FUE LIMPIADA (`uncertainClearedAt != null`) —
+    solo bloquea la reversa una `FAILED_UNCERTAIN` con `afipContacted:true` que SIGUE sin limpiar
+    (`uncertainClearedAt == null`), en vez de bloquear a ciegas cualquier `FAILED_UNCERTAIN`
+    contactada esté limpiada o no (comportamiento del revert de la ronda 20, más conservador pero
+    innecesariamente restrictivo una vez que Bloque 3 existe). Esto deja desactualizada, otra vez,
+    la nota de `ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001`
+    (`docs/pendientes-2026-09-12.md`) sobre `transferStayBalanceToReceivable()`/`markInvoiced()`/
+    `markCollected()` — actualizada en el mismo bloque de docs que agrega esta ronda. Verificado:
+    `tsc --noEmit` limpio; `lint` limpio; `lint:arch` limpio; unit 2718 tests / 187 archivos (1
+    skip preexistente). Integración: pendiente en ese momento.
+
+  - **Reaplicación de Bloque 5 (`300e8cc`)** — `git revert -n 8940467` (que había revertido
+    `a7d06be`) sobre `main` con Bloque 4, Bloque 2c y §3.8 ya mergeados/reaplicados. 1 conflicto,
+    solo de test (el código de `invoice.service.ts` mergeó limpio — la rama `else` de Bloque 5
+    encajó sin fricción junto al guard de Bloque 2c que ya estaba ahí): el test "posición del
+    guard (load-bearing)" de `invoice.service.test.ts` describía el mismo escenario (NC con
+    invoice propia `PENDING`) desde dos eras distintas — reconciliado conservando la aserción de
+    Bloque 4 (`RETRY_INVOICE_IN_FLIGHT`, fila no tocada, que sigue ganando en ese escenario
+    puntual porque no hace falta abrir la transacción de la toma exclusiva para rechazar una fila
+    que ya está `PENDING`) y agregando una nota aclarando que la toma exclusiva de Bloque 5 en sí
+    tiene su propia cobertura aparte, en el bloque de tests "Bloque 5 (§3.11)" del mismo archivo.
+    Verificado: `tsc --noEmit` limpio; `lint` limpio; `lint:arch` limpio; unit 2720 tests / 187
+    archivos (1 skip preexistente).
+
+  Un quinto commit, de corrección de comentario (`895ae27`), corrigió un docblock de test que
+  todavía describía "2c revertido" tras esta reaplicación. Un sexto (`52abbeb`, "F1") cerró las
+  observaciones del gate sobre esta secuencia — ver más abajo.
+
+  **Orden de deploy — la decisión de §6 original queda reemplazada por la decisión del dueño de
+  pushear el remanente junto, y por una decisión distinta, tomada después en la misma sesión, sobre
+  CUÁNDO entra Bloque 3.**
+  §6 de este mismo documento fija el orden `2a → 2b → 3 → 4 → 2c → 5` como DEPLOYS SEPARADOS, cada
+  uno con su propio gate — ese orden asumía que 4 y 2c/5 se desplegarían en momentos distintos, con
+  las salidas alternativas (3 y 4) ya sirviendo tráfico antes de que 2c quitara el reintento libre.
+  Esa secuencia de deploys separados no terminó ejecutándose tal cual — la secuencia real,
+  verificada contra `origin/main` (26/09/2026), fue:
+  (a) **Bloque 3 (`548c432`) YA ENTRÓ a producción — no aislado, y no junto con el remanente de
+  Bloque 4/2c/5, sino como hotfix aparte combinado con el reset de §3.5** (Mecanismo B, commit
+  `b9cb815`, hijo directo de `548c432` — `git push origin b9cb815:refs/heads/main`, fast-forward de
+  4 commits). Detalle completo y evidencia real de deploy (deploy ID, timestamp, verificación de
+  schema/invariante contra Neon): `docs/resuelto.md`, ítem
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`.
+  (b) **El remanente de esta sesión (Bloque 4 + la reaplicación de 2c/5/§3.8) parte de una base
+  que YA INCLUYE el hotfix de (a).** `main` local llegó a `cf96233` mergeando ese hotfix antes de
+  mergear Bloque 4 encima (`5e4b8a8`) — `git merge-base --is-ancestor b9cb815 cf96233` da `true`. Es
+  todo `origin/main..<punta>` al momento de ese push -- no se enumera acá qué más viaja para no
+  tener que mantener la lista sincronizada; confirmar con
+  `git log origin/main..<punta> --oneline` en el momento del push.
+  Con esto, 3 **no** entra a producción "en el mismo instante que 2c" — entró antes, por su cuenta.
+  La invariante de fondo que §6 perseguía ("salida propia siempre disponible antes de quitar el
+  reintento libre") se preserva igual, mejor incluso que con el plan original: 3 (salida manual) y
+  §3.5 llevan sirviendo tráfico desde (a), antes de que 2c (parte del remanente de (b)) quite el
+  reintento libre — nunca hay una ventana donde 2c esté sirviendo tráfico sin que 3 ya exista. 4
+  (guard + worker) sí entra junto con 2c, en el mismo deploy de (b), por la condición B-1 (ver más
+  abajo). Detalle de la decisión de pushear el remanente de (b) junto, registrado con ancla:
+  `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones pendientes`, apartado "Decisión de
+  orden de deploy -- YA TOMADA por el dueño" (el ítem
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001` del mismo archivo documenta el revert R' que
+  precedió a esta decisión, no la decisión de orden de deploy en sí — esa vive en el apartado
+  recién citado). Esto NO retira la condición B-1 (§4/§6, ronda 7) — el guard de solo lectura y el
+  worker de Bloque 4 se siguen activando juntos, en el mismo deploy de (b), con su propio pre-flight
+  de volumen por tenant corrido ANTES de ese deploy; ver §4/§6 más arriba y
+  `docs/conocimiento/runbook-deploy-render.md`, sección "Split de push del ADR reintento-vs-reversa",
+  corrección 26/09/2026.
+
+  **Evidencia de verificación, estado acumulado a la punta de esta secuencia (`52abbeb`, "F1" —
+  cierra las observaciones C2/C3 del gate sobre los 4 commits de arriba, sin cambio de
+  comportamiento de producción, solo tests y docblocks):** `tsc --noEmit` limpio; `lint` limpio;
+  `lint:arch` limpio (317 módulos, sin violaciones); suite unit **2721
+  tests / 187 archivos** (+1 sobre el commit anterior de la secuencia, 1 skip preexistente); suite
+  de integración contra Postgres real **64 archivos / 491 tests** (incluye
+  `invoice-retry-exclusive-claim.integration.test.ts` reescrito en este mismo commit para ejercitar
+  `takeRetryClaimWithClient()` directo — `RETURNING` vacío real, sin pasar por el guard de Bloque 4
+  — en vez del guard de solo lectura que probaba antes por error, y
+  `invoice-pending-expiry-worker.integration.test.ts` extendido con el escenario de mutación
+  completo: limpiada por revisión manual → re-tomada por 2c → vencida por el worker →
+  `uncertain_cleared_at` vuelve a `NULL`). Las cercas de orden de locks (`lock-order.test.ts`,
+  `accounts-receivable-lock-order.test.ts`, `invoice-ar-cross-lock-order.test.ts`) y las 8 cercas
+  RBAC del repo (`rbac-matrix-sync`, `rbac-route-coverage`, `api-auth-gate-order`,
+  `customer-portal-ownership-guard`, `credit-note-escape-containment`,
+  `rbac-matrix-public-routes-sync`, `rbac-matrix-section2-sync`, `roles-catalog-sync`) corren
+  dentro de esa misma suite unit y quedan verdes por construcción — ninguna toca un archivo de
+  `src/api/routes/`, `src/security/` ni un `authorize(Roles.X)` en toda la secuencia (confirmado
+  por `git diff --stat` de `cf96233..52abbeb`: el único cambio en `customer.routes.ts` es el
+  comentario del conteo de timers por tenant, DOS→TRES→CUATRO, sin tocar RBAC ni rutas). **No
+  corrida todavía:** el pre-flight de §4/B-1
+  (volumen real de `PENDING`/`FAILED_UNCERTAIN` sin `uncertain_cleared_at` por tenant, contra
+  Postgres de producción) — ver `docs/pendientes-2026-09-12.md`, sección `## 🔍 Verificaciones
+  pendientes`, y la verificación post-deploy correspondiente (identidad del deploy real, log de
+  arranque del worker).

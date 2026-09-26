@@ -20,6 +20,140 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 26/09/2026
+
+- **Bloque 4 (`InvoicePendingExpiryWorker` + guard de solo lectura sobre `PENDING` en
+  `retryExisting()`) mergeado a `main` local, y Bloque 2c/5/§3.8 (revertidos por R' el 25/09/2026)
+  reaplicados encima — origen: `docs/pendientes-2026-09-12.md`,
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`, apartado "Qué hace falta para reaplicar 2c/5
+  en el futuro" (ahora cumplido) y apartado "Consecuencia real que el revert vuelve a abrir" (cerrada
+  en código por la reaplicación de §3.8, `4112eec`; en producción sigue abierta hasta el deploy
+  grande -- `b9cb815` ya expone `mark-not-issued` pero su guard 8-bis no lee `uncertainClearedAt`).
+  ADR:
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, Historial de revisión, ronda 21.**
+  Seis commits, en secuencia, cada uno sobre el anterior:
+  - `5e4b8a8` — merge de `bloque-4-invoice-pending-expiry` (tip `b5ed4cd`, base `f9af82f`) a `main`
+    local. 5 conflictos reales, resueltos conservando ambos lados (ninguno pisó al otro) —
+    detalle completo de cada uno en el propio mensaje del commit y en la ronda 21 del ADR.
+  - `2d7e837` — revert-forward de `2db33f5` (Bloque 2c, §3.2/§3.16, toma exclusiva de
+    `retryExisting()`). Reconcilia la declaración duplicada de `RetryInvoiceInFlightError` (Bloque
+    4 y 2c la declaraban a propósito con el mismo nombre y código `RETRY_INVOICE_IN_FLIGHT` — el
+    propio docblock de 2c ya anticipaba este momento) en una sola clase con docblock combinado,
+    documentando los dos guards que hoy conviven: el de solo lectura de Bloque 4 (antes de la
+    transacción) y la toma exclusiva de 2c (dentro de ella) — cierran ventanas distintas, ninguno
+    redundante con el otro.
+  - `4112eec` — revert-forward parcial de `93ab083` (solo §3.8, guard 8-bis de
+    `reverseTransfer()` vuelve a leer `uncertainClearedAt`; §3.5 ya viajaba conservado por R' y por
+    el hotfix de producción `b9cb815`, no se toca).
+  - `300e8cc` — revert-forward de `a7d06be` (Bloque 5, §3.11, alcance NC en la toma exclusiva).
+  - `895ae27` — corrección de un docblock de test que seguía describiendo "2c revertido".
+  - `52abbeb` ("F1") — cierra las observaciones C2/C3 del gate sobre la secuencia de arriba
+    (cobertura real contra Postgres para la toma exclusiva "sin fila" y para el reset de
+    `uncertain_cleared_at` en `expirePendingWithClient()`, antes solo cubiertos por mocks/texto
+    SQL) y corrige docblocks al estado actual — sin cambio de comportamiento de producción.
+  **Decisión de orden de deploy (dueño, esta misma sesión):** reemplaza el split `2a → 2b → 3 → 4
+  → 2c → 5` de §6 original del ADR — Bloque 4 + la reaplicación de 2c/5/§3.8 viajan dentro del
+  "deploy grande" (junto con todo lo demás que se acumule en `origin/main..<punta>` al momento de
+  ese push — no enumerado acá a propósito, para no tener que mantenerlo sincronizado), en un solo
+  push y un solo deploy, no como un paso separado. **Bloque 3 (`548c432`, D4) NO viaja dentro de
+  este "deploy grande"** — salió antes, como hotfix aislado junto con §3.5 (ver el ítem de esta
+  misma sección "26/09/2026" sobre
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`). Detalle: ADR, ronda 21; runbook
+  `docs/conocimiento/runbook-deploy-render.md`, sección "Split de push del ADR reintento-vs-reversa",
+  corrección 26/09/2026.
+  **Verificado (estado acumulado a `52abbeb`):** `tsc --noEmit` limpio; `lint` limpio; `lint:arch`
+  limpio (317 módulos, sin violaciones); unit **2721 tests / 187 archivos** (1 skip preexistente);
+  integración contra Postgres real **64 archivos / 491 tests**. Ningún cambio de ruta, de
+  `authorize(Roles.X)` ni de `src/security/` en toda la secuencia -- el único archivo de
+  `src/api/routes/` tocado es `customer.routes.ts`, solo un comentario (conteo de timers por
+  tenant) — las 8 cercas RBAC y las 3 cercas de orden de locks del repo corren dentro de esa misma
+  suite unit y quedan verdes sin haber sido ejercitadas por ningún cambio de este bloque.
+  **Lo que NO queda resuelto acá — sigue en `pendientes-2026-09-12.md`, sección `## 🔍
+  Verificaciones pendientes`:** el pre-flight de §4/condición B-1 del ADR (volumen real por tenant
+  de `PENDING`/`FAILED_UNCERTAIN` sin `uncertain_cleared_at`, contra Postgres de producción, antes
+  de este deploy específico) y la verificación post-deploy (identidad del deploy real en Render,
+  log de arranque del worker). El estado de push/deploy de `52abbeb` no se registra acá como hecho
+  fijo — se responde en el momento con `git log origin/main --oneline | grep 52abbeb`.
+
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`** (26/09/2026) — cortado de
+  `pendientes-2026-09-12.md` (donde vivía desde el 25/09/2026 como decisión abierta del dueño).
+  ✅ **RESUELTO: pusheado Y verificado post-deploy contra producción real, no solo decidido.**
+  Origen del diseño y de la decisión: `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`
+  (documento completo, gate `architecture-governor` aprobado con condiciones), §11 (instrucción de
+  cierre de este ítem, seguida acá).
+
+  El ítem `D4-ISOLATED-DEPLOY-3-5-GAP-001` era una decisión abierta (¿D4 aislado tolerando el
+  hueco, o D4 esperando el deploy grande?); se resolvió con una tercera opción no contemplada
+  originalmente: D4 combinado con §3.5 en un hotfix aislado (Mecanismo B,
+  `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md` §1(a)/(b)), pusheado
+  y desplegado antes de que empezara el trabajo de Bloque 4/2c/5/§3.8.
+
+  **La decisión real — Mecanismo B (`docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`
+  §1(b)/§5):** un commit nuevo H (`b9cb815`) creado como hijo directo de `548c432` (no aplicado a
+  mano sobre `2c9b423`), pusheado por refspec `git push origin b9cb815:refs/heads/main` —
+  fast-forward de 4 commits: `f9af82f`, `6920479` (solo docs, ya commiteados), `548c432` (D4, ya
+  commiteado, gate aprobado con condiciones) y `b9cb815` (H — `markFailedWithClient()` resetea
+  `uncertain_cleared_at` a `NULL` incondicionalmente, portando §3.5 de `93ab083` de forma aislada).
+
+  **El hueco que motivó combinar D4 con §3.5 (no dejarlo aislado sin el reset):** `548c432` agrega
+  `mark-not-issued`/`reconcile-with-afip` y el guard N6, pero sin §3.5 una factura `CHARGE`
+  limpiada por un operador y reintentada ambiguamente de nuevo conserva la marca de la revisión
+  anterior — dos consecuencias posibles según si AFIP había emitido en el intento ambiguo, no solo
+  la más leve: si AFIP NO había emitido, la fila queda sin salida visible (desaparece de
+  `GET /api/invoices/uncertain`, `mark-not-issued` la rechaza por N6); si AFIP SÍ había emitido, el
+  reintento vuelve a llamar a `createNextVoucher()` **sin revisión humana de la nueva
+  incertidumbre** y puede emitir un **segundo comprobante fiscal real** (factura o NC) para el mismo
+  cargo — confirmado en la repro de esta sesión (2 comprobantes reales, caso a1/b1 de §7). Detalle
+  con 7 casos rojo→verde contra Postgres real (AFIP fake): documento del hotfix, §2 y §7.
+
+  **Consecuencia sobre el "deploy grande" de esta tarde (Bloque 4 + reaplicación de 2c/5/§3.8):**
+  D4 NO viaja dentro de ese deploy — ya se pusheó ANTES, junto con §3.5, como hotfix aislado de 4
+  commits (Mecanismo B: `f9af82f`, `6920479`, `548c432`, `b9cb815`). El "deploy grande" de esta
+  tarde parte de una base (`cf96233`) que YA INCLUYE el hotfix
+  (`git merge-base --is-ancestor b9cb815 cf96233` → `true`).
+
+  **Evidencia real de push y deploy (verificada, no inferida):**
+  - `git merge-base --is-ancestor 548c432 origin/main` → `true`.
+  - `git merge-base --is-ancestor b9cb815 origin/main` → `true`.
+  - Deploy Render: `dep-daru7cm7bikc739mfhog`, servicio `srv-d8tdt41kh4rs73buo5ng`, status `live`,
+    terminado `2026-09-26T15:26:04Z`.
+  - **§10.1 del documento del hotfix (log de build real, Render, mismo deploy):**
+    ```
+    2026-09-26T15:25:01.767Z  [migrate-tenants] 2 negocio(s) con BD asignada. Versión objetivo: v62.
+    2026-09-26T15:25:02.465Z  [migrate-tenants] Resumen:
+    2026-09-26T15:25:02.465Z  [migrate-tenants] 2/2 OK, 0 fallo(s).
+    ```
+    Confirma "Versión objetivo: v62" y "2/2 OK, 0 fallo(s)" — sin schema nuevo, como esperaba el
+    documento del hotfix (§9: "sin schema").
+  - Neon, los dos tenants (Demo y Hotel los Álamos): `max(schema_migrations.version) = 62` — sin
+    cambio de schema, como se esperaba (§9 del documento del hotfix: "sin schema").
+  - **§10.2 del documento del hotfix (plataforma, `businesses.schema_version`) — consulta real
+    contra el proyecto de plataforma (`morning-unit-50056927`, branch `production`):**
+    ```sql
+    SELECT slug, schema_version FROM businesses WHERE status = 'ACTIVE' ORDER BY slug;
+    -- demo: 62
+    -- hotel-los-alamos: 62
+    ```
+  - **§6 del documento del hotfix, condición dura pre-push** ("re-correr la query inmediatamente
+    antes del push"): `SELECT count(*) FROM invoices WHERE uncertain_cleared_at IS NOT NULL`
+    re-corrida a las 2026-09-26T15:20:33.870Z (Demo) y 2026-09-26T15:20:42.186Z (Hotel los
+    Álamos), **0** en los dos tenants — condición cumplida antes de pushear.
+  - Invariante de seguridad de §6 del documento del hotfix (superset que además exige
+    `status`/`afip_contacted`:
+    `SELECT count(*) FROM invoices WHERE uncertain_cleared_at IS NOT NULL AND (status='REJECTED'
+    OR (status='FAILED_UNCERTAIN' AND NOT afip_contacted))`) = **0** en los dos tenants, medido
+    inmediatamente después del deploy.
+
+  **10.1, 10.2, la re-corrida pre-push de §6 y el invariante post-deploy quedan citados arriba con
+  su dato real. §10.3 (el smoke autenticado de `GET /api/invoices/uncertain`) sigue sin correr —
+  es la única parte de §10 que no queda resuelta acá.**
+
+  **Lo que NO queda resuelto acá — sigue en `pendientes-2026-09-12.md`, sección `## 🔍
+  Verificaciones pendientes` (registrado en el mismo corte que este cierre):** el hallazgo RBAC
+  RECEPTIONIST (§1(c)/§8.3 del documento del hotfix — el dueño lo aceptó sin tratar, no bloqueaba
+  el push) y el smoke autenticado post-deploy de `GET /api/invoices/uncertain` (§10.3 del mismo
+  documento — acción del dueño, no corrida todavía desde este entorno).
+
 ## 25/09/2026
 
 - **`MAINTENANCE-WINDOW-CERTAIN-SEGMENT-TOCTOU-001`** (hallazgo del gate

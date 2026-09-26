@@ -1755,14 +1755,15 @@ anteriores.
   de `retryExisting()` y de `GET /api/invoices/uncertain` sin ese hueco -- detalle completo en el
   comentario "Revert R'" de `markFailedWithClient()` (`sql.invoice.repository.ts`, corregido por
   `4c6bf77`).
-  **Qué hace falta para reaplicar 2c/5 en el futuro:** implementar y mergear el Bloque 4 (rama
-  `bloque-4-invoice-pending-expiry`) en `main`, y recién ahí reaplicar (o rehacer, si el merge de
-  Bloque 4 diverge demasiado del diff original) los 3 commits revertidos: `a7d06be`, `2db33f5`, y
-  la mitad §3.8 de `93ab083` -- cada uno pasando de nuevo por su propio gate de pre-commit, no
-  asumir que el diff viejo sigue aplicando limpio.
-  **El ADR no está descartado** -- `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`
-  sigue siendo el diseño de referencia para cuándo se reaplique; ver la nota agregada ahí en este
-  mismo movimiento.
+  **Actualización 26/09/2026 -- cumplido, cortado a `docs/resuelto.md`:** el párrafo que vivía
+  acá ("Qué hace falta para reaplicar 2c/5 en el futuro: implementar y mergear el Bloque 4...")
+  describía un prerrequisito que ya se cumplió -- Bloque 4 se mergeó a `main` local (`5e4b8a8`) y
+  los 3 commits revertidos se reaplicaron encima (`2d7e837`/`4112eec`/`300e8cc`), cada uno pasando
+  de nuevo por su propio gate. Ver `docs/resuelto.md`, sección `## 26/09/2026`, para el detalle
+  completo con hashes; y el ADR
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, Historial de revisión, ronda 21.
+  **El ADR no está descartado** -- sigue siendo el diseño de referencia para este mecanismo, ahora
+  con el código reaplicado sobre él.
   **Evidencia de que nada en producción dependía de lo revertido (verificado el 25/09/2026, antes
   del push):** los 3 símbolos que 2c/5/§3.8 introducían (`RetryInvoiceInFlightError`,
   `takeRetryClaimWithClient`, `RETRY_INVOICE_IN_FLIGHT`) dan 0 resultados en `origin/main` al
@@ -1775,82 +1776,48 @@ anteriores.
   consumidores en `appfrontend/src`. Por eso este ítem no necesita, ni puede tener, una verificación
   post-deploy sobre "algo que dejó de funcionar" -- nada dependía de código que nunca estuvo en
   producción.
-  **Consecuencia real que el revert vuelve a abrir (no introduce, reabre el comportamiento que ya
-  tenía `origin/main`):** una AR cuyo `CHARGE` tiene una factura `FAILED_UNCERTAIN` con
-  `afipContacted`, que un operador marcó como no emitida
-  (`POST /api/invoices/:id/mark-not-issued` → `markInvoiceNotIssued()` →
-  `markUncertainClearedWithClient()`; el resolve de `credit_note_request` no aplica acá: su
-  `invoice_id` es la factura-intento de la NC, no la del CHARGE), sigue sin poder revertirse --
-  `reverseTransfer()` la rechaza con `ArReversalRequiresCreditNoteError`. Verificado leyendo
-  `sql.invoice.repository.ts` (el UPDATE de `markUncertainClearedWithClient()` solo toca
-  `uncertain_cleared_at`/`_by`, nunca `status`/`afip_contacted`) -- no probado en ejecución. La
-  única salida es reintentar la emisión (o que se reaplique §3.8 en el futuro).
-- **`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` (25/09/2026, hallazgo del
-  gate `architecture-governor` durante la revisión del runbook
-  `docs/conocimiento/runbook-deploy-render.md` -- commiteado en `f794c1b`, subsección "Split de
-  push del ADR reintento-vs-reversa", párrafo "Hallazgo separado, sin resolver en este runbook";
-  cita por frase, no por línea, mismo criterio que SCHEMA-ANCHOR-DRIFT-001.) DECISIÓN ABIERTA DEL
-  DUEÑO, bloquea la autorización del push de D4 (`548c432`) como deploy aislado. **Inferido
-  leyendo código, NO reproducido contra Postgres real.**
-  **Qué se verificó (lectura de código, no ejecución):**
-  - `git show 548c432:src/facturacion/sql.invoice.repository.ts` -- en ese commit,
-    `markFailedWithClient()` NO resetea `uncertain_cleared_at` (el `UPDATE` solo pone
-    `pending_since = NULL`). Su propio comentario lo dice: "El reset de uncertain_cleared_at
-    (§3.5) es un fix distinto, asignado al Bloque 2c -- no se toca acá". El reset (§3.5) entra
-    recién en `93ab083` y sigue vigente en `HEAD` porque R' lo conservó (ítem
-    `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`, arriba).
-  - El Bloque 3 (`548c432`) agrega, en ese mismo commit, las piezas que convierten la falta del
-    reset en un hueco: (a) `POST /api/invoices/:id/mark-not-issued` → `markInvoiceNotIssued()` →
-    `markUncertainClearedWithClient()`, primer camino que limpia una factura `CHARGE` (en
-    `3216849` — `origin/main` al 25/09/2026 — el único llamador es `resolveCreditNoteRequestManually()`, que limpia la
-    factura-intento de la NC, no la del `CHARGE` -- ver el ítem de arriba); (b) el guard N6 de
-    `markUncertainClearedWithClient()` (`AND uncertain_cleared_at IS NULL`); (c)
-    `listUncertainInvoices()` / `GET /api/invoices/uncertain`, que filtra
-    `uncertain_cleared_at IS NULL`. `retryExisting()` (`invoice.service.ts`, idéntico en
-    `3216849` — `origin/main` al 25/09/2026 — y en `548c432`) reintenta una `FAILED_UNCERTAIN` que ya tiene
-    `uncertainClearedAt`.
-  - Secuencia inferida con punta en `548c432`: el operador limpia un `CHARGE` con
-    `mark-not-issued`, se reintenta, el reintento vuelve a caer en `FAILED_UNCERTAIN` con
-    `afipContacted:true`, la fila conserva el `uncertain_cleared_at` viejo, desaparece de
-    `GET /api/invoices/uncertain` y `mark-not-issued` la rechaza por N6 → sin ninguna salida
-    visible. Es el hueco que `pendientes-2026-09-12.md:1748-1754` ("Por qué R' y no R") y la
-    ronda 20 del ADR `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` usan para
-    justificar R'. Además, según el comentario de §3.5 en
-    `HEAD:src/facturacion/sql.invoice.repository.ts::markFailedWithClient()`, esa misma fila
-    "esquivaría el guard de `retryExisting()` sin revisión real -- exactamente el hueco #4 del
-    ADR". Segunda consecuencia citada del comentario, tampoco reproducida acá.
-  - Cuánto de la evidencia "probado contra Postgres real" de R se aplica a D4: la variante
-    probada fue R (HEAD sin §3.5), no `548c432`. Verificado por comparación textual (25/09/2026)
-    que `retryExisting()`, `markInvoiceNotIssued()`, `markUncertainClearedWithClient()` y
-    `listUncertainInvoices()` son idénticos entre `3216849` y `548c432`. La única función del
-    camino que difiere es `markFailedWithClient()`, justo por §3.5. La evidencia se aplica
-    fuertemente, pero no es una corrida sobre `548c432`.
-  - No evaluado: si el código de `3216849` (`origin/main` al 25/09/2026) ya expone el análogo del
-    hueco #4 para las facturas-intento de NC que limpia `resolveCreditNoteRequestManually()`. Ahí tampoco hay reset y el bypass de
-    `retryExisting()` ya existe.
-  **Relación con el piso de R' (riesgos distintos, no el mismo dos veces):** una punta en
-  `548c432` NO viola el piso de R' (`git merge-base --is-ancestor 2db33f5 548c432` falla), pero
-  §3.5 entra en `93ab083`, dentro del rango que ese piso prohíbe como punta (entre `2db33f5` y
-  `3818910`). La primera punta que cumple el piso y trae §3.5 es `3818910`, o sea el deploy
-  grande. Ese deploy trae §3.5 conservado por R' y NO depende del Bloque 4. Solo la reaplicación
-  de 2c/5/§3.8 depende del Bloque 4.
-  **Pregunta abierta para el dueño (no respondida acá):** ¿D4 se pushea aislado (punta
-  `548c432`), tolerando este hueco durante la ventana hasta el deploy grande (punta ≥ `3818910`,
-  que trae §3.5)? ¿O D4 depende de que §3.5 ya esté aplicada y no se pushea aislado, sino que
-  viaja dentro del deploy grande? Entradas para decidir, no evaluadas acá: el largo real
-  esperado de esa ventana, y si el volumen real de facturas `CHARGE` en `FAILED_UNCERTAIN` con
-  `afipContacted` en producción hace alcanzable la secuencia durante la ventana (requiere
-  query).
-  **Acción que cierra la parte fáctica (no la decisión):** en un worktree con punta `548c432` y
-  contra Postgres real, correr la secuencia completa `mark-not-issued` → reintento que vuelve a
-  caer en `FAILED_UNCERTAIN`/`afipContacted:true` → confirmar que la fila no aparece en
-  `GET /api/invoices/uncertain` y que un segundo `mark-not-issued` sale con el error de
-  precondición N6. El test de `HEAD`
-  `src/tests/integration/invoice-mark-failed-transactional.integration.test.ts`
-  ("markFailedWithClient() resetea uncertain_cleared_at a NULL al re-fallar una factura YA
-  LIMPIADA...") cubre solo el reset aislado, no la falta de salida visible. **Acción que cierra
-  el ítem:** la respuesta del dueño, registrada acá con fecha. Si elige deploy aislado, además
-  la evidencia post-deploy que corresponda.
+  **Consecuencia real que el revert había vuelto a abrir -- cerrada EN CÓDIGO el 26/09/2026
+  (`4112eec`), cortada a `docs/resuelto.md`; en producción sigue abierta hasta que `4112eec` se
+  despliegue:** el párrafo que vivía acá describía que una AR cuyo `CHARGE` tiene una
+  factura `FAILED_UNCERTAIN` con `afipContacted`, ya limpiada por un operador
+  (`markUncertainClearedWithClient()`), seguía sin poder revertirse -- `reverseTransfer()` la
+  rechazaba con `ArReversalRequiresCreditNoteError` porque el guard 8-bis, mientras estuvo
+  revertido, no conocía `uncertainClearedAt`. Con §3.8 reaplicado (`4112eec`, ver
+  `docs/resuelto.md`, `## 26/09/2026`), el guard 8-bis vuelve a leer `uncertainClearedAt` y a
+  bloquear la reversa solo cuando la `FAILED_UNCERTAIN` contactada sigue sin limpiar
+  (`uncertainClearedAt == null`; `PENDING` sigue bloqueando siempre) -- ver también la nota
+  actualizada de `ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001` más abajo
+  en este mismo archivo. Producción (`b9cb815`) corre el guard 8-bis sin §3.8 (`git show
+  b9cb815:src/clientes-finanzas/accounts-receivable.service.ts`, filtro sin `uncertainClearedAt`)
+  y, desde ese mismo hotfix, `POST /api/invoices/:id/mark-not-issued` existe en producción: la
+  consecuencia es alcanzable hoy en producción (antes del hotfix ningún camino limpiaba un
+  CHARGE). Estado de push de `4112eec`: `git log origin/main --oneline | grep 4112eec`.
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-HOTFIX-RBAC-RECEPTIONIST-001`** (26/09/2026, hallazgo ya
+  identificado por el propio documento del hotfix D4+§3.5 -- ancla:
+  `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`, §1(c) y §8.3 --
+  registrado acá porque el dueño decidió no tratarlo antes de ese push, no porque sea un hallazgo
+  nuevo de esta sesión.) Con D4 (`548c432`) más §3.5 (`b9cb815`) ya en producción, un usuario con
+  rol `RECEPTIONIST` (que ya tiene `EMISOR_NOTA_CREDITO` en los dos tenants de producción, heredado
+  del preset -- `platform.schema.sql:418`, `docs/rbac-matriz-endpoints.md:378`) puede declarar "no
+  emitida" una factura `CHARGE` (`POST /api/invoices/:id/mark-not-issued`) y usar
+  `reconcile-with-afip`. Para Notas de Crédito esto ya pasaba en producción antes de este hotfix;
+  para `CHARGE` es nuevo. El ADR de D4 no contempló este caso. **Acción que lo cierra:** decisión
+  de diseño sobre si `RECEPTIONIST` debería seguir teniendo `EMISOR_NOTA_CREDITO`, o si
+  `mark-not-issued`/`reconcile-with-afip` necesitan un grupo más restrictivo -- pasar por su propio
+  gate de diseño antes de tocar ningún `authorize()`.
+- **Verificación post-deploy del hotfix D4+§3.5 (`b9cb815`) -- parcial, falta el smoke autenticado
+  (ancla: `docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md`, §10).** Ya
+  verificado (26/09/2026, evidencia real -- ver `docs/resuelto.md`, ítem
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`): deploy Render `live`
+  (`dep-daru7cm7bikc739mfhog`, servicio `srv-d8tdt41kh4rs73buo5ng`, terminado
+  `2026-09-26T15:26:04Z`), `max(schema_migrations.version) = 62` en los dos tenants (sin cambio de
+  schema, esperado), invariante de §6 del documento del hotfix = 0 en los dos tenants. **NO
+  verificado todavía (§10.3 del documento del hotfix -- acción del dueño, no se origina desde
+  acá):** el smoke autenticado de `GET /api/invoices/uncertain` con un usuario `MANAGEMENT`, en los
+  dos tenants, esperando 200 `[]` (la ruta existe solo con D4 en producción). `mark-not-issued` y
+  `reconcile-with-afip` no se pueden probar en producción sin una fila `FAILED_UNCERTAIN` real (hay
+  0 hoy en los dos tenants) -- no fabricarla. **Acción que lo cierra:** correr el smoke autenticado
+  y registrar el resultado acá, con fecha.
 - **`ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001` (23/09/2026, condición 2
   del gate `architecture-governor`, pre-commit sobre §3.5+§3.8 del ADR
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` — commit `93ab083`.)** Hallazgo
@@ -1876,16 +1843,31 @@ anteriores.
   igual. El hallazgo de fondo (4 lectores potenciales, un solo método ampliado) sigue siendo válido
   como diseño para cuándo se reaplique §3.8 -- no se borra, pero no re-derivar la decisión de
   diseño de este ítem hasta que 2c/§3.8 vuelva a estar en el código.
-- **Verificaciones pendientes -- dos gates de producción distintos del
+  **Nota (26/09/2026, reaplicación):** §3.8 volvió al código (`4112eec`, ver `docs/resuelto.md`,
+  `## 26/09/2026`) -- `guard 8-bis` de `reverseTransfer()` vuelve a leer `uncertainClearedAt` y a
+  bloquear la reversa solo cuando la `FAILED_UNCERTAIN` contactada sigue sin limpiar
+  (`uncertainClearedAt == null`; `PENDING` sigue bloqueando siempre). La premisa ORIGINAL del ítem
+  (23/09/2026) vuelve a valer tal cual estaba escrita: la limpieza manual vuelve a "funcionar" en
+  `main` local (no en producción hasta el deploy grande) solo contra
+  `reverseTransfer()` -- `transferStayBalanceToReceivable()`, `markInvoiced()` y `markCollected()`
+  siguen sin conocer `uncertainClearedAt`, exactamente como el hallazgo original describía. La nota
+  de la ronda R' (25/09/2026, arriba) queda como historia de la ventana en que estuvo revertido --
+  no como estado vigente. La decisión de diseño pendiente (¿unificar en
+  `resolveInvoiceLinkage()`/`InvoiceLinkage`, o ampliar cada uno de los 3 caminos por separado?)
+  sigue sin tomarse -- este ítem no queda cerrado por la reaplicación, solo vuelve a su forma
+  original.
+- **Verificaciones pendientes -- tres puntos de verificación de producción distintos del
   ADR reintento-vs-reversa (`docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`),
-  necesarios los dos, no alternativos (corregido en ronda 5 del gate,
+  necesarios los tres, no alternativos (corregido en ronda 5 del gate,
   C1 -- esta entrada antes describía solo uno, Y vivía fuera de esta
   sección pese a que el ADR ya citaba esta sección como su ubicación;
   corregida otra vez en ronda 9 del ADR -- residuo B-1 de su ronda 8 del
   gate: el ítem 2 de acá abajo seguía diciendo "antes de activar el
   worker" cuando el ADR, desde su propia ronda 7, ya había movido esa
   condición a "antes de desplegar el Bloque 4 completo" sin que esta
-  entrada se hubiera actualizado en el mismo cambio).**
+  entrada se hubiera actualizado en el mismo cambio; el punto 3 se agregó
+  el 26/09/2026 -- pasando el total de dos a tres -- sin que este
+  encabezado se hubiera corregido en el mismo cambio, corregido acá).**
   1. **Entre el deploy de 2a y el de 2b, antes de desplegar 2b (§3.6 del
      ADR -- no "antes de 2a/2b": `pending_since` todavía no existe antes
      de 2a):** confirmar el SHA real del commit que está sirviendo
@@ -1897,6 +1879,16 @@ anteriores.
      es el residuo esperado que las dos sentencias de backfill que 2b
      re-ejecuta (la directa y la inversa) limpian en su misma transacción
      de deploy, no bloquea.
+     **Actualización 26/09/2026:** ya corrida contra producción real --
+     2a (`3216849`, D2) y 2b (`2c9b423`, D3) desplegados. D2: 0/0 medido
+     solo post-deploy (la columna `pending_since` todavía no existía
+     antes de 2a, no hay "antes" que medir). D3: 0/0 medido antes y
+     después (con LSN real de Neon). Detalle
+     completo (LSN, hora, deploy ID): `docs/conocimiento/runbook-deploy-render.md`,
+     sección "Split de push del ADR reintento-vs-reversa". Sigue acá (no se
+     corta a `resuelto.md`) porque el resto de este bullet -- ítem 2 -- no
+     está verificado todavía; cortar solo la mitad ya confirmada es un
+     bloque de docs aparte, no incluido en este cambio.
   2. **Antes de DESPLEGAR el Bloque 4 completo (guard de solo lectura de
      `retryExisting()` + worker, los dos juntos -- B-1, ronda 7 del ADR;
      no solo antes de activar el worker dentro de él, §4 del ADR):**
@@ -1906,15 +1898,60 @@ anteriores.
      no convertir en `FAILED_UNCERTAIN` filas que nunca estuvieron
      realmente coladas (el worker deriva ese volumen a las salidas
      manuales del Bloque 3 en cuanto arranca).
-  **Ninguna de las dos verificada esta sesión -- sin acceso a producción
-  desde este entorno.** El backfill de 2a en sí es seguro sin el dato de
-  (1) (argumento completo en §3.6 del ADR); el Bloque 4 (guard + worker)
+     **Sigue sin correr (26/09/2026) -- el código de Bloque 4 ya está
+     mergeado a `main` local y 2c/5/§3.8 reaplicados encima (ver
+     `docs/resuelto.md`, `## 26/09/2026`, y el ADR, Historial de revisión,
+     ronda 21), pero esta consulta sigue siendo la condición B-1 antes de
+     desplegar ESE código -- código listo y gate-aprobado no es lo mismo
+     que la consulta corrida.**
+  3. **Verificación post-deploy del Bloque 4, una vez que la consulta del
+     punto 2 dé luz verde y se autorice el push (nueva, 26/09/2026 --
+     no existía como punto separado hasta este bloque de docs):**
+     confirmar el SHA real que está sirviendo tráfico después del deploy
+     (mismo criterio que el punto 1 -- no alcanza con `/health`), y
+     confirmar en los logs de Render de cada tenant la línea
+     `logger.info` `'[InvoicePendingExpiryWorker] Iniciado'`
+     (`src/workers/invoice-pending-expiry.worker.ts:77`, cita por texto
+     literal del log, no por número de línea únicamente -- el número se
+     mueve) al menos una vez por proceso arrancado -- confirma que
+     `ensureTenantWorker()` instanció el worker nuevo de verdad, no solo
+     que el build pasó. Sin esto, "el deploy quedó `live`" no distingue
+     entre "el worker corre" y "el worker nunca se instanció" (un error
+     de wiring silencioso en `outbox.registry.ts` no tumba el build).
+  **De las 3 verificaciones listadas acá, la 1 (consistencia 0/0) ya está
+  corrida y citada arriba; las 2 y 3 (pre-flight B-1, verificación
+  post-deploy completa) siguen sin correr.** El backfill de
+  2a en sí ya fue seguro (punto 1, cerrado); el Bloque 4 (guard + worker)
   puede implementarse y testearse sin el dato de (2), pero no
   DESPLEGARSE sin correrla antes contra cada tenant real -- no es solo
   el worker el que espera este dato, es el deploy completo del bloque
   (B-1: el guard de `retryExisting()` y el worker se activan juntos, en
   el mismo deploy, para no dejar una `PENDING` colgada sin ninguna
-  salida en la ventana intermedia).
+  salida en la ventana intermedia). El punto 3 no puede correr antes de
+  que (2) dé luz verde y se autorice y ejecute el push.
+  **Decisión de orden de deploy -- YA TOMADA por el dueño, registrada
+  como decisión cerrada, no como pregunta abierta (26/09/2026).**
+  **D4 (`548c432`) no forma parte de este remanente (se pusheó antes, ver
+  `docs/resuelto.md`)** -- salió antes, como hotfix aislado junto con
+  §3.5, siguiendo el Mecanismo B (ver `docs/resuelto.md`, ítem
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`, para
+  la decisión real y su evidencia de deploy). Lo que sigue yendo junto,
+  en un solo push y un solo deploy -- no el split `2a → 2b → 3 → 4 → 2c
+  → 5` que proponía §6 original del ADR -- es todo
+  `origin/main..<punta>` al momento de ese push (hoy: Bloque 4 +
+  reaplicación de 2c/5/§3.8, y lo que se le sume encima antes de
+  pushear) -- no se enumera acá para no tener que mantener la lista
+  sincronizada; confirmar con `git log origin/main..<punta> --oneline`
+  en el momento. Esto NO reemplaza los puntos 2/3 de acá arriba (la
+  condición B-1 sigue aplicando igual, corrida una sola vez, antes de
+  ESE deploy único) -- solo fija que Bloque 4 no se despliega como paso
+  aislado separado del resto. Detalle: ADR
+  `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
+  Historial de revisión, ronda 21. Contexto de por qué Bloque 2c/5
+  habían quedado revertidos hasta este punto (no la decisión de orden de
+  deploy en sí, que vive en este mismo apartado): ítem
+  `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`, arriba en este mismo
+  archivo.
 - **`WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001-PRE-DEPLOY-AUDIT-001`
   (23/09/2026, condición C4 del gate `architecture-governor`, ronda 2,
   sobre el diseño de `WAVE13-ZONA2-CONSOLIDATED-RETRY-DUPLICATE-CAE-001`
