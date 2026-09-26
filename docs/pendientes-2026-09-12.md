@@ -1785,6 +1785,72 @@ anteriores.
   `sql.invoice.repository.ts` (el UPDATE de `markUncertainClearedWithClient()` solo toca
   `uncertain_cleared_at`/`_by`, nunca `status`/`afip_contacted`) -- no probado en ejecución. La
   única salida es reintentar la emisión (o que se reaplique §3.8 en el futuro).
+- **`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` (25/09/2026, hallazgo del
+  gate `architecture-governor` durante la revisión del runbook
+  `docs/conocimiento/runbook-deploy-render.md` -- commiteado en `f794c1b`, subsección "Split de
+  push del ADR reintento-vs-reversa", párrafo "Hallazgo separado, sin resolver en este runbook";
+  cita por frase, no por línea, mismo criterio que SCHEMA-ANCHOR-DRIFT-001.) DECISIÓN ABIERTA DEL
+  DUEÑO, bloquea la autorización del push de D4 (`548c432`) como deploy aislado. **Inferido
+  leyendo código, NO reproducido contra Postgres real.**
+  **Qué se verificó (lectura de código, no ejecución):**
+  - `git show 548c432:src/facturacion/sql.invoice.repository.ts` -- en ese commit,
+    `markFailedWithClient()` NO resetea `uncertain_cleared_at` (el `UPDATE` solo pone
+    `pending_since = NULL`). Su propio comentario lo dice: "El reset de uncertain_cleared_at
+    (§3.5) es un fix distinto, asignado al Bloque 2c -- no se toca acá". El reset (§3.5) entra
+    recién en `93ab083` y sigue vigente en `HEAD` porque R' lo conservó (ítem
+    `ISSUE-BEFORE-REVERSE-WINDOW-001-2C-5-REVERT-001`, arriba).
+  - El Bloque 3 (`548c432`) agrega, en ese mismo commit, las piezas que convierten la falta del
+    reset en un hueco: (a) `POST /api/invoices/:id/mark-not-issued` → `markInvoiceNotIssued()` →
+    `markUncertainClearedWithClient()`, primer camino que limpia una factura `CHARGE` (en
+    `3216849` — `origin/main` al 25/09/2026 — el único llamador es `resolveCreditNoteRequestManually()`, que limpia la
+    factura-intento de la NC, no la del `CHARGE` -- ver el ítem de arriba); (b) el guard N6 de
+    `markUncertainClearedWithClient()` (`AND uncertain_cleared_at IS NULL`); (c)
+    `listUncertainInvoices()` / `GET /api/invoices/uncertain`, que filtra
+    `uncertain_cleared_at IS NULL`. `retryExisting()` (`invoice.service.ts`, idéntico en
+    `3216849` — `origin/main` al 25/09/2026 — y en `548c432`) reintenta una `FAILED_UNCERTAIN` que ya tiene
+    `uncertainClearedAt`.
+  - Secuencia inferida con punta en `548c432`: el operador limpia un `CHARGE` con
+    `mark-not-issued`, se reintenta, el reintento vuelve a caer en `FAILED_UNCERTAIN` con
+    `afipContacted:true`, la fila conserva el `uncertain_cleared_at` viejo, desaparece de
+    `GET /api/invoices/uncertain` y `mark-not-issued` la rechaza por N6 → sin ninguna salida
+    visible. Es el hueco que `pendientes-2026-09-12.md:1748-1754` ("Por qué R' y no R") y la
+    ronda 20 del ADR `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` usan para
+    justificar R'. Además, según el comentario de §3.5 en
+    `HEAD:src/facturacion/sql.invoice.repository.ts::markFailedWithClient()`, esa misma fila
+    "esquivaría el guard de `retryExisting()` sin revisión real -- exactamente el hueco #4 del
+    ADR". Segunda consecuencia citada del comentario, tampoco reproducida acá.
+  - Cuánto de la evidencia "probado contra Postgres real" de R se aplica a D4: la variante
+    probada fue R (HEAD sin §3.5), no `548c432`. Verificado por comparación textual (25/09/2026)
+    que `retryExisting()`, `markInvoiceNotIssued()`, `markUncertainClearedWithClient()` y
+    `listUncertainInvoices()` son idénticos entre `3216849` y `548c432`. La única función del
+    camino que difiere es `markFailedWithClient()`, justo por §3.5. La evidencia se aplica
+    fuertemente, pero no es una corrida sobre `548c432`.
+  - No evaluado: si el código de `3216849` (`origin/main` al 25/09/2026) ya expone el análogo del
+    hueco #4 para las facturas-intento de NC que limpia `resolveCreditNoteRequestManually()`. Ahí tampoco hay reset y el bypass de
+    `retryExisting()` ya existe.
+  **Relación con el piso de R' (riesgos distintos, no el mismo dos veces):** una punta en
+  `548c432` NO viola el piso de R' (`git merge-base --is-ancestor 2db33f5 548c432` falla), pero
+  §3.5 entra en `93ab083`, dentro del rango que ese piso prohíbe como punta (entre `2db33f5` y
+  `3818910`). La primera punta que cumple el piso y trae §3.5 es `3818910`, o sea el deploy
+  grande. Ese deploy trae §3.5 conservado por R' y NO depende del Bloque 4. Solo la reaplicación
+  de 2c/5/§3.8 depende del Bloque 4.
+  **Pregunta abierta para el dueño (no respondida acá):** ¿D4 se pushea aislado (punta
+  `548c432`), tolerando este hueco durante la ventana hasta el deploy grande (punta ≥ `3818910`,
+  que trae §3.5)? ¿O D4 depende de que §3.5 ya esté aplicada y no se pushea aislado, sino que
+  viaja dentro del deploy grande? Entradas para decidir, no evaluadas acá: el largo real
+  esperado de esa ventana, y si el volumen real de facturas `CHARGE` en `FAILED_UNCERTAIN` con
+  `afipContacted` en producción hace alcanzable la secuencia durante la ventana (requiere
+  query).
+  **Acción que cierra la parte fáctica (no la decisión):** en un worktree con punta `548c432` y
+  contra Postgres real, correr la secuencia completa `mark-not-issued` → reintento que vuelve a
+  caer en `FAILED_UNCERTAIN`/`afipContacted:true` → confirmar que la fila no aparece en
+  `GET /api/invoices/uncertain` y que un segundo `mark-not-issued` sale con el error de
+  precondición N6. El test de `HEAD`
+  `src/tests/integration/invoice-mark-failed-transactional.integration.test.ts`
+  ("markFailedWithClient() resetea uncertain_cleared_at a NULL al re-fallar una factura YA
+  LIMPIADA...") cubre solo el reset aislado, no la falta de salida visible. **Acción que cierra
+  el ítem:** la respuesta del dueño, registrada acá con fecha. Si elige deploy aislado, además
+  la evidencia post-deploy que corresponda.
 - **`ISSUE-BEFORE-REVERSE-WINDOW-001-UNCERTAIN-CLEARED-AT-BLIND-SPOTS-001` (23/09/2026, condición 2
   del gate `architecture-governor`, pre-commit sobre §3.5+§3.8 del ADR
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` — commit `93ab083`.)** Hallazgo
