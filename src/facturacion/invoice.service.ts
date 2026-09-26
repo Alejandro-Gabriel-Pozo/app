@@ -1589,11 +1589,21 @@ export class InvoiceService {
    * (doble click) -- el `UPDATE ... RETURNING` condicionado es a la vez el
    * lock y la toma, así que el segundo en llegar no encuentra fila para
    * actualizar y se rechaza con `RetryInvoiceInFlightError` (409) sin haber
-   * llamado a AFIP. **Alcance de este bloque: solo el camino `CHARGE`** (el
-   * `if (chargeTxs.length > 0)` de abajo) -- un reintento de NC pura
-   * (`REFUND`/`ADJUSTMENT`, sin ningún `CHARGE` en el lote) todavía NO pasa
-   * por la toma exclusiva; extenderla ahí es Bloque 5 (§3.11, "depende de
-   * 2c, extiende el mismo mecanismo"), fuera de alcance de este cambio.
+   * llamado a AFIP.
+   *
+   * Bloque 5 (§3.11, 23/09/2026, gate `architecture-governor`, ronda 17) --
+   * la toma exclusiva también cubre el camino de NC pura (`REFUND`/
+   * `ADJUSTMENT`, sin ningún `CHARGE` en el lote): el `else` del
+   * `if (chargeTxs.length > 0)` de abajo llama al MISMO
+   * `takeRetryClaimWithClient()`, en su propia `transactionManager.run()`,
+   * SIN los guards CHARGE-only (`assertNoOtherLiveInvoiceForCharges()`,
+   * `assertChargesStillInvoiceable()` -- exención ya congelada por
+   * `NC_PRODUCERS_SAFE_FOR_RETRY_TYPE_SHORTCUT`,
+   * `docs/diseno-invoice-retry-charge-guard-2026-09-18.md`). Un solo lock
+   * (la propia fila `invoices`) por rama -- no hay AR/orden/reserva
+   * involucrados en la rama NC, así que no hay ABBA que ordenar ahí (por
+   * eso `AR-INVOICE-LOCK-ORDER-001` y `LOCK-ORDER-001` no necesitaron
+   * actualizarse para este bloque).
    */
   private async retryExisting(existing: Invoice): Promise<Invoice> {
     if (existing.status === 'ISSUED') return existing;
@@ -1643,6 +1653,11 @@ export class InvoiceService {
         await this.assertChargesStillInvoiceable(client, chargeTxs);
         await this.invoiceRepo.takeRetryClaimWithClient(client, existing.id);
       });
+    } else {
+      // Bloque 5 (§3.11) -- NC pura (REFUND/ADJUSTMENT), mismo mecanismo de
+      // toma exclusiva, sin los guards CHARGE-only (ver más abajo por qué no
+      // aplican acá).
+      await this.transactionManager.run((client) => this.invoiceRepo.takeRetryClaimWithClient(client, existing.id));
     }
 
     const credentials = await this.afipCredentialsRepo.getDecrypted();
