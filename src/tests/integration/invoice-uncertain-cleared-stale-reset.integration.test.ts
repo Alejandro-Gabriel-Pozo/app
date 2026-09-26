@@ -21,10 +21,16 @@
  *  - respuesta sin CbteDesde/CAE (FAILED_UNCERTAIN, afipContacted:true)        -> (c3)
  *  - reconcileAfterFailure() (error de red, FAILED_UNCERTAIN/true)             -> (a1)(a2)(b1)(b2)
  *
- * NO cubre (residuo declarado en el diseño, §6): dos reintentos
- * CONCURRENTES sobre una factura recién limpiada legítimamente -- sin toma
- * exclusiva en retryExisting() (2db33f5, revertido por 3818910) ambos
- * pueden pasar el guard y llamar a createNextVoucher().
+ * Residuo declarado en el diseño original (§6), CERRADO desde que Bloque 2c
+ * se reaplicó (26/09/2026, sobre este mismo árbol -- ver el reporte del
+ * merge de Bloque 4 + reaplicación de 2c/5/§3.8): al momento de escribir
+ * este test (hotfix D4+§3.5, ANTES de esa reaplicación), dos reintentos
+ * CONCURRENTES sobre una factura recién limpiada legítimamente no tenían
+ * toma exclusiva en retryExisting() (2db33f5 estaba revertido por 3818910
+ * en ese momento) y los dos podían pasar el guard y llamar a
+ * createNextVoucher(). Con 2c reaplicado, `takeRetryClaimWithClient()`
+ * vuelve a cerrar esa ventana -- cobertura propia en
+ * invoice-retry-exclusive-claim.integration.test.ts, no repetida acá.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
