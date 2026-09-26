@@ -1644,13 +1644,32 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Bloque 2a (docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md
     // §3.6) -- data.status es siempre 'REJECTED' | 'FAILED_UNCERTAIN'
     // (MarkFailedInput), nunca 'PENDING': este UPDATE siempre saca la fila
-    // de PENDING, así que limpia pending_since incondicionalmente. El
-    // reset de uncertain_cleared_at (§3.5) es un fix distinto, asignado al
-    // Bloque 2c -- no se toca acá.
+    // de PENDING, así que limpia pending_since incondicionalmente.
+    //
+    // §3.5 del mismo ADR (hotfix D4+§3.5, 26/09/2026,
+    // docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md)
+    // -- también limpia uncertain_cleared_at, incondicionalmente (las 4
+    // llamadas de invoice.service.ts: REJECTED, FAILED_UNCERTAIN con y sin
+    // afipContacted). Cada re-falla es una incertidumbre NUEVA; la
+    // revisión manual anterior (mark-not-issued / resolve NO_EMITIDA)
+    // respondía por el intento anterior, no por éste. Sin el reset, una
+    // factura ya limpiada que vuelve a caer en FAILED_UNCERTAIN con
+    // afipContacted:true conserva la marca vieja: retryExisting() la
+    // reintenta contra AFIP sin revisión (posible comprobante duplicado),
+    // GET /api/invoices/uncertain la oculta y mark-not-issued la rechaza
+    // (N6). Superset seguro: los lectores de esta columna en este árbol
+    // -- retryExisting(), listUncertainInvoices(), el guard N6 de
+    // markUncertainClearedWithClient(), markIssuedFromManualResolutionWithClient()
+    // -- filtran por status = 'FAILED_UNCERTAIN' AND afip_contacted antes
+    // de mirarla; el quinto, classifyManualResolutionOutcome(), filtra solo
+    // por status, pero solo corre con la credit_note_request todavía
+    // EN_REVISION_MANUAL, estado incompatible con una limpieza previa (ver
+    // el diseño, §4). No toca uncertain_cleared_by: queda como rastro
+    // histórico de quién limpió el intento anterior; ningún guard lo lee.
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5,
-           pending_since = NULL
+           pending_since = NULL, uncertain_cleared_at = NULL
        WHERE id = $1
        RETURNING *`,
       [

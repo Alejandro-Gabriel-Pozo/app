@@ -312,6 +312,48 @@ describe('SqlInvoiceRepository — pending_since (Bloque 2a)', () => {
 
     expect(invoice!.pendingSince).toEqual(new Date('2026-09-23T00:00:00Z'));
   });
+
+  // ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3.5 -- reset de
+  // uncertain_cleared_at en markFailedWithClient(). Co-ubicado con los
+  // tests de pending_since de arriba porque es el mismo método/misma
+  // infraestructura de mock (pendingRow()), no porque sea Bloque 2a.
+  it.each(['REJECTED', 'FAILED_UNCERTAIN'] as const)(
+    'markFailedWithClient() limpia uncertain_cleared_at = NULL al marcar %s, incondicionalmente (§3.5)',
+    async (status) => {
+      const mockSqlClient = mockClient([pendingRow({ status, pending_since: null, afip_contacted: true, uncertain_cleared_at: null })]);
+      const repo = new SqlInvoiceRepository(mockSqlClient);
+
+      await repo.markFailedWithClient(mockSqlClient, 'inv-1', {
+        status, errorMessage: 'test', afipContacted: true,
+      });
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toMatch(/SET[\s\S]*uncertain_cleared_at\s*=\s*NULL/);
+    },
+  );
+
+  it('markFailedWithClient() -- escenario exacto de §3.5: una factura YA limpiada (uncertain_cleared_at no-nulo) vuelve a caer en FAILED_UNCERTAIN con afipContacted:true; el UPDATE resetea el campo a NULL en vez de dejar el valor viejo', async () => {
+    // El mock no reejecuta SQL contra un motor real -- lo que prueba este
+    // test es lo mismo que el de arriba (la sentencia UPDATE resetea
+    // uncertain_cleared_at incondicionalmente), pero partiendo
+    // explícitamente de una fila que YA tenía un uncertain_cleared_at
+    // poblado (el escenario textual del hueco #4 del ADR), para que quede
+    // anclado el caso real, no solo el genérico.
+    const mockSqlClient = mockClient([pendingRow({
+      status: 'FAILED_UNCERTAIN', pending_since: null, afip_contacted: true,
+      // La fila que RETURNING * devolvería tras el fix -- ya reseteada.
+      uncertain_cleared_at: null, uncertain_cleared_by: null,
+    })]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const invoice = await repo.markFailedWithClient(mockSqlClient, 'inv-1', {
+      status: 'FAILED_UNCERTAIN', errorMessage: 'AFIP respondió ambiguo de nuevo', afipContacted: true,
+    });
+
+    const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toMatch(/SET[\s\S]*uncertain_cleared_at\s*=\s*NULL/);
+    expect(invoice.uncertainClearedAt).toBeNull();
+  });
 });
 
 // ADR ISSUE-BEFORE-REVERSE-WINDOW-001 (23/09/2026), Bloque 3 -- guards

@@ -256,6 +256,44 @@ describe.skipIf(skipIfNoDb)('invoices.pending_since -- Bloque 2a (23/09/2026)', 
     },
   );
 
+  // Bloque 2c (§3.5, hueco #4 del ADR) -- markFailedWithClient() también
+  // resetea uncertain_cleared_at a NULL, contra Postgres real, no solo
+  // pending_since. Escenario textual del ADR: una factura ya limpiada por
+  // revisión manual (uncertain_cleared_at poblado) vuelve a caer en
+  // FAILED_UNCERTAIN con afipContacted:true por un reintento posterior --
+  // sin este fix, el valor viejo sobrevive al UPDATE y esquiva el guard de
+  // retryExisting() sin revisión real. El efecto end-to-end (a nivel
+  // InvoiceService, AFIP fake) vive en
+  // invoice-uncertain-cleared-stale-reset.integration.test.ts.
+  it('markFailedWithClient() resetea uncertain_cleared_at a NULL al re-fallar una factura YA LIMPIADA por revisión manual (§3.5, escenario textual del ADR)', async () => {
+    const customer = await seedCustomer(db);
+    const invoice = await invoiceRepo.createWithClient(db, baseCreateInput(customer.id), {}, []);
+
+    // 1. Primera falla ambigua, contactó AFIP.
+    await invoiceRepo.markFailedWithClient(db, invoice.id, {
+      status: 'FAILED_UNCERTAIN', errorMessage: 'primera falla ambigua', afipContacted: true,
+    });
+
+    // 2. Revisión manual la limpia -- mismo mecanismo que
+    //    resolveCreditNoteRequestManually()/POST /api/invoices/:id/mark-not-issued.
+    await invoiceRepo.markUncertainClearedWithClient(db, invoice.id, { clearedBy: 'ident-manager' });
+    const { rows: clearedRows } = await db.query<{ uncertain_cleared_at: Date | null }>(
+      'SELECT uncertain_cleared_at FROM invoices WHERE id = $1', [invoice.id],
+    );
+    expect(clearedRows[0]?.uncertain_cleared_at).not.toBeNull(); // precondición del escenario
+
+    // 3. Reintento posterior -- vuelve a fallar de forma ambigua.
+    const updated = await invoiceRepo.markFailedWithClient(db, invoice.id, {
+      status: 'FAILED_UNCERTAIN', errorMessage: 'segunda falla ambigua -- reintento posterior', afipContacted: true,
+    });
+
+    expect(updated.uncertainClearedAt).toBeNull();
+    const { rows } = await db.query<{ uncertain_cleared_at: Date | null }>(
+      'SELECT uncertain_cleared_at FROM invoices WHERE id = $1', [invoice.id],
+    );
+    expect(rows[0]?.uncertain_cleared_at).toBeNull();
+  });
+
   // Confirma la parte del backfill de §3.6 que corrió en 2a mientras el
   // CHECK todavía no existía (fila 22 de
   // docs/inventario-dml-schema-2026-09-16.md) -- ejercitado ya por
