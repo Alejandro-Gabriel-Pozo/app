@@ -569,11 +569,16 @@ export function createCustomerRouter(
   // `domain_events` (`buildService()` construye `ReservationService` con
   // `SqlDomainEventRepository`), y esos eventos quedaban insertados sin
   // despachar nunca. Costo aceptado, no un efecto colateral escondido:
-  // `ensureTenantWorker` arranca DOS timers por tenant, no uno
+  // `ensureTenantWorker` arranca CUATRO timers por tenant, no uno
   // (`outbox.registry.ts` -- `OutboxWorker` 5s + `ReservationHoldExpiryWorker`
-  // 60s), y si el negocio nunca había tenido tráfico de staff, el primer
-  // arranque de `ReservationHoldExpiryWorker` barre de una sola vez todas las
-  // holds vencidas acumuladas, con efecto financiero real (anula las
+  // 60s + `InvoicePendingExpiryWorker` 60s desde el Bloque 4 del ADR
+  // `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`,
+  // 23/09/2026 (era "DOS timers" antes de ese bloque) + `CreditNoteReviewSlaWorker`
+  // 15min desde el Bloque 6 de credit_note_request (§6.5 bis, 26/09/2026,
+  // era "TRES timers" antes de mergear Bloque 4), y si el negocio
+  // nunca había tenido tráfico de staff, el primer arranque de
+  // `ReservationHoldExpiryWorker` barre de una sola vez todas las holds
+  // vencidas acumuladas, con efecto financiero real (anula las
   // transacciones asociadas). Idempotente por diseño
   // (`workers.has(businessId)` en `ensureTenantWorker`) -- llamarlo en cada
   // request del portal después de la primera vez es un lookup de `Map`, sin

@@ -57,6 +57,8 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async classifyOrderLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; } // sub-bloque 5 (b) -- sin caller acá
   async classifyReservationLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; } // bloque 3.3-d -- sin caller acá
   async listUnreconciledLiveInvoices() { return []; } // bandeja -- sin caller acá
+  async getPendingExpiredInvoiceIds(): Promise<string[]> { return []; } // Bloque 4 (23/09/2026) -- sin caller en este test
+  async expirePendingWithClient(): Promise<{ id: string; financialTransactionId: string | null } | null> { return null; } // Bloque 4 (23/09/2026) -- sin caller en este test
 }
 
 class FakeBusinessProfileRepository implements BusinessProfileRepository {

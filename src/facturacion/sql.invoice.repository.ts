@@ -1851,4 +1851,37 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     );
     return rows[0]?.status ?? null;
   }
+
+  // Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+  // 2026-09-23.md §3.3/§4/§6) -- ver el docblock de la interfaz
+  // (invoice.repository.ts) para el porqué completo.
+  async getPendingExpiredInvoiceIds(thresholdMs: number): Promise<string[]> {
+    const { rows } = await this.db.query<{ id: string }>(
+      `SELECT id FROM invoices
+        WHERE status = 'PENDING' AND pending_since < NOW() - ($1 || ' milliseconds')::interval
+        ORDER BY pending_since ASC`,
+      [thresholdMs],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  async expirePendingWithClient(
+    client: SqlClient,
+    id: string,
+    thresholdMs: number,
+  ): Promise<{ id: string; financialTransactionId: string | null } | null> {
+    const { rows } = await client.query<{ id: string; financial_transaction_id: string | null }>(
+      `UPDATE invoices
+          SET status = 'FAILED_UNCERTAIN', afip_contacted = true, pending_since = NULL,
+              uncertain_cleared_at = NULL
+        WHERE id = $1
+          AND status = 'PENDING'
+          AND pending_since < NOW() - ($2 || ' milliseconds')::interval
+        RETURNING id, financial_transaction_id`,
+      [id, thresholdMs],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { id: row.id, financialTransactionId: row.financial_transaction_id };
+  }
 }

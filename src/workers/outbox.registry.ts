@@ -8,11 +8,14 @@
  * callers, mismo primitivo idempotente (`ensureTenantWorker`). Esto garantiza
  * que cada worker lea de la base de datos correcta para cada tenant.
  *
- * Trade-off: `ensureTenantWorker` arranca TRES timers por tenant activo, no
- * uno -- `OutboxWorker` a 5 s (abajo), `ReservationHoldExpiryWorker` a 60 s
+ * Trade-off: `ensureTenantWorker` arranca CUATRO timers por tenant activo, no
+ * uno -- `OutboxWorker` a 5 s (abajo), `ReservationHoldExpiryWorker` a 60 s,
+ * `InvoicePendingExpiryWorker` a 60 s (Bloque 4 del ADR
+ * `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md`, 23/09/2026)
  * y `CreditNoteReviewSlaWorker` a 15 min (Bloque 6 de credit_note_request,
  * §6.5 bis -- SLA de 48hs no necesita la misma precisión). Con N tenants
- * activos son 3N timers.
+ * activos son 4N timers (era "TRES timers"/"3N" antes de mergear Bloque 4 --
+ * corregido en el mismo commit que suma el cuarto).
  * Aceptable hasta ~200 tenants (mismo techo que MAX_TENANT_POOLS).
  * Más allá, considerar un único worker que itere sobre tenants activos
  * o migrar el outbox a LISTEN/NOTIFY.
@@ -44,13 +47,18 @@ import { SqlResourceRepository }               from '../reservas/sql.resource.re
 import { SqlStayRepository }                   from '../pms-estadias/stay.repository.js';
 import { SqlAccountsReceivableRepository }     from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
-import { getFrontendOrigin }                   from '../config/env.js';
+import { getFrontendOrigin, getInvoicePendingExpiryThresholdMs } from '../config/env.js';
 import { SqlCreditNoteRequestRepository }      from '../facturacion/sql.credit-note-request.repository.js';
 import { CreditNoteReviewSlaWorker }           from './credit-note-review-sla.worker.js';
+// Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+// 2026-09-23.md §3.3/§6) -- worker hermano de ReservationHoldExpiryWorker,
+// mismo ciclo de vida por tenant.
+import { InvoicePendingExpiryWorker }          from './invoice-pending-expiry.worker.js';
 
 const workers = new Map<string, OutboxWorker>();
 const holdExpiryWorkers = new Map<string, ReservationHoldExpiryWorker>();
 const creditNoteReviewSlaWorkers = new Map<string, CreditNoteReviewSlaWorker>();
+const invoicePendingExpiryWorkers = new Map<string, InvoicePendingExpiryWorker>();
 
 // Un solo EmailSender para todo el proceso -- no es config por tenant
 // (A2.9: la cuenta de envío es infraestructura de la plataforma, ver
@@ -58,8 +66,11 @@ const creditNoteReviewSlaWorkers = new Map<string, CreditNoteReviewSlaWorker>();
 const emailSender = createEmailSender();
 
 /**
- * Arranca un worker de outbox (y su `ReservationHoldExpiryWorker` hermano,
- * `:134-143`) para el tenant dado si aún no existe. Llamar después de
+ * Arranca un worker de outbox y sus TRES hermanos de tenant --
+ * `ReservationHoldExpiryWorker`, `InvoicePendingExpiryWorker` y
+ * `CreditNoteReviewSlaWorker` (construidos
+ * más abajo en este mismo método, citados por nombre, no por línea, desde
+ * SCHEMA-ANCHOR-DRIFT-001) -- para el tenant dado si aún no existe. Llamar después de
  * resolver `req.db` -- hoy dos callers: `tenantMiddleware` (staff) y el
  * middleware de `customer.routes.ts` (portal de clientes,
  * CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001, 11/09/2026) -- cualquiera de los
@@ -169,9 +180,28 @@ export function ensureTenantWorker(
   holdExpiryWorker.start();
   holdExpiryWorkers.set(businessId, holdExpiryWorker);
 
+  // Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+  // 2026-09-23.md §3.3/§6) -- worker de vencimiento de facturas PENDING,
+  // mismo ciclo de vida que los dos de arriba (por tenant, arrancado acá,
+  // detenido en stopTenantWorker/stopAllWorkers). Reusa el `invoiceRepo`
+  // ya construido arriba (mismo `db` de tenant, DEFENSIVE_DEVELOPING §3) --
+  // creditNoteRequestRepo es nuevo, sobre el mismo `db`, reusado más abajo
+  // por CreditNoteReviewSlaWorker (Bloque 6 de credit_note_request), que no
+  // necesita su propia instancia.
+  const creditNoteRequestRepo = new SqlCreditNoteRequestRepository(db);
+  const invoicePendingExpiryWorker = new InvoicePendingExpiryWorker(
+    businessId,
+    invoiceRepo,
+    creditNoteRequestRepo,
+    transactionManager,
+    getInvoicePendingExpiryThresholdMs(),
+  );
+  invoicePendingExpiryWorker.start();
+  invoicePendingExpiryWorkers.set(businessId, invoicePendingExpiryWorker);
+
   // Bloque 6 de credit_note_request (§6.5 bis, pregunta 2) -- worker de
-  // SLA/escalamiento, mismo ciclo de vida por tenant que los dos de
-  // arriba (start() acá, stop() en stopTenantWorker/stopAllWorkers).
+  // SLA/escalamiento, mismo ciclo de vida por tenant que los de arriba
+  // (start() acá, stop() en stopTenantWorker/stopAllWorkers).
   // `getManagementEmails`/`emailSender`/`frontendBase` son los mismos ya
   // resueltos arriba para el aviso de dead-letter (B2/B, mismo grupo
   // MANAGEMENT, pregunta B de §6.5 bis ya resuelta con ese mismo método
@@ -183,8 +213,8 @@ export function ensureTenantWorker(
   // que mostrar (callejón sin salida, no un error). Mismo criterio honesto
   // que el resto de este worker: hasta que esa bandeja se construya, la
   // única superficie visible es la API cruda (GET /api/credit-note-requests)
-  // más los logs -- no una pantalla que un operador mire.
-  const creditNoteRequestRepo = new SqlCreditNoteRequestRepository(db);
+  // más los logs -- no una pantalla que un operador mire. Reusa el
+  // `creditNoteRequestRepo` ya construido arriba para InvoicePendingExpiryWorker.
   const creditNoteReviewSlaWorker = new CreditNoteReviewSlaWorker({
     businessId,
     creditNoteRequestRepo,
@@ -206,6 +236,8 @@ export async function stopAllWorkers(): Promise<void> {
   workers.clear();
   await Promise.allSettled([...holdExpiryWorkers.values()].map((w) => w.stop()));
   holdExpiryWorkers.clear();
+  await Promise.allSettled([...invoicePendingExpiryWorkers.values()].map((w) => w.stop()));
+  invoicePendingExpiryWorkers.clear();
   await Promise.allSettled([...creditNoteReviewSlaWorkers.values()].map((w) => w.stop()));
   creditNoteReviewSlaWorkers.clear();
 }
@@ -227,6 +259,12 @@ export async function stopTenantWorker(businessId: string): Promise<void> {
   if (holdExpiryWorker) {
     holdExpiryWorkers.delete(businessId);
     await holdExpiryWorker.stop();
+  }
+
+  const invoicePendingExpiryWorker = invoicePendingExpiryWorkers.get(businessId);
+  if (invoicePendingExpiryWorker) {
+    invoicePendingExpiryWorkers.delete(businessId);
+    await invoicePendingExpiryWorker.stop();
   }
 
   const creditNoteReviewSlaWorker = creditNoteReviewSlaWorkers.get(businessId);

@@ -808,4 +808,53 @@ export interface InvoiceRepository {
    * PARKEADO, sin consumidor -- ver su propio docblock.
    */
   getOrderIdsByInvoiceItemId(invoiceId: string): Promise<Map<string, string>>;
+  /**
+   * Bloque 4 (23/09/2026, ADR `docs/diseno-invoice-retry-reverse-window-guard-
+   * 2026-09-23.md` §3.3/§4/§6, `ISSUE-BEFORE-REVERSE-WINDOW-001`) --
+   * candidatos a vencimiento para `InvoicePendingExpiryWorker`
+   * (`src/workers/invoice-pending-expiry.worker.ts`): `id`s de facturas
+   * `PENDING` cuyo `pending_since` ya superó `thresholdMs`. Lectura simple,
+   * SIN lock (mismo criterio que
+   * `ReservationRepository.getPendingWithExpiredDeposit()`) -- el `UPDATE`
+   * condicionado de `expirePendingWithClient()` re-evalúa el MISMO
+   * predicado dentro de la transacción antes de escribir, así que una
+   * carrera entre este poll y esa escritura no puede colar una fila que ya
+   * dejó de ser candidata (ver el docblock de ese método).
+   */
+  getPendingExpiredInvoiceIds(thresholdMs: number): Promise<string[]>;
+  /**
+   * Bloque 4 (23/09/2026, §3.3) -- UPDATE condicionado, UNA sola sentencia,
+   * SIN `SELECT` previo comparado por igualdad contra un valor leído afuera
+   * (hueco #3 de la ronda 1 del gate sobre este ADR: `node-pg` trunca
+   * `timestamptz` a precisión de milisegundos al convertirlo a `Date` de
+   * JS, mientras que `NOW()` de Postgres tiene precisión de microsegundos
+   * -- un `WHERE pending_since = $valorLeído` nunca matchea, sin error
+   * visible, y el worker nunca actuaría). Re-evalúa
+   * `status = 'PENDING' AND pending_since < NOW() - thresholdMs` en el
+   * momento mismo del `UPDATE` -- bajo READ COMMITTED, Postgres re-chequea
+   * el `WHERE` de cada fila candidata al tomar su lock de escritura: si
+   * otra transacción ya sacó esta fila de `PENDING` entre el poll
+   * (`getPendingExpiredInvoiceIds()`) y este `UPDATE` (un reintento humano
+   * vía `retryExisting()` -- una vez exista el Bloque 2c --, u otro ciclo
+   * del worker), la re-evaluación ya no matchea y no se devuelve fila --
+   * sin condición de carrera, sin columna de token adicional.
+   *
+   * Limpia `uncertain_cleared_at = NULL` en el mismo `UPDATE` (mismo
+   * criterio que §3.5 del ADR aplica a `markFailedWithClient()`): si esta
+   * fila hubiera sido limpiada por un operador en un ciclo
+   * `FAILED_UNCERTAIN` anterior y después volvió a `PENDING` por un
+   * reintento (Bloque 2c), el valor viejo de `uncertain_cleared_at`
+   * quedaría poblado y `retryExisting()` la trataría como "ya limpiada" sin
+   * que ningún humano la haya revisado esta vez.
+   *
+   * `null` = la fila ya no es candidata (otra transacción la tomó primero,
+   * o el id no corresponde a ninguna fila `PENDING` vencida). El caller no
+   * reintenta -- se salta al siguiente candidato del mismo ciclo, mismo
+   * criterio que `ReservationHoldExpiryWorker.expireOne()`.
+   */
+  expirePendingWithClient(
+    client: SqlClient,
+    id: string,
+    thresholdMs: number,
+  ): Promise<{ id: string; financialTransactionId: string | null } | null>;
 }

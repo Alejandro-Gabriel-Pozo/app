@@ -579,3 +579,57 @@ function pendingRowForUncertainTest(): Record<string, unknown> {
     error_message: 'ambiguo', created_at: new Date('2026-09-23T00:00:00Z'), issued_at: null,
   };
 }
+
+// Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
+// 2026-09-23.md §3.3/§4/§6) -- estos tests cubren la FORMA de las dos
+// sentencias nuevas (predicado sin SELECT previo comparado por igualdad,
+// interval armado por concatenación en vez de un valor de aplicación,
+// columnas que limpia el UPDATE) contra un mock -- el comportamiento
+// real contra Postgres (re-evaluación del WHERE bajo READ COMMITTED,
+// atomicidad con la transición de credit_note_request) es alcance de
+// invoice-pending-expiry-worker.integration.test.ts.
+describe('SqlInvoiceRepository — getPendingExpiredInvoiceIds()/expirePendingWithClient() (Bloque 4)', () => {
+  it('getPendingExpiredInvoiceIds() filtra por status PENDING y pending_since vencido, sin comparar contra un valor de aplicación', async () => {
+    const mockSqlClient = mockClient([{ id: 'inv-1' }, { id: 'inv-2' }]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const ids = await repo.getPendingExpiredInvoiceIds(600_000);
+
+    const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain(`status = 'PENDING'`);
+    expect(sql).toContain('pending_since < NOW()');
+    // El threshold viaja como bind param concatenado a una unidad de
+    // interval, nunca un `Date`/timestamp de aplicación comparado por
+    // igualdad (hueco #3 de la ronda 1 del gate -- ver docblock de la
+    // interfaz).
+    expect(sql).toMatch(/\(\$1 \|\| ' milliseconds'\)::interval/);
+    expect(params).toEqual([600_000]);
+    expect(ids).toEqual(['inv-1', 'inv-2']);
+  });
+
+  it('expirePendingWithClient() -- UNA sola sentencia UPDATE, re-evalúa status + pending_since en el WHERE, limpia uncertain_cleared_at', async () => {
+    const mockSqlClient = mockClient([{ id: 'inv-1', financial_transaction_id: 'ft-1' }]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const result = await repo.expirePendingWithClient(mockSqlClient, 'inv-1', 600_000);
+
+    const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain(`SET status = 'FAILED_UNCERTAIN', afip_contacted = true, pending_since = NULL`);
+    expect(sql).toContain('uncertain_cleared_at = NULL');
+    expect(sql).toContain(`WHERE id = $1`);
+    expect(sql).toContain(`AND status = 'PENDING'`);
+    expect(sql).toMatch(/pending_since < NOW\(\) - \(\$2 \|\| ' milliseconds'\)::interval/);
+    expect(sql).toContain('RETURNING id, financial_transaction_id');
+    expect(params).toEqual(['inv-1', 600_000]);
+    expect(result).toEqual({ id: 'inv-1', financialTransactionId: 'ft-1' });
+  });
+
+  it('expirePendingWithClient() -- sin fila (otra transacción ya la tomó, o ya no es candidata) devuelve null, no lanza', async () => {
+    const mockSqlClient = mockClient([]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const result = await repo.expirePendingWithClient(mockSqlClient, 'inv-ya-tomada', 600_000);
+
+    expect(result).toBeNull();
+  });
+});
