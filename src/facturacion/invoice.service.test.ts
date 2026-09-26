@@ -302,6 +302,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
       // Bloque 2a -- espeja markFailedWithClient() real: data.status
       // siempre saca la fila de PENDING, limpia pending_since.
       pendingSince: null,
+      // §3.5 -- espeja el reset incondicional de uncertain_cleared_at del
+      // markFailedWithClient() real (uncertain_cleared_by NO se toca).
+      uncertainClearedAt: null,
     };
     this.invoices.set(id, updated);
     return updated;
@@ -2290,6 +2293,26 @@ describe('InvoiceService', () => {
       expect(invoice.id).toBe('inv-uncertain');
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cae).toBe('CAE-RETRY');
+    });
+
+    it('§3.5 (hotfix D4+§3.5, 26/09/2026) -- limpiada, el reintento vuelve a caer ambiguo con afipContacted:true: la marca vieja NO sobrevive y el siguiente reintento ya no llama a AFIP', async () => {
+      seedUncertainInvoice({ uncertainClearedAt: new Date('2026-09-26T10:00:00Z'), uncertainClearedBy: 'identity-manager' });
+      // Error de red en createNextVoucher() + FECompUltimoAutorizado que no
+      // avanza -> reconcileAfterFailure() -> FAILED_UNCERTAIN/afipContacted:true.
+      const createNextVoucher = vi.fn().mockRejectedValueOnce(new Error('ECONNRESET'));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(AfipRequestUncertainError);
+      const refailed = invoiceRepo.invoices.get('inv-uncertain')!;
+      expect(refailed.status).toBe('FAILED_UNCERTAIN');
+      expect(refailed.afipContacted).toBe(true);
+      expect(refailed.uncertainClearedAt).toBeNull();
+      expect(refailed.uncertainClearedBy).toBe('identity-manager'); // rastro histórico, no se toca
+
+      const again = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(createNextVoucher).toHaveBeenCalledOnce(); // solo el reintento que re-falló
+      expect(again.status).toBe('FAILED_UNCERTAIN');
     });
   });
 

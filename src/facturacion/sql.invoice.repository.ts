@@ -1796,6 +1796,13 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // volvió a su forma previa a §3.8: bloquea cualquier fila
     // FAILED_UNCERTAIN con afipContacted:true, esté limpiada o no (falla
     // cerrado) -- ese guard no depende de este reset.
+    //
+    // Hotfix D4+§3.5 (26/09/2026,
+    // docs/diseno-fix-produccion-uncertain-cleared-at-stale-reset-2026-09-26.md)
+    // llevó este mismo reset a producción de forma aislada, como hijo de
+    // 548c432 -- ver ese documento para la matriz completa de call-sites y
+    // lectores en el árbol de producción (distinto del árbol de HEAD, que
+    // además tiene §3.8/R').
     const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5,

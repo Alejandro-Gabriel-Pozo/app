@@ -262,7 +262,9 @@ describe.skipIf(skipIfNoDb)('invoices.pending_since -- Bloque 2a (23/09/2026)', 
   // revisión manual (uncertain_cleared_at poblado) vuelve a caer en
   // FAILED_UNCERTAIN con afipContacted:true por un reintento posterior --
   // sin este fix, el valor viejo sobrevive al UPDATE y esquiva el guard de
-  // retryExisting()/el guard 8-bis de reverseTransfer() sin revisión real.
+  // retryExisting() sin revisión real. El efecto end-to-end (a nivel
+  // InvoiceService, AFIP fake) vive en
+  // invoice-uncertain-cleared-stale-reset.integration.test.ts.
   it('markFailedWithClient() resetea uncertain_cleared_at a NULL al re-fallar una factura YA LIMPIADA por revisión manual (§3.5, escenario textual del ADR)', async () => {
     const customer = await seedCustomer(db);
     const invoice = await invoiceRepo.createWithClient(db, baseCreateInput(customer.id), {}, []);
