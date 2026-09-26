@@ -1888,7 +1888,7 @@ anteriores.
      sección "Split de push del ADR reintento-vs-reversa". Sigue acá (no se
      corta a `resuelto.md`) porque el resto de este bullet -- ítem 3 -- está
      parcialmente verificado (siguen abiertos: `/health`/`/health/db` de
-     a, f-Hotel los Álamos y g.2; b/c/d/e ya cerrados, ver ese ítem);
+     a, y f-Hotel los Álamos; b/c/d/e/g ya cerrados, ver ese ítem);
      cortar solo la mitad ya confirmada es un bloque de docs aparte, no
      incluido en este cambio.
   2. **Antes de DESPLEGAR el Bloque 4 completo (guard de solo lectura de
@@ -1983,7 +1983,9 @@ anteriores.
         `'ASSIGNED'::character varying`, en los dos; constraint
         `chk_reservations_assignment_status` existe en los dos;
         `GROUP BY assignment_status` -- Demo: `PENDING_ASSIGNMENT` 3,
-        `ASSIGNED` 43. Las 3 `PENDING_ASSIGNMENT` tienen `created_at`
+        `ASSIGNED` 43 (medido post-deploy, antes de g.2 -- después de
+        g.2 una de las 3 pasó a `ASSIGNED`, ver el ítem g de acá abajo).
+        Las 3 `PENDING_ASSIGNMENT` tienen `created_at`
         entre `18:54:38Z` y `18:56:06Z`, posterior al deploy `live`
         (`18:42:52Z`) -- son las 3 reservas de prueba de Fase 2, no
         residuo de antes del deploy; las 43 `ASSIGNED` cubren todo lo
@@ -2002,12 +2004,44 @@ anteriores.
      g. Requieren login real del dueño (un agente no los puede originar):
         (1) **✅ Confirmado por el dueño** (26/09/2026): una sesión de
         staff abierta ANTES del deploy sigue válida DESPUÉS (coerción
-        `tv ?? 0`) -- "Si ok me deja". (2) **NO corrido** -- validación
-        funcional de Fase 2 del runbook (crear por categoría →
-        `PENDING_ASSIGNMENT` con recurso candidato → reasignar por `PUT`
-        → check-in confirmando la asignación): decisión explícita del
-        dueño de diferirla ("tengo planes para esto"), no una omisión --
-        sigue abierta acá hasta que se corra o el dueño decida otra cosa.
+        `tv ?? 0`) -- "Si ok me deja". (2) **✅ Confirmado por el dueño**
+        (26/09/2026): validación funcional de Fase 2 corrida por el
+        dueño desde la UI contra producción real
+        (`host.zuluhub.com.ar`, tenant Demo); evidencia: SQL de solo
+        lectura corrida DESPUÉS de cada paso + 2 screenshots del dueño.
+        Crear por categoría → la reserva `8f119cc6` nació
+        `PENDING_ASSIGNMENT` con recurso candidato Habitación 03
+        (`dc18f9a6`) -- es una de las 3 `PENDING_ASSIGNMENT` contadas en
+        (e); ID y candidato se registran recién acá. Guard del `PUT`
+        (Fase 2, `41b1ff9`): un drag diagonal (recurso + fechas en un
+        mismo `PUT`) sobre la reserva de prueba `947f75f1` fue rechazado
+        con `409` `ASSIGNMENT_COMBINED_CHANGE` ("no se puede combinar
+        `resourceId` con otros cambios ... en el mismo PUT"; el ID
+        `947f75f1` figura en el mensaje) -- evidencia: screenshot del
+        dueño, no SQL. Reasignación de `8f119cc6` en un paso separado
+        (drag vertical, solo recurso): pasó a `resource_id = cfb4ca06`
+        (Habitación 02), `assignment_status = ASSIGNED`,
+        `status = CONFIRMED` (`updated_at 2026-09-26T19:24:59.800Z`).
+        Check-in: `stay` `833afcab-7f42-4187-b116-8d6efff7c034`,
+        `status = CHECKED_IN`, mismo `resource_id`,
+        `checked_in_at 2026-09-26T19:26:31.637Z`. Crear → reasignar →
+        check-in validados en producción real sobre `8f119cc6`, con SQL
+        post-hoc en los tres; el rechazo del `PUT` combinado, con
+        screenshot. Las otras 2 reservas de prueba (`947f75f1`,
+        `a05725ba`) no se cancelaron -- el dueño indicó "Déjalo,
+        registrarlo y sigamos". A la verificación SQL de
+        `2026-09-26T19:32:27.519Z`: `947f75f1` -- Habitación 01
+        (`46184b81`), `PENDING`/`PENDING_ASSIGNMENT`, `27/09→29/09`;
+        `a05725ba` -- Habitación 02 (`cfb4ca06`), mismo
+        `PENDING`/`PENDING_ASSIGNMENT`, `28/09→30/09`. Sin solapamiento
+        con `8f119cc6` (ahora `30/09→03/10` en la misma Habitación 02 --
+        límites estrictos, quedan pegadas, no se cruzan). Mientras sigan
+        `PENDING`/`CONFIRMED`, retienen la disponibilidad de su recurso
+        en esas fechas (`blockingStatuses`,
+        `sql.reservation.repository.ts:366`), sin generar
+        `occupancy_records` (`recordOccupancy()` saltea
+        `PENDING_ASSIGNMENT`, `reservation-availability.service.ts:424`).
+        Son datos de prueba, no un problema registrado.
      **Hallazgo durante la exploración de Fase 2 en Demo (26/09/2026,
      investigado con datos reales, no descartado a ojo):** el dueño
      reportó que una reserva nueva "sobreescribió" reservas `COMPLETED`.
@@ -2067,12 +2101,11 @@ anteriores.
      quiere, queda para otro momento.
   **De las 3 verificaciones listadas acá, la 1 y la 2 están cerradas; la 3
   (verificación post-deploy) se corrió el 26/09/2026 con el deploy grande
-  ya `live` -- b, c, d, e, f (Demo) y g.1 confirmados con evidencia real.
-  Quedan abiertos: a (`/health` y `/health/db?fresh=1`, todavía sin
-  verificar -- identidad de deploy sí confirmada), f (Hotel los Álamos,
-  falta su primer login de staff) y g.2 (validación funcional de Fase 2,
-  diferida por decisión explícita del dueño -- tiene su propio plan para
-  correrla).** El backfill de 2a
+  ya `live` -- b, c, d, e, f (Demo) y g (g.1 y g.2, los dos) confirmados
+  con evidencia real. Quedan abiertos: a (`/health` y
+  `/health/db?fresh=1`, todavía sin verificar -- identidad de deploy sí
+  confirmada) y f (Hotel los Álamos, falta su primer login de staff).**
+  El backfill de 2a
   en sí ya fue seguro (punto 1, cerrado); B-1 (punto 2) dio luz verde
   tanto en la corrida original como en la re-corrida fresca justo antes
   del push (`18:40Z`, ambos tenants en 0); el deploy grande está `live`
