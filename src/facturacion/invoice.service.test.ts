@@ -3213,34 +3213,55 @@ describe('InvoiceService', () => {
         expect(callOrder).toEqual(['AR_LOCK', 'INVOICE_CLAIM']);
       });
 
-      it('factura ya PENDING (doble click / reintento ya en curso) -- takeRetryClaimWithClient() no devuelve fila, retryExisting() rechaza con RetryInvoiceInFlightError SIN llamar a AFIP', async () => {
-        // §3.2: un PENDING "ya asentado" no matchea ninguna rama del WHERE
-        // de la toma exclusiva (ni REJECTED ni FAILED_UNCERTAIN) -- mismo
-        // mecanismo que protege contra dos retryExisting() concurrentes
-        // sobre la misma fila REJECTED/FAILED_UNCERTAIN (el segundo en
-        // llegar encuentra la fila que el primero ya dejó PENDING). Acá se
-        // simula el caso más simple: la fila YA estaba PENDING cuando este
-        // retryExisting() arrancó (ninguno de los dos guards de status del
-        // principio del método la intercepta -- solo miran ISSUED/
-        // FAILED_UNCERTAIN-sin-limpiar).
-        seedRetriableInvoice({ status: 'PENDING', afipContacted: false, pendingSince: new Date() });
+      it('toma exclusiva sin fila, a nivel del repositorio/fake -- una segunda takeRetryClaimWithClient() directa sobre una factura que la primera ya dejó PENDING rechaza con RetryInvoiceInFlightError (llamada directa, sin pasar por el guard de solo lectura de Bloque 4 en retryExisting())', async () => {
+        // C2 (26/09/2026, gate `architecture-governor`) -- reescrito: la
+        // versión anterior de este test sembraba la factura YA en `PENDING`
+        // y llamaba a `service.requestInvoice()`; el guard de Bloque 4
+        // (`existing.status === 'PENDING'`, invoice.service.ts, corre ANTES
+        // en retryExisting()) intercepta ese caso sin llegar nunca a la
+        // toma exclusiva -- probaba el guard de Bloque 4, no lo que el
+        // nombre/comentario decía. Este test ejercita el predicado del
+        // `InMemoryInvoiceRepository` (el doble de test de este archivo) que
+        // reimplementa el WHERE de la toma exclusiva -- no ejercita
+        // `InvoiceService` ni el SQL real (eso lo cubren
+        // `sql.invoice.repository.test.ts` y el test de integración
+        // homónimo). El test hermano de abajo sí ejercita `InvoiceService`
+        // completo, rama CHARGE, con la toma rechazando.
+        seedRetriableInvoice({ status: 'REJECTED', afipContacted: false, pendingSince: null });
+        const fakeClient = {} as SqlClient;
+
+        // Primera llamada -- REJECTED matchea el WHERE de la toma
+        // exclusiva, toma la marca (pasa a PENDING).
+        await invoiceRepo.takeRetryClaimWithClient(fakeClient, 'inv-retry');
+        expect(invoiceRepo.invoices.get('inv-retry')?.status).toBe('PENDING');
+
+        // Segunda llamada -- la fila ya está PENDING, ninguna rama del
+        // WHERE matchea (ni REJECTED ni FAILED_UNCERTAIN) -- "RETURNING
+        // vacío" real de la toma exclusiva, no el guard de Bloque 4.
+        await expect(invoiceRepo.takeRetryClaimWithClient(fakeClient, 'inv-retry')).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
+        // Sin tocar de nuevo -- la segunda llamada no aplicó ningún cambio.
+        expect(invoiceRepo.invoices.get('inv-retry')?.status).toBe('PENDING');
+      });
+
+      it('doble click de CHARGE -- si takeRetryClaimWithClient() rechaza (ya en vuelo), requestInvoice() propaga RetryInvoiceInFlightError SIN llamar a AFIP (a nivel de InvoiceService, rama CHARGE)', async () => {
+        // C2 (26/09/2026, gate `architecture-governor`) -- espejo, para la
+        // rama CHARGE, del test "doble click de NC pura (REFUND)" de más
+        // abajo (Bloque 5). REJECTED pasa el guard de solo lectura de
+        // Bloque 4 (`existing.status === 'PENDING'` no aplica), así que
+        // esta vez sí se llega a la toma exclusiva dentro del service.
+        seedRetriableInvoice({ status: 'REJECTED', afipContacted: false, pendingSince: null });
         arRepo.rows.set('ar-1', makeArRow());
         const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(9));
         const service = buildService({
           tx: makeTx({ id: 'ft-1', customerId: 'cust-empresa' }),
           client: fakeArcaClient({ createNextVoucher }),
         });
+        vi.spyOn(invoiceRepo, 'takeRetryClaimWithClient').mockRejectedValue(new RetryInvoiceInFlightError('inv-retry'));
 
-        await expect(
-          service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
-        ).rejects.toMatchObject({ code: 'RETRY_INVOICE_IN_FLIGHT' });
         await expect(
           service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }),
         ).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
         expect(createNextVoucher).not.toHaveBeenCalled();
-        // La fila sigue PENDING -- la toma exclusiva no la tocó (RETURNING
-        // vacío, ningún UPDATE aplicado).
-        expect(invoiceRepo.invoices.get('inv-retry')?.status).toBe('PENDING');
       });
 
       describe('Bloque 5 (§3.11, 23/09/2026, gate `architecture-governor`, ronda 17) -- la toma exclusiva también cubre NC pura (REFUND/ADJUSTMENT, sin CHARGE en el lote), vía el `else` nuevo de retryExisting()', () => {
@@ -3285,11 +3306,12 @@ describe('InvoiceService', () => {
         );
 
         it('doble click de NC pura (REFUND) -- si takeRetryClaimWithClient() no devuelve fila (ya en vuelo), retryExisting() rechaza con RetryInvoiceInFlightError SIN llamar a AFIP', async () => {
-          // Mismo patrón que el test hermano de PENDING para CHARGE (línea
-          // ~3061 de este archivo): simula el efecto del `UPDATE ... RETURNING`
-          // vacío del mecanismo real (`takeRetryClaimWithClient()` sin fila que
-          // actualizar) sin depender de Postgres real -- eso lo cubre el
-          // integration test parametrizado de "doble click".
+          // Mismo patrón que el test hermano "doble click de CHARGE" (más
+          // arriba en este archivo, buscar por nombre): simula el efecto del
+          // `UPDATE ... RETURNING` vacío del mecanismo real
+          // (`takeRetryClaimWithClient()` sin fila que actualizar) sin
+          // depender de Postgres real -- eso lo cubre el integration test
+          // parametrizado de "doble click".
           seedRetriableInvoice({ cbteTipo: CBTE_TIPO_NOTA_CREDITO_B });
           const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
           const service = buildService({

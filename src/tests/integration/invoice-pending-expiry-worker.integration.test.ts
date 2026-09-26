@@ -81,6 +81,9 @@ import type { ReservationRepository } from '../../reservas/reservation.repositor
 import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
 import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
+import { AccountsReceivableService, ArReversalRequiresCreditNoteError } from '../../clientes-finanzas/accounts-receivable.service.js';
+import { SqlCustomerRepository } from '../../clientes-finanzas/sql.customer.repository.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 
 const BUSINESS_ID = 'biz-invoice-pending-expiry-worker';
 const THRESHOLD_MS = 10 * 60_000; // 10 minutos, default del ADR §3.4
@@ -145,6 +148,11 @@ describe.skipIf(skipIfNoDb)('InvoicePendingExpiryWorker -- Bloque 4 (23/09/2026,
     await db.query('DELETE FROM credit_note_request');
     await db.query('DELETE FROM invoice_items');
     await db.query('DELETE FROM invoice_charges');
+    // C3 (26/09/2026) -- `accounts_receivable.stay_id` es RESTRICT y
+    // `accounts_receivable.guest_payment_transaction_id` es NO ACTION (ver
+    // schema.sql) -- borrar ANTES de `DELETE FROM stays`/`financial_transactions`
+    // más abajo, mismo criterio que el resto de este bloque.
+    await db.query('DELETE FROM accounts_receivable');
     // `invoices` <-> `financial_transactions` se referencian mutuamente
     // (`invoices.financial_transaction_id` y
     // `financial_transactions.reversed_invoice_id`), sin ON DELETE en
@@ -154,6 +162,9 @@ describe.skipIf(skipIfNoDb)('InvoicePendingExpiryWorker -- Bloque 4 (23/09/2026,
     await db.query('UPDATE invoices SET financial_transaction_id = NULL');
     await db.query('DELETE FROM invoices');
     await db.query('DELETE FROM financial_transactions');
+    // C3 (26/09/2026) -- `stays.reservation_id` es RESTRICT -- borrar ANTES
+    // de `DELETE FROM reservations` de abajo.
+    await db.query('DELETE FROM stays');
     await db.query('DELETE FROM reservations');
   });
 
@@ -187,6 +198,66 @@ describe.skipIf(skipIfNoDb)('InvoicePendingExpiryWorker -- Bloque 4 (23/09/2026,
     const customer = await seedCustomer(db);
     const reservation = await seedReservation(db, resource.id, customer.id);
     return { resource, customer, reservation };
+  }
+
+  /**
+   * C3 (26/09/2026, gate `architecture-governor`) -- mismo constructor que
+   * `reverse-transfer.integration.test.ts::makeArService()`, duplicado acá
+   * a propósito (mismo criterio que el resto de este archivo/repo: sin
+   * módulo compartido de test helpers para esto todavía).
+   */
+  function makeArService(): AccountsReceivableService {
+    return new AccountsReceivableService(
+      new SqlAccountsReceivableRepository(db),
+      financialRepo,
+      new SqlStayRepository(db),
+      new SqlCustomerRepository(db),
+      new PgTransactionManager(pool),
+      new SqlBusinessProfileRepository(db),
+      invoiceRepo,
+      new SqlReservationRepository(db, new SqlResourceRepository(db)),
+    );
+  }
+
+  /**
+   * C3 -- empresa + huésped + reserva + stay, transferidos vía el SERVICIO
+   * real (`transferStayBalanceToReceivable()`), mismo camino que
+   * `reverse-transfer.integration.test.ts::seedTransferredScenario()`
+   * (duplicado acá, ver el docblock de `makeArService()` arriba). Devuelve
+   * la AR `PENDIENTE_FACTURAR` resultante -- `chargeId` es el `CHARGE`
+   * contra la EMPRESA (`ar.financialTransactionId`), el mismo que
+   * `getAllLinkedInvoicesWithClient()`/el guard 8-bis de `reverseTransfer()`
+   * miran, no el `CHARGE` original del huésped.
+   */
+  async function seedTransferredScenario(balance = 1000) {
+    const resource = await seedResource(db, categoryId);
+    const guest = await seedCustomer(db);
+    const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: balance });
+    const company = await seedCustomer(db);
+    await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+
+    const stayId = randomUUID();
+    await db.query(
+      `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+      [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+    );
+
+    await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+      reservationId: reservation.id, stayId, type: 'CHARGE', amount: balance,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    const ar = await makeArService().transferStayBalanceToReceivable({
+      stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+    });
+
+    return {
+      ar, stayId, reservationId: reservation.id, guest, company,
+      chargeId: ar.financialTransactionId!,
+      paymentId: ar.guestPaymentTransactionId!,
+    };
   }
 
   /**
@@ -473,5 +544,110 @@ describe.skipIf(skipIfNoDb)('InvoicePendingExpiryWorker -- Bloque 4 (23/09/2026,
       'SELECT state FROM credit_note_request WHERE id = $1', [requestId],
     );
     expect(reqRows[0]!.state).toBe('PENDIENTE');
+  });
+
+  // -----------------------------------------------------------------------
+  // 5. C3 (26/09/2026, gate `architecture-governor`) -- el reset de
+  //    `uncertain_cleared_at` DENTRO de `expirePendingWithClient()` (F1 del
+  //    veredicto sobre el merge de Bloque 4 + reaplicación de 2c/5/§3.8)
+  //    solo estaba protegido por un test que compara el texto del SQL
+  //    contra un mock (sql.invoice.repository.test.ts) -- ningún test de
+  //    COMPORTAMIENTO contra Postgres real lo cubría. Recorre el flujo
+  //    completo con el que 2c y Bloque 4 interactúan hoy: una factura
+  //    limpiada por revisión manual (uncertain_cleared_at poblado) que la
+  //    toma exclusiva de 2c vuelve a tomar (pasa a PENDING SIN tocar esa
+  //    columna) y que después el worker vence -- el reset tiene que volver
+  //    a poblar el guard de `retryExisting()`/guard 8-bis, no dejarlos
+  //    esquivados por un valor viejo.
+  // -----------------------------------------------------------------------
+
+  it('C3: CHARGE limpiado por revisión manual -> re-tomado por la toma exclusiva de 2c (uncertain_cleared_at viaja poblado a PENDING) -> vencido por el worker -- uncertain_cleared_at vuelve a NULL de verdad, reaparece en listUncertainInvoices(), bloquea un retryExisting() posterior SIN llamar a AFIP, y bloquea reverseTransfer() con ArReversalRequiresCreditNoteError', async () => {
+    const { ar, chargeId, company } = await seedTransferredScenario(1000);
+    const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+
+    // 1. Factura CHARGE que llega a FAILED_UNCERTAIN con afipContacted:true
+    //    -- sembrada por INSERT directo (mismo criterio que
+    //    `seedExpiredPendingInvoice()`/`seedIssuedInvoice()` de este mismo
+    //    archivo): `cbte_nro`/`cae` quedan NULL a propósito, coherente con
+    //    "AFIP contactado, sin confirmación" (nunca se reserva localmente
+    //    antes de que AFIP confirme, ver docblock de `Invoice.cbteNro`).
+    const invoiceId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          status, afip_request, afip_contacted)
+       VALUES ($1,$2,$3,$4,$5,'homologacion',1,$6,1,96,'0',5,'PES',826.45,173.55,1000,
+               'FAILED_UNCERTAIN',$7,TRUE)`,
+      [invoiceId, BUSINESS_ID, chargeId, company.id, `invoice:${chargeId}`, CBTE_TIPO_FACTURA_B, JSON.stringify({})],
+    );
+
+    // 2. Limpiada por revisión manual -- vía el repositorio real, no SQL a
+    //    mano: puebla uncertain_cleared_at/uncertain_cleared_by.
+    await invoiceRepo.markUncertainClearedWithClient(db, invoiceId, { clearedBy: 'ident-manual-review' });
+    const { rows: afterClear } = await db.query<{ uncertain_cleared_at: Date | null }>(
+      'SELECT uncertain_cleared_at FROM invoices WHERE id = $1', [invoiceId],
+    );
+    expect(afterClear[0]!.uncertain_cleared_at).not.toBeNull();
+
+    // 3. La toma exclusiva de 2c la vuelve a tomar -- pasa a PENDING SIN
+    //    tocar uncertain_cleared_at (solo markFailedWithClient()/
+    //    expirePendingWithClient() la tocan) -- así es como 2c y Bloque 4
+    //    interactúan hoy, ver docblock de markFailedWithClient().
+    await invoiceRepo.takeRetryClaimWithClient(db, invoiceId);
+    const { rows: afterClaim } = await db.query<{ status: string; uncertain_cleared_at: Date | null }>(
+      'SELECT status, uncertain_cleared_at FROM invoices WHERE id = $1', [invoiceId],
+    );
+    expect(afterClaim[0]!.status).toBe('PENDING');
+    expect(afterClaim[0]!.uncertain_cleared_at).not.toBeNull(); // viaja poblado -- el punto de este test
+
+    // 4. Atrasa pending_since más allá del umbral de expiración.
+    await db.query(`UPDATE invoices SET pending_since = NOW() - INTERVAL '1 hour' WHERE id = $1`, [invoiceId]);
+
+    // 5. Corre el worker.
+    await makeWorker().poll();
+
+    // 6a. Vuelve a FAILED_UNCERTAIN con afip_contacted:true.
+    const { rows: afterWorker } = await db.query<{ status: string; afip_contacted: boolean; uncertain_cleared_at: Date | null; pending_since: Date | null }>(
+      'SELECT status, afip_contacted, uncertain_cleared_at, pending_since FROM invoices WHERE id = $1', [invoiceId],
+    );
+    expect(afterWorker[0]!.status).toBe('FAILED_UNCERTAIN');
+    expect(afterWorker[0]!.afip_contacted).toBe(true);
+    expect(afterWorker[0]!.pending_since).toBeNull();
+    // 6b. uncertain_cleared_at volvió a NULL -- el reset REAL, no el mock
+    //     que sql.invoice.repository.test.ts ya cubría.
+    expect(afterWorker[0]!.uncertain_cleared_at).toBeNull();
+
+    // 6c. La fila reaparece en listUncertainInvoices() -- su WHERE exige
+    //     exactamente status='FAILED_UNCERTAIN' AND afip_contacted AND
+    //     uncertain_cleared_at IS NULL.
+    const uncertainList = await invoiceRepo.listUncertainInvoices();
+    expect(uncertainList.map((i) => i.id)).toContain(invoiceId);
+
+    // 6d. Un retryExisting() posterior (vía requestInvoice(), el camino
+    //     real) NO llama a AFIP -- el guard de FAILED_UNCERTAIN+afipContacted
+    //     SIN uncertainClearedAt lo bloquea devolviendo la fila tal cual.
+    //     `makeInvoiceService()` usa `unreachableArcaClient()` -- si el
+    //     guard no cortara, este mismo `await` fallaría con el error de esa
+    //     fake ("no debería llamarse").
+    const invoiceService = makeInvoiceService(reservationRepo);
+    const retryResult = await invoiceService.requestInvoice({
+      businessId: BUSINESS_ID, financialTransactionId: chargeId, changedBy: 'ident-test',
+    });
+    expect(retryResult.id).toBe(invoiceId);
+    expect(retryResult.status).toBe('FAILED_UNCERTAIN');
+
+    // 6e. reverseTransfer() sobre esta AR es rechazado -- guard 8-bis: una
+    //     FAILED_UNCERTAIN+afipContacted SIN uncertain_cleared_at bloquea.
+    const reverseErr = await makeArService().reverseTransfer({
+      accountReceivableId: ar.id, reversedBy: 'ident-reverse', reason: 'no debería pasar -- vencida sin revisión real',
+    }).catch((e: unknown) => e);
+    expect(reverseErr).toBeInstanceOf(ArReversalRequiresCreditNoteError);
+
+    const { rows: arRows } = await db.query<{ status: string }>(
+      'SELECT status FROM accounts_receivable WHERE id = $1', [ar.id],
+    );
+    expect(arRows[0]!.status).toBe('PENDIENTE_FACTURAR'); // reverseTransfer() rechazó, sin tocar la AR
   });
 });

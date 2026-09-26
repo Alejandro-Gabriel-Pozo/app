@@ -91,14 +91,20 @@ export interface Invoice {
    * Bloque 2a (23/09/2026, `docs/diseno-invoice-retry-reverse-window-guard-
    * 2026-09-23.md` §3.6) — marcador único de "en vuelo": poblado con
    * `NOW()` mientras `status === 'PENDING'`, `NULL` en cualquier otro
-   * status. Hoy (Bloque 2a) solo lo escribe el camino fresco
-   * (`createWithClient()`) y lo limpian `markIssuedWithClient()`/
-   * `markFailedWithClient()` — `retryExisting()` todavía no vuelve a poner
-   * `PENDING` (eso es el Bloque 2c, sin implementar). Sin CHECK todavía en
-   * `schema.sql` (eso es el Bloque 2b, deploy posterior) — la consistencia
-   * `(status = 'PENDING') = (pending_since IS NOT NULL)` depende solo de
-   * que estos escritores se mantengan disciplinados hasta que el CHECK
-   * exista.
+   * status. Lo escriben el camino fresco (`createWithClient()`) y, desde el
+   * Bloque 2c (§3.2/§3.16, ya implementado), `takeRetryClaimWithClient()` —
+   * la toma exclusiva de `retryExisting()` vuelve a poner `PENDING`. Lo
+   * limpian `markIssuedWithClient()`, `markFailedWithClient()` y, desde el
+   * Bloque 4 (§3.3), `expirePendingWithClient()` (vencimiento del worker).
+   * `updateIssuedFromReconciliation()` (usado por
+   * `markIssuedFromManualResolutionWithClient()`/
+   * `markIssuedFromAfipReconciliationWithClient()`) también lo limpia, pero
+   * es redundante en la práctica: parte de `FAILED_UNCERTAIN`, donde ya vale
+   * `NULL`. Lista de escritores/limpiadores no necesariamente exhaustiva.
+   * El CHECK `chk_invoices_pending_since` está en `schema.sql` desde el
+   * Bloque 2b (`2c9b423`) — la consistencia
+   * `(status = 'PENDING') = (pending_since IS NOT NULL)` ya no depende solo
+   * de que estos escritores se mantengan disciplinados.
    */
   pendingSince: Date | null;
   /**

@@ -1533,9 +1533,10 @@ export class InvoiceService {
    *   protege, un humano la resolvió.
    * - PENDING: Bloque 4 (23/09/2026, docs/diseno-invoice-retry-reverse-window-guard-
    *   2026-09-23.md §3.7/§6, `ISSUE-BEFORE-REVERSE-WINDOW-001`) -- hay un
-   *   intento de emisión en vuelo AHORA MISMO (el camino fresco, o -- desde
-   *   Bloque 2c, todavía sin implementar -- un reintento anterior que ya
-   *   tomó la marca). Reintentar en paralelo podría llamar a
+   *   intento de emisión en vuelo AHORA MISMO (el camino fresco, o -- vía
+   *   Bloque 2c, ya implementado (§3.2/§3.16, `takeRetryClaimWithClient()`)
+   *   -- un reintento anterior que ya tomó la marca). Reintentar en paralelo
+   *   podría llamar a
    *   `createNextVoucher()` dos veces para el mismo comprobante (dos CAE
    *   reales) o marcar `ISSUED` una factura cuyo cargo
    *   `reverseTransfer()` revirtió durante la ventana entre el guard fresco

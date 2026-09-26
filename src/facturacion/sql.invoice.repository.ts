@@ -1275,8 +1275,8 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // decisión deliberada de esta implementación, no del §3.10 original
     // (que sí lo pedía): el set de columnas difiere (acá hace falta
     // pto_vta/cbte_nro/imp_total/issued_at para la fila del reporte, ese
-    // método necesita status/afip_contacted para el guard 8-bis) y
-    // unificarlas de verdad exigiría tocar
+    // método necesita status/afip_contacted/uncertain_cleared_at para el
+    // guard 8-bis) y unificarlas de verdad exigiría tocar
     // resolveInvoiceLinkage()/getAllLinkedInvoicesWithClient() -- dos
     // métodos ya en producción que blindan la cancelación real (guard
     // 8-bis) -- para un cambio que es puramente de reporte. Riesgo/beneficio
@@ -1802,17 +1802,21 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Bloque 2c (§3.5) -- también limpia uncertain_cleared_at
     // incondicionalmente, no solo cuando data.status es FAILED_UNCERTAIN
     // con afipContacted:true (que es el caso mínimo que el ADR describe).
-    // Es un superset seguro: ningún guard del repo lee uncertain_cleared_at
-    // sin filtrar también por status = 'FAILED_UNCERTAIN' AND afip_contacted
-    // (grep verificado -- reverseTransfer() guard 8-bis, GET
-    // /api/invoices/uncertain, retryExisting()), así que resetearlo acá
+    // Es un superset seguro para los guards que SÍ filtran por
+    // status = 'FAILED_UNCERTAIN' AND afip_contacted antes de leer esta
+    // columna -- lista no necesariamente exhaustiva, entre ellos:
+    // reverseTransfer() guard 8-bis, GET /api/invoices/uncertain,
+    // retryExisting()/takeRetryClaimWithClient(),
+    // markIssuedFromManualResolutionWithClient(),
+    // markUncertainClearedWithClient(). Para todos ellos, resetearlo acá
     // también para la rama REJECTED o para afipContacted:false no cambia
     // ningún comportamiento observable, y cierra el hueco para CUALQUIER
-    // secuencia futura sin depender de acertar el `WHERE` exacto. (Hay
-    // otros dos lectores que filtran solo por status = 'FAILED_UNCERTAIN',
-    // sin afip_contacted -- resolveCreditNoteRequestManually() e
-    // invoice.service.ts ~1311, candidato MANUAL_RESOLUTION_STATE_MISMATCH
-    // del Bloque 6; preexistente a este bloque, no lo introduce el reset.)
+    // secuencia futura sin depender de acertar el `WHERE` exacto.
+    // (Hay otros dos lectores que filtran solo por status =
+    // 'FAILED_UNCERTAIN', sin afip_contacted -- resolveCreditNoteRequestManually()
+    // y listUnreconciledLiveInvoices() (este archivo), candidato
+    // MANUAL_RESOLUTION_STATE_MISMATCH del Bloque 6; preexistente a este
+    // bloque, no lo introduce el reset.)
     // Sin este reset, una factura ya limpiada
     // (`markUncertainClearedWithClient()`) que vuelve a caer en
     // FAILED_UNCERTAIN con afipContacted:true por un reintento posterior

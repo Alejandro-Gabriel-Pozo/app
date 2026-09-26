@@ -883,8 +883,8 @@ export interface InvoiceRepository {
    * el `WHERE` de cada fila candidata al tomar su lock de escritura: si
    * otra transacción ya sacó esta fila de `PENDING` entre el poll
    * (`getPendingExpiredInvoiceIds()`) y este `UPDATE` (un reintento humano
-   * vía `retryExisting()` -- una vez exista el Bloque 2c --, u otro ciclo
-   * del worker), la re-evaluación ya no matchea y no se devuelve fila --
+   * vía `retryExisting()` -- ya con el Bloque 2c implementado --, u otro
+   * ciclo del worker), la re-evaluación ya no matchea y no se devuelve fila --
    * sin condición de carrera, sin columna de token adicional.
    *
    * Limpia `uncertain_cleared_at = NULL` en el mismo `UPDATE` (mismo

@@ -429,13 +429,22 @@ describe.skipIf(skipIfNoDb)('ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3
     expect(callCounts.createNextVoucher).toBe(1);
   });
 
-  it('la factura ya PENDING (tomada por otro proceso) -- retryExisting() rechaza con RetryInvoiceInFlightError SIN llamar a AFIP, sin tocar la fila', async () => {
-    // Complementa el test de arriba con el caso determinístico y
-    // secuencial: confirma, sin depender del timing de una carrera real,
-    // que el WHERE de la toma exclusiva (§3.2) no matchea `PENDING` -- la
-    // propiedad exacta que hace posible el resultado de la carrera de
-    // arriba (el perdedor encuentra la fila ya PENDING, dejada por el
-    // ganador).
+  it('toma exclusiva sin fila -- una segunda takeRetryClaimWithClient() directa sobre una factura que la primera ya dejó PENDING rechaza con RetryInvoiceInFlightError, RETURNING vacío real contra Postgres (sin pasar por el guard de solo lectura de Bloque 4 en retryExisting())', async () => {
+    // C2 (26/09/2026, gate `architecture-governor`) -- reescrito: la
+    // versión anterior de este test tomaba la marca directo con
+    // `takeRetryClaimWithClient()` y DESPUÉS llamaba a
+    // `service.requestInvoice()` -- pero `retryExisting()` lee
+    // `existing.status` (vía `getByIdempotencyKey()`, sin lock) ANTES de
+    // llegar a la toma exclusiva, y el guard de Bloque 4
+    // (`existing.status === 'PENDING'`, invoice.service.ts) intercepta ahí
+    // mismo: la llamada real a `takeRetryClaimWithClient()` con RETURNING
+    // vacío nunca ocurría, el test probaba el guard de Bloque 4 contra
+    // Postgres real, no la toma exclusiva que su nombre/comentario decía.
+    // Este test ejercita la propiedad real (§3.2) llamando al repositorio
+    // directo, dos veces seguidas, sin pasar por el service -- mismo
+    // patrón, sin carrera ni lock forzado, que complementa (no reemplaza)
+    // los dos tests de arriba (carrera real / bloqueo forzado con tercera
+    // conexión).
     const customer = await seedCustomer(db);
     const orderId = await seedOrder(customer.id);
     const chargeId = randomUUID();
@@ -446,23 +455,20 @@ describe.skipIf(skipIfNoDb)('ADR ISSUE-BEFORE-REVERSE-WINDOW-001, Bloque 2c, §3
     });
     const invoiceId = await seedRejectedInvoice(customer.id, chargeId);
 
-    // Toma la marca directo (sin pasar por retryExisting()) -- simula que
-    // OTRO proceso ya la dejó PENDING (p. ej. otro retryExisting() que ya
-    // commiteó, o -- fuera de alcance de Bloque 2c -- el worker del
-    // Bloque 4).
+    // Primera llamada -- REJECTED matchea el WHERE de la toma exclusiva,
+    // toma la marca, commitea.
     await pgTxManager.run((client) => invoiceRepo.takeRetryClaimWithClient(client, invoiceId));
-    const { rows: afterClaim } = await db.query<{ status: string }>('SELECT status FROM invoices WHERE id = $1', [invoiceId]);
-    expect(afterClaim[0]!.status).toBe('PENDING');
+    const { rows: afterFirst } = await db.query<{ status: string }>('SELECT status FROM invoices WHERE id = $1', [invoiceId]);
+    expect(afterFirst[0]!.status).toBe('PENDING');
 
-    const callCounts = { createNextVoucher: 0 };
-    const service = makeInvoiceService(callCounts);
-
+    // Segunda llamada -- la fila ya está PENDING, ninguna rama del WHERE
+    // matchea (ni REJECTED ni FAILED_UNCERTAIN) -- RETURNING vacío real
+    // contra Postgres, no un guard de lectura previo.
     await expect(
-      service.requestInvoice({ businessId: BUSINESS_ID, financialTransactionId: chargeId, changedBy: 'ident-a' }),
+      pgTxManager.run((client) => invoiceRepo.takeRetryClaimWithClient(client, invoiceId)),
     ).rejects.toBeInstanceOf(RetryInvoiceInFlightError);
-    expect(callCounts.createNextVoucher).toBe(0);
 
     const { rows } = await db.query<{ status: string }>('SELECT status FROM invoices WHERE id = $1', [invoiceId]);
-    expect(rows[0]!.status).toBe('PENDING'); // sin tocar -- RETURNING vacío, ningún UPDATE aplicado
+    expect(rows[0]!.status).toBe('PENDING'); // sin tocar de nuevo -- RETURNING vacío, ningún UPDATE aplicado
   });
 });
