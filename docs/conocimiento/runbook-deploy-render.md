@@ -1,6 +1,6 @@
 # Runbook — deploy Render (Node pin + migraciones con EXCLUDE)
 
-- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito) · **actualizado 2026-09-25** (Procedimiento 3 — rollback de Wave 14 ítem 4.3, schema v64; 39 commits locales sin pushear medido con `git log --oneline origin/main..HEAD | wc -l`, re-verificar con ese comando en el momento en vez de confiar en el número) · **actualizado 2026-09-25 (continuación de sesión)** (D1 y D2 del split de push, más abajo, ya se ejecutaron y verificaron contra producción — la cifra de "39 commits sin pushear"/`f9be209` de la entrada anterior quedó stale en cuanto se pushearon; re-correr `git log --oneline origin/main..HEAD | wc -l` antes de confiar en cualquier número de este documento, incluido el de esta misma entrada)
+- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito) · **actualizado 2026-09-25** (Procedimiento 3 — rollback de Wave 14 ítem 4.3, schema v64; 39 commits locales sin pushear medido con `git log --oneline origin/main..HEAD | wc -l`, re-verificar con ese comando en el momento en vez de confiar en el número) · **actualizado 2026-09-25 (continuación de sesión)** (D1 y D2 del split de push, más abajo, ya se ejecutaron y verificaron contra producción — la cifra de "39 commits sin pushear"/`f9be209` de la entrada anterior quedó stale en cuanto se pushearon; re-correr `git log --oneline origin/main..HEAD | wc -l` antes de confiar en cualquier número de este documento, incluido el de esta misma entrada) · **actualizado 2026-09-26** (D3 pusheado y desplegado, con evidencia real contra producción; 3 backups Neon creados y verificados para D3; tabla "Puntos de restauración reales" reconciliada contra `list_branches` real — 7 filas de branches que ya existían y que este runbook no tenía registradas (`respaldo-pre-v50-2026-09-12` y `respaldo-pre-preset-revoke-001-2026-09-10` sí estaban nombrados, sin id, en `docs/investigacion-postgres-version-2026-09-16.md`), más 3 filas nuevas de los backups de D3; 3 de esas filas marcadas STALE para el deploy grande; 5 filas viejas marcadas BORRADO al no existir más en `list_branches`; se borró `respaldo-pre-v44-2026-08-28` del proyecto de plataforma por límite de branches; tabla declarada explícitamente NO exhaustiva; corregidas varias menciones de D3 que habían quedado como pendientes/condicionales en el resto del documento)
 - **Estado:** implementado (`engines.node` acotado; incidente del día resuelto)
 - **Categoría:** Runbook + Incidente
 - **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `v64` `rollback` `neon` `4.3`
@@ -327,26 +327,87 @@ Proyectos reales (los dos son de la org `org-bold-unit-53932069`, región `aws-u
 | **Tenants** (una BD por negocio) | `ancient-king-17098519` — *DB-APP-PPMS* | `br-snowy-tree-ax5wmq70` |
 | **Plataforma** (central, `PLATFORM_DATABASE_URL`) | `morning-unit-50056927` — *pdb-ppms* | `br-royal-mouse-aybe2ai3` |
 
-Respaldos existentes al 10/09/2026 (`respaldo-pre-v44-2026-08-28` y
-`respaldo-pre-temporada-2026-08-28` de tenants se BORRARON ese día para
-liberar cupo de branches del plan free -- 10/proyecto, ver más abajo --
-ya estaban superados por respaldos más nuevos):
+**Tabla reconciliada contra `list_branches` real el 26/09/2026** (no
+exhaustiva de la historia — solo lo confirmado en vivo; puede haber
+habido otros respaldos creados y borrados sin quedar registrados acá).
+Filas marcadas **BORRADO** ya no existen en el proyecto — verificado hoy
+contra los dos proyectos, no inferido; el motivo/fecha exacta del borrado
+no quedó registrado en ningún documento de esta sesión ni anterior, así
+que no se afirma más que "ya no está":
 
 | Proyecto | Branch de respaldo | Id | Estado capturado |
 |---|---|---|---|
-| Plataforma | `respaldo-pre-fase3-2026-08-29` | `br-purple-mud-aycvlyj4` | LSN `0/347F870`, 17:33:25Z. **Sin** `industries`, `industry_capabilities`, `terminology_defaults`, `businesses.industry_key`, `business_modules.source` ni `modules.context_color` — verificado consultando producción antes de crearlo |
-| Tenants | `respaldo-pre-fase3-2026-08-29` | `br-twilight-poetry-axtplxx1` | LSN `0/3D3BC38`, 17:33:19Z. La Fase 3 no toca el schema de tenant; se respalda igual porque el deploy reinicia el backend y reaplica **los dos** esquemas |
-| Tenants (Demo) | `respaldo-pre-push-2026-09-07` | `br-fancy-tree-ax52rqma` | LSN previo a un push del 06-07/09 |
-| Tenants (Demo) | `respaldo-pre-v47-demo-2026-09-08` | `br-steep-sunset-axxvv9il` | pre-schema v47 (CHECK `chk_financial_transactions_reversed_invoice_type`) |
-| Tenants (Demo) | `respaldo-pre-outbox-backoff-v48-2026-09-10` | `br-summer-wildflower-axziua6w` | LSN `0/4A9BAC0`. Pre-schema v48 (`OUTBOX-RETRY-HIST-01`/`OUTBOX-BACKOFF-01` -- `domain_events` sin `first_failed_at`/`last_failed_at` todavía) |
-| Tenants (Hotel los Álamos) | `respaldo-hotel-pre-outbox-backoff-v48-2026-09-10` | `br-snowy-rain-ax87eljw` | LSN `0/2EDD018`. Mismo motivo que el de arriba, otra tenant |
+| Plataforma | `respaldo-pre-fase3-2026-08-29` | `br-purple-mud-aycvlyj4` | LSN `0/347F870`, 17:33:25Z. **Sin** `industries`, `industry_capabilities`, `terminology_defaults`, `businesses.industry_key`, `business_modules.source` ni `modules.context_color` — verificado consultando producción antes de crearlo. Existe hoy, `current_state: archived` (archivado sigue contando para el límite de 10, ver más abajo) |
+| Tenants | `respaldo-pre-fase3-2026-08-29` | `br-twilight-poetry-axtplxx1` | **BORRADO** — no aparece en `list_branches` del proyecto de tenants al 26/09/2026 |
+| Tenants (Demo) | `respaldo-pre-push-2026-09-07` | `br-fancy-tree-ax52rqma` | **BORRADO** — no aparece en `list_branches` al 26/09/2026 |
+| Tenants (Demo) | `respaldo-pre-v47-demo-2026-09-08` | `br-steep-sunset-axxvv9il` | **BORRADO** — no aparece en `list_branches` al 26/09/2026 |
+| Tenants (Demo) | `respaldo-pre-outbox-backoff-v48-2026-09-10` | `br-summer-wildflower-axziua6w` | **BORRADO** — no aparece en `list_branches` al 26/09/2026 |
+| Tenants (Hotel los Álamos) | `respaldo-hotel-pre-outbox-backoff-v48-2026-09-10` | `br-snowy-rain-ax87eljw` | **BORRADO** — no aparece en `list_branches` al 26/09/2026 |
+| Tenants (Hotel los Álamos) | `respaldo-pre-v60-2026-09-17` | `br-lucky-grass-axwtzsvg` | pre-schema v60. Existe hoy, `ready`. Etiqueta de tenant confirmada por `parent_id` = `br-square-leaf-axzvu903` (`tenant-hotel-los-alamos`) — el nombre del branch no lleva `hotel`, al revés de la convención del resto, por eso se aclara la fuente |
+| Plataforma | `respaldo-pre-v60-2026-09-17` | `br-weathered-morning-ayry6abw` | pre-schema v60, mismo motivo que el de tenants. Existe hoy, `ready` |
+| Plataforma | `respaldo-pre-v50-2026-09-12` | `br-broad-sky-ay2cbiku` | LSN `0/61AEC68`, 16:53:05Z. Pre-schema v50. Existe hoy, `ready` |
+| Plataforma | `respaldo-pre-preset-revoke-001-2026-09-10` | `br-jolly-sea-ayb0hz4x` | LSN `0/40A5EC0`, 18:34:12Z. Pre-`ROLES-CATALOG-DRIFT-001`/preset revoke. Existe hoy, `current_state: archived` (cuenta igual para el límite de 10) |
+| Tenants (Demo) | `respaldo-pre-v64-2026-09-25` | `br-broad-sun-axbs9t31` | LSN `0/566C978`, 18:40:37Z. **Capturado ANTES de D1, D2 y D3 — es un backup en estado v60, no v64 a pesar del nombre** (creado como respaldo genérico previo a la Wave, antes de que el split de push existiera como plan) — STALE para el deploy grande, no reusar sin refrescar. **Es, hoy, el equivalente más cercano a un backup dedicado de D1/D2** que este documento pudo confirmar (ver nota más abajo). Existe hoy, `ready` |
+| Tenants (Hotel los Álamos) | `respaldo-hotel-pre-v64-2026-09-25` | `br-little-resonance-axplzwpg` | LSN `0/361DE38`, 17:31:39Z. Mismo motivo y misma advertencia STALE que el de arriba. Existe hoy, `ready` |
+| Plataforma | `respaldo-pre-v64-2026-09-25` | `br-frosty-paper-ay0qm9bz` | LSN `0/164BC8C0`, 18:40:55Z. Mismo motivo y misma advertencia STALE que los de arriba. Existe hoy, `ready` |
+| Tenants (Demo) | `respaldo-pre-v62-2026-09-26` | `br-floral-dew-axst9hrq` | LSN `0/585F160`, ~00:57Z. Pre-D3 (schema v61, sin `chk_invoices_pending_since`). Existe hoy, `ready` |
+| Tenants (Hotel los Álamos) | `respaldo-hotel-pre-v62-2026-09-26` | `br-nameless-bonus-ax2astxu` | LSN `0/37E1918`, ~00:58Z. Mismo motivo, otra tenant. Existe hoy, `ready` |
+| Plataforma | `respaldo-pre-v62-2026-09-26` | `br-old-recipe-ay0wgszr` | LSN `0/16A2A898`, ~01:19Z. Pre-D3, mismo criterio que los backups de plataforma anteriores (D3 no toca `platform.schema.sql`, pero el deploy escribe `businesses.schema_version`). Existe hoy, `ready` |
+
+**Estado real hoy, proyecto de tenants (`ancient-king-17098519`), 9
+branches totales** (`list_branches` corrido el 26/09/2026): `production`
+(Demo real), `tenant-hotel-los-alamos` (Hotel real), `tenant-template-empty`
+(utilidad, no respaldo), `disposable-d20-d22-verify-2026-09-17`
+(`br-jolly-cherry-ax1rqyyv` — **residuo sin limpiar de una sesión
+anterior (17/09/2026), no es un respaldo, no debería seguir existiendo —
+registrado, no borrado en esta corrección por no tener autorización
+puntual para eso**) y los 5 `respaldo-*` marcados "Existe hoy" en la
+tabla de arriba. `test-integration-db` (`br-bold-cell-axuvmork`), citado
+en una versión anterior de este párrafo, **ya no existe** — mismo criterio
+BORRADO que las 5 filas de arriba.
+
+**Estado real hoy, proyecto de plataforma (`morning-unit-50056927`), 10
+branches totales** (`list_branches` corrido el 26/09/2026): `production`
+(`br-royal-mouse-aybe2ai3`), 2 previews de Vercel que NO son respaldos
+(`preview/claude/hola-jipqh9` / `br-summer-recipe-ayu754se`, archivado;
+`preview/preview/d10-idempotency-2026-09-17` / `br-sparkling-thunder-ayw4k0cm`,
+`ready`) y los 6 `respaldo-*` marcados "Existe hoy" en la tabla de arriba
+(`respaldo-pre-fase3-2026-08-29`, `respaldo-pre-v60-2026-09-17`,
+`respaldo-pre-v50-2026-09-12`, `respaldo-pre-preset-revoke-001-2026-09-10`,
+`respaldo-pre-v64-2026-09-25`, `respaldo-pre-v62-2026-09-26`) — el conteo
+1 + 2 + 6 = 9 más `vercel-dev` (`br-square-king-ay2uaubg`, archivado,
+listado en "no confundir con respaldos" más abajo) da los 10 que hay HOY
+— no es el mismo conjunto de 10 que chocó con el límite al crear el
+respaldo de D3 (en ese momento existía `respaldo-pre-v44-2026-08-28`, ya
+borrado, y todavía no existía `respaldo-pre-v62-2026-09-26`, que sí
+existe hoy): 10 → se borró v44 → 9 → se creó v62 → 10 de nuevo, ver la
+secuencia completa en el párrafo siguiente.
 
 **Límite de branches del plan free: 10 por proyecto** (confirmado en
 vivo el 10/09/2026 -- `create_branch` devuelve `branches limit
-exceeded` al intentar el 11°). Antes de crear un respaldo nuevo,
+exceeded` al intentar el 11°; vuelto a confirmar el 26/09/2026 contra el
+proyecto de plataforma). El conteo incluye TODOS los branches del
+proyecto, no solo los de respaldo activos — `production` y branches
+archivados de otras sesiones (previews de Vercel, respaldos ya viejos)
+cuentan igual. El proyecto de plataforma tenía **10** branches al momento
+de intentar crear el respaldo de D3 (confirmado con `list_branches`, no
+inferido) — de ahí el error; el proyecto de tenants tiene hoy 9, dentro
+del límite. **Consecuencia operativa para el próximo push (deploy
+grande o D4): plataforma está HOY en 10/10** — cualquier respaldo nuevo
+de plataforma choca de nuevo, hay que borrar algo antes. **Tenants está
+en 9/10, pero el deploy grande necesita 2 respaldos nuevos** (Demo y
+Hotel) — 9+2=11, también choca. Antes de ese push hay que liberar cupo en
+LOS DOS proyectos, con autorización del dueño para cada borrado. Antes de
+crear un respaldo nuevo,
 `list_branches` y borrar el más viejo genuinamente superado (nunca uno
 que sea el único registro de un estado que no se pueda reconstruir de
-otra forma) -- no asumir que siempre hay cupo libre.
+otra forma) -- no asumir que siempre hay cupo libre. **Caso real
+(26/09/2026):** el respaldo de plataforma de D3 (fila de arriba) chocó
+con el límite; se borró `respaldo-pre-v44-2026-08-28`
+(`br-ancient-flower-ays1lofk`) del proyecto de plataforma, ya superado
+por `respaldo-pre-v50-2026-09-12` y `respaldo-pre-v64-2026-09-25` (las
+dos filas agregadas arriba en esta misma corrección), con
+autorización explícita del dueño antes de borrarlo.
 
 Los branches de respaldo se crean con **`no_compute: true`**: son almacenamiento, sin
 compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint --
@@ -354,9 +415,18 @@ compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint --
 directo, es esperado, no un error real.
 
 **No confundir con estos, que NO son respaldos:** `tenant-template-empty`
-(`br-polished-hill-axn1uibp`, plantilla de aprovisionamiento — ver `neon-provisioning.ts`),
-`test-integration-db` (`br-bold-cell-axuvmork`, `TEST_DATABASE_URL`) y `vercel-dev`
-(`br-square-king-ay2uaubg`, lo crea Vercel).
+(`br-polished-hill-axn1uibp`, plantilla de aprovisionamiento — ver `neon-provisioning.ts`,
+proyecto de tenants), `disposable-d20-d22-verify-2026-09-17`
+(`br-jolly-cherry-ax1rqyyv`, proyecto de tenants — residuo sin limpiar de
+una sesión anterior, ver la nota más arriba), `vercel-dev`
+(`br-square-king-ay2uaubg`, lo crea Vercel — confirmado en el proyecto de
+plataforma con `list_branches`, no en el de tenants), y los 2 previews de
+Vercel del proyecto de plataforma citados en la nota de arriba
+(`preview/claude/hola-jipqh9` / `br-summer-recipe-ayu754se`,
+`preview/preview/d10-idempotency-2026-09-17` / `br-sparkling-thunder-ayw4k0cm`).
+`test-integration-db`
+(`br-bold-cell-axuvmork`) se citaba acá en una versión anterior de este
+párrafo — verificado 26/09/2026, ya no existe en el proyecto de tenants.
 
 **Branch de validación de la Fase 3, ya eliminado.** Se deja registrado porque el patrón se
 repite en cada migración:
@@ -420,7 +490,7 @@ Solo con OK explícito y por escrito de qué se acepta perder.
 que los Bloques 2a y 2b (agregar `invoices.pending_since` y agregar su
 CHECK) vayan en deploys SEPARADOS — el orden lo diseñó
 `architecture-governor` como un plan de "split de push" de varios pasos.
-Dos de esos pasos **ya son reales**, verificados contra producción; el
+Tres de esos pasos **ya son reales**, verificados contra producción; el
 resto sigue en plan. Esta subsección es la fuente de verdad de qué está
 hecho y qué no — las menciones a este split en el resto del documento
 (sección "Wave 14, ítem 4.3" y el desglose v61/v62/v63 de más abajo)
@@ -451,23 +521,48 @@ exactamente. Evidencia real, no inferida:
   (`biz-demo-01` Demo, `cd6cd508-f219-4bde-81ec-7a1d74f02074` Hotel los
   Álamos).
 
-**No se encontró en este documento ningún branch de respaldo específico
-para D1/D2** (la tabla de "Puntos de restauración reales" de más arriba
-no tiene una fila `respaldo-pre-v61-...` ni equivalente) — no asumir que
-no se creó: verificar con `list_branches` en los dos proyectos Neon antes
-de darlo por hecho en cualquier sentido. Residuo de este documento, no
-una afirmación sobre lo que pasó en producción.
+**No hay un branch de respaldo DEDICADO a D1/D2** (la tabla de "Puntos de
+restauración reales" de más arriba no tiene una fila `respaldo-pre-v61-...`)
+— pero sí existe un equivalente parcial: los 3 branches
+`respaldo-pre-v64-2026-09-25`/`respaldo-hotel-pre-v64-2026-09-25` (ver esa
+misma tabla), creados ANTES de D1 (~19:24Z) y D2 (~22:23Z) del 25/09, en
+estado v60. Sirven como punto de restauración a v60 previo a D1 y D2, con
+pérdida de todo lo escrito desde su LSN (`0/566C978` Demo, `0/361DE38`
+Hotel, `0/164BC8C0` plataforma) — no es lo mismo que un backup pensado específicamente para D1/D2,
+pero cubre el mismo estado. No asumir esto sin re-verificar con
+`list_branches` en el momento: son branches que ya existían antes de esta
+sesión, su propósito original no era servir de respaldo para D1/D2.
 
-**D3, D4 y el deploy grande — siguen PENDIENTES a la fecha de esta
+**D3 — ejecutado.** Commit `2c9b423`, pusheado (`git push origin
+2c9b423:refs/heads/main`, fast-forward de 1 commit desde `3216849`) y
+desplegado 26/09/2026 ~02:18 UTC, deploy `dep-darim1o473hc73f1kvr0`.
+Agrega el CHECK `chk_invoices_pending_since` + backfill inverso (schema
+v61→v62). Evidencia real, verificada contra producción antes y después
+del push (no inferida):
+
+- Pre-flight: 3 backups Neon creados y confirmados `ready` en estado v61
+  (Demo `br-floral-dew-axst9hrq`, Hotel `br-nameless-bonus-ax2astxu`,
+  plataforma `br-old-recipe-ay0wgszr`), y una medición de consistencia
+  inmediatamente antes del push (0/0 en ambos tenants, LSN Demo
+  `0/585F258`, LSN Hotel `0/37E1A10`).
+- Post-deploy, ambos tenants: `MAX(schema_migrations.version) = 62`;
+  `SELECT convalidated FROM pg_constraint WHERE conname =
+  'chk_invoices_pending_since'` → `true`; consistencia 0/0.
+- Plataforma: `businesses.schema_version = 62` en los 2 negocios
+  `ACTIVE`.
+
+**D4 y el deploy grande — siguen PENDIENTES a la fecha de esta
 subsección.** Verificar antes de actuar, no asumir de este texto:
-`git log origin/main --oneline | grep -E '2c9b423|548c432'` (0 líneas =
-ninguno de los dos llegó a `origin/main` todavía). Mientras ese comando
-no tenga match, no tienen deploy ID, hora ni verificación contra la base
-porque no hay nada corrido que verificar:
+`git log origin/main --oneline | grep 548c432` (0 líneas = todavía no
+llegó a `origin/main`). Mientras ese comando no tenga match, no tiene
+deploy ID, hora ni verificación contra la base porque no hay nada
+corrido que verificar. **D4 además tiene una decisión abierta del dueño
+sin resolver** — ver `docs/pendientes-2026-09-12.md`, ítem
+`ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001` — antes
+de autorizar su push:
 
 | Paso | Commit | Qué trae | Schema |
 |---|---|---|---|
-| D3 (Bloque 2b) | `2c9b423` | CHECK `chk_invoices_pending_since` + backfill inverso — cierra la ventana que D2 dejó abierta a propósito | v61→v62 |
 | D4 (Bloque 3) | `548c432` | Guards de resolución manual de `credit_note_request` + reconciliación con AFIP | sin schema |
 | Deploy grande | (varios, sin consolidar todavía) | Wave 15 (v62→v63), Wave 14 ítem 4.3 (v63→v64), Bloque 6 | v62→v64 |
 
@@ -523,24 +618,31 @@ releyendo `src/db/schema.sql` BLOQUE 26 ("Bloque 2a — invoices.pending_since")
 y BLOQUE 27 ("Bloque 2b — CHECK chk_invoices_pending_since"), no
 asumidos:
 
-- **Si D3 (2b) todavía NO se desplegó** (a la fecha de esta subsección —
-  ver el comando de verificación de la tabla de arriba, no asumir el
-  estado de este texto): rollback directo — revertir el
+- **Si D3 (2b) todavía NO se desplegó — escenario HISTÓRICO, dejó de
+  aplicar el 26/09/2026 ~02:18 UTC cuando D3 se pusheó y desplegó (ver
+  "Split de push del ADR reintento-vs-reversa" más arriba).** Se
+  conserva acá solo como referencia de lo que hubiera aplicado antes de
+  esa fecha — el escenario vigente hoy es el segundo, más abajo. Rollback
+  directo — revertir el
   código de D2 y redeployar, sin ningún paso de datos. El código viejo no
   nombra `pending_since` en su `INSERT`/`UPDATE`, Postgres aplica `NULL`
   por default, y como el CHECK todavía no existe eso no rompe nada; queda
   huérfano en las filas que se marcaron `PENDING` mientras D2 estaba
   sirviendo tráfico. Esta ventana (código viejo sin `pending_since`,
-  columna ya creada, CHECK todavía sin existir) es funcionalmente la
-  misma que describe la verificación puntual (1) de
+  columna ya creada, CHECK todavía sin existir) fue funcionalmente la
+  misma que describía la verificación puntual (1) de
   `docs/pendientes-2026-09-12.md`, sección "Verificaciones pendientes --
   dos gates de producción distintos del ADR reintento-vs-reversa" ("Entre
-  el deploy de 2a y el de 2b, antes de desplegar 2b"): si el conteo de
-  filas inconsistentes se mantiene estable entre dos mediciones, es el
-  residuo esperado que el backfill de 2b (las dos sentencias, directa e
-  inversa, que se re-ejecutan en su propia transacción) limpia cuando 2b
-  se despliega — no hace falta ningún `UPDATE` manual aparte.
-- **Si D3 (2b) YA se desplegó — no es un hallazgo nuevo: es el mismo
+  el deploy de 2a y el de 2b, antes de desplegar 2b") — con evidencia
+  real hoy, aunque cerrarla en `docs/pendientes-2026-09-12.md` (moverla a
+  `resuelto.md`) es un bloque de docs aparte, no incluido en este
+  commit: 0/0 en ambos tenants inmediatamente después del deploy de D2
+  (~22:23Z 25/09/2026, ver la entrada de D2 más arriba) y 0/0 de nuevo
+  justo antes del push de D3 (LSN Demo `0/585F258`, LSN Hotel
+  `0/37E1A10`, ver la entrada de D3 más arriba) — dos mediciones estables,
+  sin residuo, separadas por más de 90 minutos de tráfico real.
+- **Si D3 (2b) YA se desplegó — escenario VIGENTE desde el 26/09/2026
+  ~02:18 UTC. No es un hallazgo nuevo: es el mismo
   mecanismo que el ADR ya documenta**, en
   `docs/diseno-invoice-retry-reverse-window-guard-2026-09-23.md` §3.6,
   párrafo **"Rollback de 2b (hueco N1, ronda 4 del gate)"** ("revertir el
@@ -646,8 +748,9 @@ asumidos:
   decide volver atrás — son ventanas distintas del mismo split, con
   consecuencias distintas.
 
-  **Piso de rollback, declarado explícitamente.** Una vez que D3 esté
-  vivo en producción, cualquier rollback — por `git revert` o por el
+  **Piso de rollback, declarado explícitamente — RIGE DESDE el
+  26/09/2026 ~02:18 UTC, cuando D3 se desplegó (ya no es una condición
+  futura).** Cualquier rollback — por `git revert` o por el
   botón Rollback del dashboard de Render — que apunte a un commit/deploy
   anterior a `3216849` (D2), incluido volver directo a
   `dep-darck0rtqb8s738p68r0` (D1) o más atrás, necesita el `DROP
@@ -695,16 +798,17 @@ D2 (ver "Split de push del ADR reintento-vs-reversa" más arriba) ya se
 pushearon y desplegaron: `origin/main` ya no es `f9be209` ni está en v60
 (verificar con `git log --oneline -1 origin/main` y `SELECT MAX(version)
 FROM schema_migrations` antes de asumir un valor — a la fecha de esta
-corrección daba `3216849` / v61, no lo cites como fijo). De los 4 saltos
-que este párrafo listaba, **uno ya ocurrió** (`3216849`, 60→61, D2) y
-quedan **3 pendientes**: `2c9b423` (61→62, Bloque 2b/D3, CHECK
-`chk_invoices_pending_since`), `061e1ed` (62→63, Wave 15 ítems 1+2,
-también toca `platform.schema.sql`) y `f88dbdd` (63→64, BLOQUE 29 de esta
-Wave) — los tres siguen fuera de `origin/main` a la fecha de esta
+corrección (26/09/2026, tras el push de D3) da `2c9b423` / v62, no lo
+cites como fijo). De los 4 saltos que este párrafo listaba originalmente,
+**dos ya ocurrieron** (`3216849`, 60→61, D2; `2c9b423`, 61→62, D3 — ver
+"Split de push del ADR reintento-vs-reversa" más arriba para su
+evidencia) y quedan **2 pendientes**: `061e1ed` (62→63, Wave 15 ítems
+1+2, también toca `platform.schema.sql`) y `f88dbdd` (63→64, BLOQUE 29 de
+esta Wave) — los dos siguen fuera de `origin/main` a la fecha de esta
 corrección (verificar con `git log origin/main --oneline | grep -E
-'2c9b423|061e1ed|f88dbdd'`, 0 líneas = ninguno pusheado), agrupados hoy
-en el "deploy grande" de la tabla de D3/D4 de más arriba, no en un push
-aislado. Además `5e6d4a8` toca `platform.schema.sql` sin bump de
+'061e1ed|f88dbdd'`, 0 líneas = ninguno pusheado), agrupados hoy en el
+"deploy grande" de la tabla de D4/deploy-grande de más arriba, no en un
+push aislado. Además `5e6d4a8` toca `platform.schema.sql` sin bump de
 `CURRENT_SCHEMA_VERSION` de tenant (vínculo a empresa, Wave 15 D-05) y
 también sigue fuera de `origin/main` (mismo chequeo: `git log origin/main
 --oneline | grep 5e6d4a8`, 0 líneas = no pusheado).
@@ -712,11 +816,18 @@ Por la sección "Trigger del deploy" de más arriba (push a `main` = deploy,
 sin `autoDeploy` explícito), un `git push` sin argumentos (o `git push
 origin main`) se llevaría TODOS los commits locales sin pushear de una
 sola vez — `migrate:tenants` correría entonces con
-`CURRENT_SCHEMA_VERSION = 64` y los 3 saltos restantes aplicados juntos
-(D3 quedaría fusionado con el deploy grande si se pushea así, en vez de
-como su propio paso separado — ver la advertencia de la subsección de
-arriba sobre pushear un prefijo explícito si se quiere mantener D3
-aislado).
+`CURRENT_SCHEMA_VERSION = 64` y los 2 saltos restantes aplicados juntos,
+más todo el resto de la historia local — 2c/5 original + R' completo (que
+si viaja entero SÍ respeta el piso de push declarado más arriba) + D4.
+**La decisión abierta `ISSUE-BEFORE-REVERSE-WINDOW-001-D4-ISOLATED-DEPLOY-3-5-GAP-001`
+(`docs/pendientes-2026-09-12.md`) es específicamente sobre D4 como DEPLOY
+AISLADO** (punta `548c432`, sin §3.5 todavía aplicada) — en un push de
+`HEAD` completo como este, D4 viaja junto con §3.5 (conservada por R',
+`93ab083`→`d43de3f`), así que el hueco que ese ítem describe no aplica de
+la misma forma acá. Este push de `HEAD` completo sigue necesitando su
+propia autorización como "deploy grande" (backup propio, verificación de
+los 2 saltos de `platform.schema.sql`, etc. — ver más abajo), pero no por
+el motivo de ese ítem puntual.
 
 **Dejar afuera estos 4 commits (o cualquier prefijo) SÍ es posible —
 no es "todo o nada".** `git push origin <hash>:main` es un push
@@ -731,26 +842,43 @@ distintas, y la segunda requiere nombrar el refspec explícito, por
 ejemplo `git push origin f37d1c2:main` (**hoy inseguro, ver la
 advertencia de abajo** — no un ejemplo neutro), no un `git push` liso.
 
-**Advertencia fechada, 25/09/2026 (re-ronda del gate) — `f37d1c2` como
-punta de push HOY es inseguro, viola el piso de R' declarado más arriba
-en "Split de push del ADR reintento-vs-reversa".** `git log --reverse
-origin/main..HEAD` ubica `f37d1c2` en la posición 15 de la historia local
-— DESPUÉS de los originales sin revertir de 2c/5 (`2db33f5` posición 5,
-`93ab083` posición 6, `a7d06be` posición 10) pero ANTES de los 3 commits
-de R' (`8940467`/`d43de3f`/`3818910`, posiciones 24-26). Un push con
+**Advertencia fechada — corregida 26/09/2026 tras el push de D3, primero
+escrita el 25/09/2026 (re-ronda del gate) — `f37d1c2` como punta de push
+HOY es inseguro, viola el piso de R' declarado más arriba en "Split de
+push del ADR reintento-vs-reversa".** El criterio estable es por
+ascendencia, no por posición (ver ese mismo párrafo, más arriba): el piso
+se viola cuando el commit desplegado incluye `2db33f5` pero no incluye
+`3818910` — y `f37d1c2` cumple exactamente eso
+(`git merge-base --is-ancestor 2db33f5 f37d1c2` tiene éxito,
+`--is-ancestor 3818910 f37d1c2` falla). Un push con
 `git push origin f37d1c2:main` se llevaría 2c/5 SIN revertir y SIN que
 exista Bloque 4 — exactamente el escenario que R' se hizo para evitar.
+Las posiciones exactas en `git log --reverse --oneline
+origin/main..HEAD | cat -n` cambian con cada push — verificado hoy
+(26/09/2026, `origin/main` = `2c9b423`, tras el push de D3): `2db33f5`
+posición 4, `93ab083` posición 5, `a7d06be` posición 9, `f37d1c2`
+posición 14, R' (`8940467`/`d43de3f`/`3818910`) posiciones 23-25. Estas
+posiciones YA reflejan que D3 salió de la historia local (ya no cuenta,
+está en `origin/main`) — no confundir con una versión anterior de este
+párrafo que las citaba relativas al estado previo al push de D3; siempre
+re-correr el comando antes de actuar, nunca asumir estos números.
+
 **El prefijo que respeta el piso de R' depende de qué se quiere incluir,
-no es un único número:** cualquier punta en posición 1-4 (`2c9b423`,
-`f9af82f`, `6920479` o `548c432`) queda ANTES de que empiece 2c/5 — de
-esas, D3 solo (sin D4) es cualquier punta en posición 1-3 (`2c9b423`,
-`f9af82f` o `6920479`, las dos últimas son commits de docs); D3+D4 juntos
-es punta en posición 4 (`548c432` — respeta el piso de R', pero ver el
-hallazgo separado más abajo, "Hallazgo separado, sin resolver en este
-runbook", antes de asumir que por eso ya es un push seguro sin más). O,
-en el otro extremo, ≥ `3818910` (posición 26, con las 3 partes de R' incluidas completas — pero esto junta 4.3 con el
-deploy grande completo, como ya advierte la subsección de arriba). Nunca
-un punto intermedio entre `2db33f5` (posición 5) y `3818910`.
+no es un único número.** Hoy (`origin/main` = `2c9b423`, D3 ya pusheado,
+posiciones verificadas con `git log --reverse --oneline
+origin/main..HEAD | cat -n`) las puntas disponibles ANTES de que empiece
+2c/5 son: `origin/main` mismo (`2c9b423`, ya en producción); `f9af82f`
+(posición 1, solo docs); `6920479` (posición 2, solo docs); o `548c432`
+(posición 3, D4 — respeta el piso de R' por el criterio de ascendencia
+de arriba, pero ver el hallazgo separado más abajo, "Hallazgo separado,
+sin resolver en este runbook", antes de asumir que por eso ya es un push
+seguro sin más). **Pushear `548c432` se lleva también `f9af82f` y
+`6920479`** (son commits anteriores en la misma rama, no ramas
+paralelas) — no hay forma de pushear D4 sin esos 2 commits de docs
+delante. O, en el otro extremo, ≥ `3818910` (con las 3 partes de R'
+incluidas completas — pero esto junta 4.3 con el deploy grande completo,
+como ya advierte la subsección de arriba). Nunca una punta que incluya
+`2db33f5` sin incluir también `3818910`.
 
 **Por qué "no volver a deployar más allá de `f37d1c2`" NO es un camino de
 rollback válido — error de la versión anterior de este párrafo,
@@ -759,7 +887,9 @@ COMMIT elegido, no de si se llega ahí empujando hacia adelante o
 "volviendo" hacia atrás — la advertencia de arriba aplica igual en las
 dos direcciones. Si el código en producción ya incluye R' (es decir, ya
 se pusheó hasta `3818910` o más allá), automáticamente incluye también
-`f88dbdd`…`283bc4c` (posiciones 16-19, anteriores a R' en la historia) —
+`f88dbdd`…`283bc4c` (los 4 commits de la tabla de 4.3 de más arriba,
+anteriores a R' en la historia — no citados por posición porque esta
+misma se corre con cada push, ver el criterio de ascendencia más abajo) —
 "volver" a `f37d1c2` sería desplegar 2c/5 sin R', exactamente lo que el
 piso prohíbe. Y no es ejecutable de todos modos: con `origin/main` ya en
 `3818910` o más allá, un push a `f37d1c2:main` no es fast-forward — Git
@@ -798,10 +928,12 @@ revierte encima — esa lectura marcaría como violando el piso lo que en
 realidad lo respeta, error de una versión anterior de este texto). El
 criterio correcto es sobre la PUNTA del deploy — pero expresarlo por
 POSICIÓN en `git log --reverse` es una trampa: las posiciones se corren
-con cada push, así que "5 a 25" deja de valer apenas se pushea D3, y
-justo cuando hace falta usar este criterio (después de que `origin/main`
-ya pasó `3818910`) esa lista de commits ya no aparece en
-`origin/main..HEAD` en absoluto. **El criterio estable es por
+con cada push — de hecho ya pasó una vez, el rango de posiciones citado
+originalmente (escrito 25/09/2026, antes de D3) quedó corrido el
+26/09/2026 tras el push de D3 (ver más arriba la posición real de hoy para
+cada hash puntual, no un rango) — y justo cuando hace falta usar este
+criterio (después de que `origin/main` ya pasó `3818910`) esa lista de
+commits ya no aparece en `origin/main..HEAD` en absoluto. **El criterio estable es por
 ascendencia, no por posición:** el piso de R' se viola cuando el commit
 `T` que Render tiene desplegado cumple LAS DOS — `git merge-base
 --is-ancestor 2db33f5 T` (éxito) Y `git merge-base --is-ancestor 3818910
@@ -813,10 +945,10 @@ el segundo falla (violan el piso); en `3818910` y `efdc5b0` los dos
 tienen éxito (respetan el piso de R', R' ya incluido). Un deploy cuya
 punta sea `548c432` (D4) o anterior no viola el
 piso de R' por sí solo (ver, sin embargo, el hallazgo separado más abajo
-sobre `548c432` específico). Con el plan de split vigente (D3=`2c9b423`
-solo, D4=`548c432` solo, deploy grande con punta en `3818910` o
-después), nunca debería existir en el historial de Render un deploy real
-que cumpla el criterio de arriba.
+sobre `548c432` específico). Con el plan de split — D3 (`2c9b423`) YA
+ejecutado, D4 (`548c432`) como su propio deploy pendiente, deploy grande
+con punta en `3818910` o después — nunca debería existir en el
+historial de Render un deploy real que cumpla el criterio de arriba.
 
 **Hallazgo separado, sin resolver en este runbook: `548c432` (D4) cumple
 el piso de R' pero, por el código real de ese commit, parece reproducir
@@ -937,19 +1069,19 @@ sobre UI en el bloque de correcciones menores, más abajo) y, hasta que se
 complete la reserva, el registro de ocupación de esa fila puntual.
 
 **Backup pre-deploy — misma exigencia de siempre, sin excepción.**
-**Corrección 25/09/2026 (continuación de sesión):** este párrafo decía
-que el push de esta Wave aplicaba los 4 saltos 60→61→62→63→64 — ya no es
-así, porque D2 (60→61) se ejecutó por separado y, por el plan de split
-vigente hoy (ver "Split de push del ADR reintento-vs-reversa" más
-arriba), D3 (61→62, Bloque 2b) también va como su PROPIO deploy, antes
-del "deploy grande" que trae esta Wave. Si ese orden se sostiene, el push
-que finalmente incluya BLOQUE 29 (v64) partiría de v62, no de v60 —
+**Corrección 26/09/2026 (tras el push de D3):** D1 (`386359c`, sin
+cambios de schema — verificado, `CURRENT_SCHEMA_VERSION` sigue en `60`
+en ese commit), D2 (60→61, Bloque 2a) y ahora D3 (61→62, Bloque 2b)
+ya se ejecutaron como sus PROPIOS deploys, separados del "deploy grande"
+que trae esta Wave — ver "Split de push del ADR reintento-vs-reversa"
+más arriba para su evidencia real. El push que finalmente incluya BLOQUE
+29 (v64) parte de v62 (el estado real de producción a la fecha de esta
+corrección, confirmado contra `schema_migrations` en ambos tenants) —
 saltos 62→63→64 más los 2 cambios de `platform.schema.sql` (`061e1ed`,
-`5e6d4a8`), no los 4 originales. **Esto es una lectura del plan actual,
-no un hecho fijo** — el propio plan de split ya cambió una vez desde que
-se escribió el párrafo original (D3 pasó de ir junto con esta Wave a ser
-su propio paso), así que re-confirmar contra la subsección de arriba
-antes de preparar el backup real. Rige igual "Crear el respaldo antes de
+`5e6d4a8`), no los 4 saltos originales del párrafo previo a esta
+corrección. **Re-confirmar contra la subsección de arriba antes de
+preparar el backup real** — la versión de partida cambia cada vez que se
+pushea un paso más del split. Rige igual "Crear el respaldo antes de
 deployar" de más arriba: un branch de respaldo `no_compute: true` en LOS
 DOS proyectos Neon (tenants Y plataforma — el deploy reinicia el backend
 y reaplica los dos esquemas, mismo motivo que
@@ -957,17 +1089,25 @@ y reaplica los dos esquemas, mismo motivo que
 push con `SELECT MAX(version) FROM schema_migrations;` — **tiene que dar
 la versión que efectivamente corre en producción en ese momento, no un
 número fijo de este texto** (VERIFICARLO antes de asumirlo — a la fecha
-de esta corrección daba `61`, tras D2, pero puede haber cambiado si D3 ya
-corrió para entonces). **No hay ningún backup creado todavía para este
-deploy** ni tampoco, hasta donde este documento pudo confirmar, para D1 o
-D2 (ver la nota al respecto en la subsección de arriba) — nombre
-sugerido para el deploy grande cuando se autorice su push:
-`respaldo-pre-v62-a-v64-<fecha del push>` si D3 ya está en producción
-para ese momento (o `respaldo-pre-v60-a-v64-<fecha del push>` si por
-algún motivo el plan cambia y termina yendo junto con D3) — nunca
-`respaldo-pre-v64-...`: ese nombre sugiere que el respaldo cubre solo el
-último paso, cuando en realidad tiene que cubrir el salto completo desde
-la versión real de producción al momento de ese push.
+de esta corrección da `62`, tras D3, pero puede haber cambiado si D4 o
+el deploy grande ya corrieron para entonces). **Para D3 SÍ se crearon y
+verificaron 3 backups en estado v61** (Demo `br-floral-dew-axst9hrq`,
+Hotel `br-nameless-bonus-ax2astxu`, plataforma `br-old-recipe-ay0wgszr`,
+ver la tabla "Puntos de restauración reales" más arriba) — **para D1/D2
+no hay un backup dedicado**, aunque los 3 branches
+`respaldo-pre-v64-2026-09-25`/`respaldo-hotel-pre-v64-2026-09-25` (ver la
+nota al respecto en la subsección de arriba) sirven como equivalente
+parcial en estado v60. **No hay ningún backup creado en estado v62 para
+el deploy grande** — los 3 branches con nombre `respaldo-*-v64-2026-09-25`
+(uno por proyecto/tenant, ver la misma tabla) capturaron el
+estado ANTES de D1, D2 y D3 (v60, LSN previos a las 19:24Z del 25/09) —
+están superados y NO sirven para el deploy grande sin refrescarlos.
+Nombre sugerido para el backup nuevo cuando se autorice el push del
+deploy grande: `respaldo-pre-v62-a-v64-<fecha del push>` — nunca
+`respaldo-pre-v64-...` a secas (ese nombre ya está tomado por el backup
+stale de arriba, y además sugeriría que el respaldo cubre solo el último
+paso, cuando en realidad tiene que cubrir el salto completo desde la
+versión real de producción al momento de ese push).
 
 **La verificación post-deploy de ESTA sección cubre solo v64 (BLOQUE
 29).** No valida los 2 cambios de `platform.schema.sql` (`061e1ed`,
@@ -1001,8 +1141,9 @@ usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
   fail-loud por un motivo distinto: escritores viejos sin la columna).
 - **v61 → v62 (`2c9b423`, "Bloque 2b — CHECK
   chk_invoices_pending_since"), BLOQUE 27 de `schema.sql`. Estado:
-  PENDIENTE — es D3, todavía sin pushear (ver la tabla de D3/D4/deploy
-  grande en "Split de push del ADR reintento-vs-reversa" más arriba).**
+  EJECUTADO — es D3, pusheado y desplegado 26/09/2026 ~02:18 UTC (ver
+  "Split de push del ADR reintento-vs-reversa" más arriba para la
+  evidencia real contra producción).**
   Mismo ADR,
   §3.6/§6. Cierra la ventana que v61 dejó abierta a propósito: agrega el
   backfill INVERSO (`pending_since = NULL WHERE status <> 'PENDING'`, limpia
@@ -1017,7 +1158,7 @@ usa esta sección para v64 (BLOQUE de `schema.sql`, commit, qué agrega):
   `schema.sql`. Estado: PENDIENTE — parte del "deploy grande". Verificar
   con `git log origin/main --oneline | grep 061e1ed` (0 líneas = todavía
   no pusheado; ese es el grep de la sección "Wave 14, ítem 4.3" más
-  arriba, no el de la tabla D3/D4/deploy-grande, que no incluye este
+  arriba, no el de la tabla de D4/deploy-grande, que no incluye este
   hash).**
   `docs/diseno-wave15-sesion-saga-aprovisionamiento-2026-09-24.md`
   §2, D-04 opción A. Agrega `customers.token_version INTEGER NOT NULL
@@ -1149,8 +1290,12 @@ respuestas existentes, no depende de esa ruta).
   intacta.
 - **No usar `reset_from_parent` sobre `production`.** `production` es el branch raíz de los
   dos proyectos — no tiene padre del cual resetear.
-- **No borrar el branch de respaldo** hasta confirmar que el deploy quedó estable, y
-  después de eso tampoco: son baratos (copy-on-write) y el límite es 5000 por proyecto.
+- **No borrar el branch de respaldo** hasta confirmar que el deploy quedó estable.
+  Son baratos (copy-on-write), pero el límite real del plan free es **10 branches por
+  proyecto** (confirmado en vivo el 10/09/2026 y de nuevo el 26/09/2026 —
+  no 5000, cifra vieja de este párrafo que ya causó un choque real; ver
+  "Puntos de restauración reales" más arriba para el procedimiento de
+  liberar cupo cuando haga falta).
 - **No confiar en PITR** para nada que se pueda detectar con más de 6 h de retraso.
 
 ## Verificación
