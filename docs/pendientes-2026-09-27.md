@@ -7007,6 +7007,60 @@ los confirme.
 - **H11 (baja, ya conocido, con ancla desactualizada)** — `CANCEL_ADVANCE_MS` sigue fijo en 24h en
   `src/api/routes/customer.routes.ts:131` (y `:968`). Ya estaba registrado más arriba en este mismo
   archivo citando `:127` — esa cita quedó vieja, la línea real hoy es `:131`.
+- **H12 (confirmado, CI real — corrige la Fase 0 del refactor, que lo había declarado
+  "no verificable" en vez de "verificado rojo") — `test:integration` está rojo en CI desde
+  `c773625`.** El propio `docs/linea-base-refactor-2026-09-27.md` (§2, "test:integration") decía
+  que no se podía verificar en este sandbox (sin `TEST_DATABASE_URL`) y dejaba la pregunta
+  abierta — verificado ahora contra la API REST real de GitHub Actions: run `36326751583` sobre
+  `a7b6eb8` y run `36323873388` sobre `c773625`, ambos `conclusion: failure` en el job
+  `integration` (el resto de los jobs — lint, typecheck, test unitario, route-inventory,
+  schema-version — están en verde en ambos). El run inmediatamente anterior en `main`,
+  `36289944518` sobre `05542b5`, está en verde — `c773625` es la primera corrida roja, y es
+  también el primer commit que incluye `4eadded` (el commit que agregó el archivo de test). Los
+  commits intermedios (`5a5a305`, `ef10f46`, `4eadded`, `937c989`, `7aaf58e`, `ed01144`) no tienen
+  corrida de CI propia. Log real del job (descargado y grepeado, no interpretado de segunda mano):
+  ```
+  ❯ src/tests/integration/reservation-auto-assign-all.integration.test.ts (5 tests | 5 failed)
+  Test Files  1 failed | 64 passed (65)
+       Tests  5 failed | 491 passed (496)
+  ```
+  Las 5 fallas son la misma aserción `AssertionError: expected +0 to be 1 // Object.is equality`
+  sobre `occupancy.rows` (una por test, líneas **255, 298, 351, 410, 455** del archivo de test —
+  confirmado contra el stack trace real del log, no solo contra el código). Causa raíz
+  diagnosticada por lectura directa de código: `SqlOccupancyRepository.recordReservation()`
+  (`src/reservas/sql.occupancy.repository.ts:77-82`) descarta en silencio (return, sin throw, sin
+  log) cualquier reserva cuyo `status` no sea `CONFIRMED`/`COMPLETED` — pero
+  `autoAssignAllForCategory()` puede dejar una reserva `assignmentStatus: 'ASSIGNED'` con
+  `status: 'PENDING'` (las dos son máquinas de estado independientes de `Reservation`), y el
+  fixture de test (`createTodayPendingAssignment()`, línea 189-210) nunca confirma la reserva antes
+  de auto-asignarla. **No es un riesgo de doble reserva** — verificado que
+  `checkAvailability()`/`assertAllResourcesAvailable()` (el camino real de detección de colisión)
+  no depende de `occupancy_records` en ningún punto: usa `SqlReservationRepository.getActiveInRange()`
+  (`sql.reservation.repository.ts:366`), que consulta `reservations` directo con
+  `blockingStatuses = [PENDING, CONFIRMED]` — el propio sistema ya trata `PENDING` como estado que
+  ocupa un recurso, de forma independiente de `occupancy_records`.
+
+  **Corrección (segunda ronda de gate sobre el diseño) — NO es una pregunta abierta de negocio, es
+  un bug del test.** El guard de `recordReservation()` no es código viejo sin revisar: es la
+  Condición 3 de un gate del 25/09/2026 (`41b1ff9`), fijada por dos tests de regresión dedicados
+  (`reservation-deferred-assignment.integration.test.ts:656-733`, describe "Regresión B-2") que
+  prueban exactamente que una reserva `PENDING` con recurso ya asignado debe dar **0** filas de
+  ocupación hasta confirmarse. El fixture de Fase 3 rompe ese contrato ya decidido, no al revés.
+  **Corrección (tercera ronda de gate, v2.1) — la mecánica del fix también estaba invertida:** no
+  es cambiar las 5 aserciones existentes a "0 filas" — es confirmar la reserva ANTES de correr el
+  batch (mismo patrón que `createConfirmedPendingAssignment()`, Fase 2), dejando esas 5 aserciones
+  de "1 fila" intactas, más un test nuevo que sí cubre el camino sin confirmar (0 filas tras el
+  batch, 1 fila tras confirmar) y un refuerzo al test de concurrencia existente
+  (`bookedMinutes`, no solo conteo de filas). Detalle completo:
+  `docs/diseno-occupancy-records-pending-assignment-2026-09-27.md` §7 (v2.1). Relacionado, mismo
+  guard, hallazgo independiente y
+  todavía sin resolver: `OCCUPANCY-DOUBLE-COUNT-ON-COMPLETE-001`, más abajo en este archivo
+  (Wave 14 — 4.3, ~línea 6785) — `confirmReservation()`/`completeReservation()` llaman ambas a
+  `recordOccupancy()` sobre la misma reserva; cualquier cambio futuro al guard de
+  `occupancy_records` tiene que resolver los dos hallazgos juntos, no por separado. Diseño completo
+  (v2.1, dos rondas de gate corrigiendo v1 — pregunta mal planteada — y v2 — mecánica del fix
+  invertida):
+  `docs/diseno-occupancy-records-pending-assignment-2026-09-27.md`.
 
 ## Residuos de `appfrontend-main` encontrados al gatear su propuesta de refactor (`architecture-governor`,
 ## segunda ronda, 27/09/2026) — registrados acá porque `appfrontend/docs/` no tiene archivo de

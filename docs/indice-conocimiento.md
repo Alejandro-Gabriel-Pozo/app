@@ -45,6 +45,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Deploy, respaldos, rollback y las trampas que ya costaron un incidente | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) | Runbook |
 | Log de sesión (más reciente) | [pendientes-2026-09-08.md](pendientes-2026-09-08.md) | Historial, no catálogo. Siempre el de **fecha más alta** en `docs/`; si esta fila quedó vieja, gana el archivo |
 | Backlog de producto por rubro | [roadmap-pms-multirubro.md](roadmap-pms-multirubro.md) | Roadmap (no pendientes) |
+| Línea de base real (Fase 0) del refactor incremental de arquitectura — números medidos con comando real sobre `c773625`/`ec3783a`, con addendum 27/09/2026 que corrige `test:integration` de "no verificable" a "verificado rojo" | [linea-base-refactor-2026-09-27.md](linea-base-refactor-2026-09-27.md) | Mapa (medición puntual, no se reactualiza sola) |
 | **Referencia externa de inventario** — `C:\Users\Usuario\Downloads\proyecto script` (NQNTUR, ERP-lite sobre Apps Script). Es el espejo de este repo: su `REVIEW-ERP-LITE.md` lista como gaps propios lo que acá ya está (AFIP, hospedaje, caja, cuentas corrientes), y su fuerte es el inventario que acá falta. Ya se adoptaron su mapa `TRANSICIONES` y `DESTINOS_CONSUMO` (consumo≠merma); conteo físico (3 acciones: AJUSTAR/FALTA_MOVIMIENTO/DESCARTAR) y lotes/FEFO siguen sin adoptar (ver pendientes 27/08) | Fuera del repo | Referencia externa |
 
 ---
@@ -110,6 +111,21 @@ nueva), sin schema nuevo. **Implementación NO autorizada** — 4 bloques
 (B1-B4) pendientes, cada uno su propio gate de `architecture-governor`.
 
 **HOLD de diseño levantado (01/09/2026, más tarde el mismo día — decisión del dueño, "es un ERP, la sobreingeniería es bienvenida acá"). HOLD de implementación: sigue vigente en ambos, requiere autorización específica y separada por bloque.** [diseno-fiscal-profile-resolver-2026-09-01.md](diseno-fiscal-profile-resolver-2026-09-01.md) (FiscalProfile/ComprobanteTypeResolver — la arquitectura ya se puede diseñar en detalle; sigue abierta solo la hipótesis `[H]` sobre `getIvaReceptorTypes()`, que depende de un certificado ARCA real, no de una decisión de producto) y [vision-identidad-operativa-auditabilidad-2026-09-01.md](vision-identidad-operativa-auditabilidad-2026-09-01.md) (identidad de entidades, numeración multi-ámbito, ledger para cuentas corrientes — §5 de ese documento detalla qué queda destrabado). Ninguno de los dos es ya "sin forzante" para el diseño: el forzante pasó a ser la categoría de producto en sí. La implementación de D+A (Bloques 0–1b, reversión gobernada de pagos) sigue su propio HOLD de implementación, vigente hasta autorización específica.
+
+**Contrato B-2 de `occupancy_records` (guard `CONFIRMED`/`COMPLETED`-only) — el test roto de Fase 3
+lo viola, el guard de producción está bien (27/09/2026, ver `pendientes-2026-09-27.md` H12).**
+[diseno-occupancy-records-pending-assignment-2026-09-27.md](diseno-occupancy-records-pending-assignment-2026-09-27.md)
+(v2.1 — dos rondas de gate: v1 planteaba mal la pregunta, v2 tenía la mecánica del fix invertida)
+— causa raíz de la
+falla real de CI en `reservation-auto-assign-all.integration.test.ts` (5/5 tests), diagnosticada
+por lectura directa de código y confirmada contra el log real de GitHub Actions. Verificado que
+**no** hay riesgo de doble reserva (la detección de colisión no depende de `occupancy_records`).
+**No es una decisión de negocio pendiente:** el guard que descarta reservas `PENDING` es la
+Condición 3 de un gate anterior (`41b1ff9`, 25/09/2026), fijada por tests de regresión dedicados
+("Regresión B-2") — el fixture del test de Fase 3 rompe ese contrato ya decidido; la corrección es
+confirmar la reserva ANTES del batch (no cambiar las aserciones de "1 fila" existentes), más un
+test nuevo para el camino sin confirmar. Sin implementar todavía — próximo bloque: el diff del
+test, con su propio gate liviano de implementación.
 
 Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes del día.
 

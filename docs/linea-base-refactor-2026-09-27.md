@@ -50,14 +50,50 @@ Test Files  187 passed | 1 skipped (188)
 ```
 
 ### `npm run test:integration` (app-main)
-**No verificable en este sandbox** — sin `TEST_DATABASE_URL` (confirmado: ni esa variable ni
-`PLATFORM_DATABASE_URL`/`DATABASE_URL` están seteadas; el script `docs:routes` usa un dummy
-lazy-pool que nunca abre conexión real, por eso corre igual sin Postgres). El estado de CI real
-sobre `c773625` específicamente no se verificó en esta sesión (sin acceso a la API de GitHub en
-el momento de esta medición) — la corrida de CI más reciente confirmada por el gate fue
-`success` sobre `05542b5` (commit anterior en la misma rama). **Queda pendiente confirmar CI real
-sobre `c773625` antes de tratar esta línea de base como definitiva para las fases de migración
-que dependen de la suite de integración como red de seguridad.**
+**Corrección (27/09/2026, post-medición, verificado contra la API REST real de GitHub Actions):**
+esta sección decía "no verificable en este sandbox" y dejaba pendiente confirmar CI real — ya se
+confirmó, y el resultado es **rojo**, no "sin verificar". No es un problema del sandbox (sin
+`TEST_DATABASE_URL` local — eso sigue siendo cierto para correrlo localmente), es un fallo real de
+CI. **Precisión sobre desde cuándo:** el run inmediatamente anterior en `main`, `36289944518`
+sobre `05542b5`, está en verde — `c773625` (run `36323873388`) es la primera corrida roja, y
+también el primer commit que incluye `4eadded` (el commit que agregó el archivo de test que falla).
+Los commits intermedios entre `05542b5` y `c773625` no tienen corrida de CI propia, así que no se
+puede afirmar en qué commit exacto de ese rango empezó a fallar — solo que `c773625` ya estaba
+roto.
+
+Runs reales: `36323873388` sobre `c773625` y `36326751583` sobre `a7b6eb8` (este mismo commit de
+línea de base), ambos con el job `integration` en `conclusion: failure` — el resto de los jobs
+(`lint`, `typecheck`, `test`, `route-inventory-check`, `schema-version-check`) están en verde en
+los dos. Log real del job de `a7b6eb8` (descargado vía la API, no una cita de segunda mano):
+
+```
+❯ src/tests/integration/reservation-auto-assign-all.integration.test.ts (5 tests | 5 failed)
+Test Files  1 failed | 64 passed (65)
+     Tests  5 failed | 491 passed (496)
+Duration  49.58s
+```
+
+Un único archivo de test roto, 5/5 tests fallando con la misma aserción
+(`AssertionError: expected +0 to be 1 // Object.is equality` sobre `occupancy.rows`, líneas 255,
+298, 351, 410, 455 del archivo de test, confirmado contra el stack trace real del log) — el resto
+de la suite de integración (491 tests, 64 archivos) pasa. **No es una pregunta abierta de negocio
+(fix de test vs. fix de producción) — es un bug del fixture de test que rompe un contrato ya
+decidido en un gate anterior** (`41b1ff9`, 25/09/2026, fijado por tests de regresión dedicados):
+`docs/pendientes-2026-09-27.md` H12, `docs/diseno-occupancy-records-pending-assignment-2026-09-27.md`
+(v2).
+
+**Consecuencia para esta línea de base:** el resto de las cifras de este documento (tsc, lint,
+lint:arch, vitest unitario, docs:routes, route-consumer-coverage, jscpd, build de frontend) no se
+ven afectadas — son mediciones independientes de esta única falla, y todas dieron verde. Lo que
+cambia es la fila de `test:integration`: no es una "red de seguridad sin confirmar todavía", es una
+red de seguridad con un agujero conocido y acotado a un solo archivo, con causa raíz ya
+identificada.
+
+**Efecto de enmascaramiento, mientras este archivo siga rojo:** el job `integration` ya está en
+`failure` — una regresión nueva en CUALQUIER OTRO archivo de integración no cambia el color del
+job (ya era rojo). La red de seguridad real, mientras tanto, es el conteo por archivo del log
+(`Test Files N failed | M passed`), no el `conclusion` del job — cualquiera que revise CI en este
+período tiene que mirar el log, no solo el semáforo.
 
 ### `npm run docs:routes` (app-main)
 ```
@@ -122,8 +158,10 @@ acá, se deja registrado el método usado esta vez).
 
 ## 3. Qué NO se verificó en esta Fase 0 (declarado, no escondido)
 
-- **`test:integration` de app-main contra Postgres real** — sin `TEST_DATABASE_URL` en este
-  sandbox. Última confirmación real de CI: `success` en `05542b5`, no en `c773625`.
+- **`test:integration` de app-main contra Postgres real, localmente** — sin `TEST_DATABASE_URL` en
+  este sandbox. **Actualización (27/09/2026, ver §2 arriba): sí se verificó vía CI real** — está
+  roja, un solo archivo (`reservation-auto-assign-all.integration.test.ts`, 5/5 tests), causa raíz
+  ya diagnosticada. Ya no es "sin confirmar", es un hallazgo confirmado y acotado.
 - **Matriz completa de arcos cíclicos entre carpetas** (19 pares / 13 arcos) — citada como ya
   verificada por `architecture-governor` en la tercera ronda, no re-derivada acá con la misma
   metodología exacta.
@@ -133,8 +171,11 @@ acá, se deja registrado el método usado esta vez).
 
 ## 4. Conclusión de la Fase 0
 
-Línea de base establecida sobre `c773625`/`ec3783a`, ambos en `origin/main`. La suite de
-integración de `app-main` sigue sin poder verificarse en este entorno — cualquier fase de
-migración que dependa de ella como red de seguridad tiene que confirmarla en un entorno con
-Postgres real (CI, o un tenant de prueba) antes de considerarse cubierta. El resto de los números
-está medido con comando real, sin estimaciones.
+Línea de base establecida sobre `c773625`/`ec3783a`, ambos en `origin/main`. **Corrección
+27/09/2026:** la suite de integración de `app-main` no queda "sin verificar" — se confirmó rota en
+CI real, en un único archivo con causa raíz ya identificada (ver §2/§3). Cualquier fase de
+migración que dependa de la suite de integración como red de seguridad tiene ese agujero conocido y
+acotado, no una incógnita — no bloquea usar el resto de la suite (491/496 tests) como red de
+seguridad, pero sí bloquea confiar en la cobertura específica de "Auto Assign All" hasta que
+`docs/diseno-occupancy-records-pending-assignment-2026-09-27.md` se resuelva. El resto de los
+números está medido con comando real, sin estimaciones.
