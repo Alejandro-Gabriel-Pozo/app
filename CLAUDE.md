@@ -63,18 +63,31 @@ tocan entidades de dominio) sigue `docs/DEFENSIVE_DEVELOPING.md`. Este
 repo históricamente lo disparaba vía el checklist del PR template
 (`.github/pull_request_template.md`), pero buena parte del trabajo actual
 se commitea directo a `main` sin pasar por PR — así que el checklist
-nunca se completa solo. Por eso: respondé la sección 2 (genérica) y, si el
-cambio toca `src/api/routes/`, `src/container.ts`, `src/platform/` o
-`src/workers/`, también la sección 3 (multi-tenant: `req.db` vs.
-`getPlatformRawPool()`, pool del `TransactionManager`, BD del
-`DomainEventRepository`) — como parte del mensaje de commit si no hay PR,
-no solo cuando lo hay.
+nunca se completa solo. Por eso: respondé la sección 2 (genérica) como
+parte del mensaje de commit si no hay PR, no solo cuando lo hay.
+
+**Sección 3 (multi-tenant) — desde el 27/09/2026, gate obligatorio, no
+solo checklist.** Si el cambio toca `src/api/routes/`, `src/container.ts`,
+`src/platform/` o `src/workers/`, invocar el subagente
+`multitenant-governor` (vive en el repo raíz, `App - frontend/.claude/agents/`
+— la sesión que ve los dos repos a la vez) ANTES de commitear, en paralelo
+con (no en reemplazo de) `architecture-governor`. Responde las mismas 3
+preguntas de la sección 3 (`req.db` vs. `getPlatformRawPool()`, pool del
+`TransactionManager`, BD del `DomainEventRepository`), pero como gate
+dedicado con veredicto propio (`APPROVED`/`HOLD`/etc.) en vez de un
+checklist que alguien puede completar de memoria sin verificar. Este gate
+nuevo no reemplaza la regla de fondo (los 3 bugs reales de agosto 2026 que
+motivaron la sección 3 — el documento original,
+`code-review-reservations-api.md`, ya no existe en el repo; cita
+desactualizada, corregir o retirar cuando alguien la note de nuevo).
 
 Esto no reemplaza a `criterios-negocio`: esa skill cubre integridad de
-datos y reglas de negocio; este documento cubre fallos de arquitectura y
-wiring (pools mezclados, fallos a mitad de camino, un solo camino por
-responsabilidad). Los dos aplican en paralelo cuando el cambio toca
-ambas cosas.
+datos y reglas de negocio; `DEFENSIVE_DEVELOPING.md` cubre fallos de
+arquitectura y wiring (pools mezclados, fallos a mitad de camino, un solo
+camino por responsabilidad) en general, y `multitenant-governor` es el
+gate dedicado para su sub-caso más peligroso (mezclar plataforma con
+tenant). Los tres aplican en paralelo cuando el cambio toca las tres
+cosas.
 
 ## RBAC — maestro de permisos por endpoint
 
