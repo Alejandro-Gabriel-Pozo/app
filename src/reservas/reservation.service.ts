@@ -56,6 +56,7 @@ import { Reservation }                  from './Reservation.js';
 import type { ReservationCustomer } from './reservation-customer.entities.js';
 import type { PhysicalResource } from './resource.entities.js';
 import {
+  DomainError,
   InvalidReservationError,
   ResourceNotFoundError,
   ReservationNotFoundError,
@@ -72,9 +73,10 @@ import {
 import { recordFieldChangesWithClient } from '../domain/audit.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 import { BookableServiceNotFoundError } from './bookable-service.service.js';
-import type { ReservationLine } from './reservation.types.js';
+import type { ReservationLine, AutoAssignAllResult, AutoAssignAllItemResult } from './reservation.types.js';
 import { validateDetailsAgainstFields } from './category.service.js';
 import type { ReservationRepository }        from './reservation.repository.js';
+import { RESERVATIONS_MAX_LIMIT }            from './reservation.repository.js';
 import type { ResourceRepository }           from './resource.repository.js';
 import type { OccupancyRepository }          from './occupancy.repository.js';
 import type { ICategoryRepository }          from './category.repository.js';
@@ -110,7 +112,8 @@ import type { SqlClient }                    from '../repositories/sql.client.js
 import { ReservationPricingService }      from './reservation-pricing.service.js';
 import { ReservationAvailabilityService } from './reservation-availability.service.js';
 import { ReservationScheduleService }     from './reservation-schedule.service.js';
-import { resolveEndTime, qualifiesForDateComparison, isPastStart } from './reservation-time.utils.js';
+import { resolveEndTime, qualifiesForDateComparison, isPastStart, deriveCalendarDate, todayInBusinessTimezone } from './reservation-time.utils.js';
+import { logger } from '../logger.js';
 
 // Re-exportado para que `pms-estadias/stay.service.ts` (único consumidor
 // externo) siga importando `combineDateAndTime` desde acá sin cambios —
@@ -140,6 +143,55 @@ const PAST_START_TOLERANCE_MS = 5 * 60 * 1000;
  * en que Postgres las haya persistido. No existe ningún `deepEqual`
  * compartido en este repo (verificado) — local a este punto.
  */
+/**
+ * Fase 3, "Auto Assign All" (docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md
+ * §3.4) — clasifica el error de UNA reserva del batch en el `outcome` que
+ * corresponde, sin relanzar (el `for` de `autoAssignAllForCategory()`
+ * sigue con la siguiente reserva, §4.2). `ReservationAlreadyAssignedError`
+ * es una carrera BENIGNA con otra operación (otro `PUT`/check-in/completar,
+ * u otra corrida concurrente del propio batch, §4.4) — no es realmente un
+ * "fallo" del batch, así que se reporta aparte de `FAILED`. Cualquier otro
+ * `DomainError` expone su `code`/`message` reales (mismo criterio que el
+ * resto del repo, A7.1: nunca datos de cliente). Un error NO tipado se
+ * loguea con el detalle completo y se expone al frontend solo como
+ * `INTERNAL_ERROR`, sin filtrar nada interno.
+ */
+function classifyFailure(
+  reservationId: string,
+  previousResourceId: string,
+  err: unknown,
+): AutoAssignAllItemResult {
+  if (err instanceof ReservationAlreadyAssignedError) {
+    return {
+      reservationId,
+      previousResourceId,
+      outcome: 'SKIPPED_ALREADY_ASSIGNED',
+      code: err.code,
+      message: err.message,
+    };
+  }
+  if (err instanceof DomainError) {
+    return {
+      reservationId,
+      previousResourceId,
+      outcome: 'FAILED',
+      code: err.code,
+      message: err.message,
+    };
+  }
+  logger.error(
+    { reservationId, err },
+    'auto-assign-all: error no tipado al procesar una reserva del batch',
+  );
+  return {
+    reservationId,
+    previousResourceId,
+    outcome: 'FAILED',
+    code: 'INTERNAL_ERROR',
+    message: 'Error interno al procesar esta reserva -- ver logs del servidor.',
+  };
+}
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
@@ -1444,21 +1496,38 @@ export class ReservationService {
    * v11 (Fase 2, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §8
    * A6.1) — operación de aplicación única que confirma una asignación
    * provisoria (`PENDING_ASSIGNMENT`) sobre un recurso concreto. Los
-   * CUATRO caminos (`PUT /reservations/:id`, "Auto Assign All" (Fase 3,
-   * no implementada), check-in, completar) la invocan en vez de
-   * reimplementarla cada uno por su lado.
+   * CUATRO caminos reales (`PUT /reservations/:id`, `autoAssignAllForCategory()`
+   * ("Auto Assign All", Fase 3,
+   * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md), check-in,
+   * completar) la invocan en vez de reimplementarla cada uno por su lado.
    *
    * Recibe el `client` de la transacción del CALLER — no abre su propia
-   * transacción, porque `checkIn()`/`updateReservation()`/`completeReservation()`
-   * necesitan componerla dentro de la suya. El CALLER es responsable de
-   * lockear el recurso candidato (`resourceId`) ANTES de invocar esta
-   * operación, cuando corresponda (N1: nunca se toma el lock de un
-   * recurso mientras ya se tiene tomada una fila de `reservations`) — ver
-   * la tabla de orden de locks por caller en el diseño (§8 A6.1).
+   * transacción, porque `checkIn()`/`updateReservation()`/`completeReservation()`/
+   * `autoAssignAllForCategory()` necesitan componerla dentro de la suya. El
+   * CALLER es responsable de lockear el recurso candidato (`resourceId`)
+   * ANTES de invocar esta operación, cuando corresponda (N1: nunca se toma
+   * el lock de un recurso mientras ya se tiene tomada una fila de
+   * `reservations`) — ver la tabla de orden de locks por caller en el
+   * diseño (§8 A6.1 del documento base, §3.5 del documento de Fase 3 para
+   * el caller nuevo).
    *
    * `recordOccupancy()` NO se llama acá — cada caller lo hace por su
    * cuenta, DESPUÉS de que su propia transacción haga commit exitosamente
    * (`SqlOccupancyRepository` no tiene variante `WithClient`).
+   *
+   * @param expectedDateRange - F3-6 (Fase 3, "Auto Assign All", §3.3 del
+   *   documento de Fase 3) — opcional, 6to parámetro. Los 3 callers
+   *   preexistentes (`PUT`, check-in, completar) nunca lo pasan —
+   *   comportamiento idéntico para ellos. Solo `autoAssignAllForCategory()`
+   *   lo usa: compara `locked.startTime/endTime` (la relectura BAJO lock,
+   *   autoritativa) contra el rango que el batch tenía en su lectura SIN
+   *   lock — si difieren, la reserva cambió de fechas en paralelo (vía
+   *   `PUT`, panel o portal, C7) entre esa lectura y este lock, y la
+   *   validación de disponibilidad que el batch ya hizo (fuera de esta
+   *   transacción) quedó calculada sobre un rango que ya no es el vigente.
+   *   Sin este chequeo, la rama "confirmar el mismo recurso" (que se salta
+   *   los pasos 5-8 de acá abajo, ver el `if (!isSameResource)` más
+   *   adelante) no tiene NINGUNA otra validación de disponibilidad fresca.
    */
   async assignDeferred(
     client: SqlClient,
@@ -1466,6 +1535,7 @@ export class ReservationService {
     resourceId: string,
     businessId: string,
     changedBy: string,
+    expectedDateRange?: { startTime: Date; endTime: Date },
   ): Promise<Reservation> {
     // Paso 1 — lock de la reserva (no-op si el caller ya la tenía
     // lockeada). Única fuente de verdad para el resto de los pasos.
@@ -1476,6 +1546,21 @@ export class ReservationService {
     // podrían ejecutar el resto de los pasos dos veces.
     if (locked.assignmentStatus !== 'PENDING_ASSIGNMENT') {
       throw new ReservationAlreadyAssignedError(reservationId);
+    }
+
+    // Paso 2.5 (F3-6, Fase 3 "Auto Assign All") — guard de coherencia de
+    // fechas, solo si el caller lo pide. Va DESPUÉS del re-chequeo de
+    // assignmentStatus (paso 2, arriba): si la reserva ya fue asignada por
+    // otra operación concurrente, ese es el error más informativo
+    // (ReservationAlreadyAssignedError) -- "cambió de fechas" solo importa
+    // si todavía sigue siendo una PENDING_ASSIGNMENT genuina. Y ANTES del
+    // allowlist de status (paso 3, abajo).
+    if (
+      expectedDateRange
+      && (locked.startTime.getTime() !== expectedDateRange.startTime.getTime()
+        || locked.endTime.getTime() !== expectedDateRange.endTime.getTime())
+    ) {
+      throw new ReservationConcurrentlyModifiedError(reservationId, 'cambió de fechas');
     }
 
     // Paso 3 — allowlist de status.
@@ -1619,6 +1704,221 @@ export class ReservationService {
 
   async getAvailableSlots(serviceId: string, resourceId: string, date: Date, timezone: string): Promise<string[]> {
     return this.schedule.getAvailableSlots(serviceId, resourceId, date, timezone);
+  }
+
+  /**
+   * Fase 3, "Auto Assign All"
+   * (docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §3.4/§5) —
+   * resuelve automáticamente TODAS las reservas `PENDING_ASSIGNMENT` de
+   * `categoryId` cuya llegada es HOY (fecha de negocio): para cada una,
+   * primero confirma la MISMA unidad provisoria si sigue libre (Paso A,
+   * sin reoptimizar el conjunto — decisión del dueño F3-4), y solo si no
+   * lo está busca una alternativa en la categoría (Paso B, fallback
+   * greedy-alfabético existente, `findAvailableResourceInCategory()`).
+   *
+   * Filtrado por fecha, 2 capas (§2.2 del diseño, mismo criterio que
+   * J1-TZ): capa 1 (SQL, sobre-inclusiva) trae una ventana de 3 días
+   * alrededor de la medianoche UTC de "hoy" (huso de negocio); capa 2 (JS,
+   * exacta) filtra con `deriveCalendarDate() === todayBusinessDate`, la
+   * MISMA función que J1-TZ. `totalPending` se deriva de la capa 2
+   * (`filtered.length`), NUNCA de un conteo SQL aproximado (B1, v3 del
+   * diseño) — el tope operativo (`RESERVATIONS_MAX_LIMIT`) se aplica
+   * DESPUÉS de la capa 2, sobre filas ya exactas.
+   *
+   * SECUENCIAL, nunca `Promise.all` (§4.1 del diseño): no es un requisito
+   * de corrección (cada transacción revalida bajo lock), es una decisión
+   * de CALIDAD del resultado — procesar en paralelo podría hacer que dos
+   * reservas del propio batch resuelvan el MISMO alternativo en el
+   * fallback, y la segunda fallaría con un `InvalidReservationError`
+   * espurio pese a que existía OTRO recurso libre.
+   *
+   * El batch como operación HTTP siempre responde 200 con un reporte
+   * estructurado — una reserva que falla NO aborta las demás (§4.2); el
+   * `for` sigue con la siguiente, vía `classifyFailure()`.
+   */
+  async autoAssignAllForCategory(
+    categoryId: string,
+    businessId: string,
+    changedBy: string,
+  ): Promise<AutoAssignAllResult> {
+    const category = await this.categoryRepository.findById(categoryId);
+    const categoryName = category?.name ?? '';
+
+    const businessProfile = await this.businessProfileRepository.get();
+    const todayBusinessDate = todayInBusinessTimezone(this.now(), businessProfile.timezone);
+
+    // Capa 1 (SQL, sobre-inclusiva a propósito, §2.2) — ventana de 3 días
+    // alrededor de la medianoche UTC de "hoy" (huso de negocio): generosa
+    // para cubrir cualquier offset real (-12 a +14) sin descartar por SQL
+    // ninguna fila que la capa 2 (exacta) todavía necesite evaluar.
+    const todayUtcMidnight = new Date(`${todayBusinessDate}T00:00:00.000Z`);
+    const todayWindow = {
+      from: new Date(todayUtcMidnight.getTime() - 24 * 60 * 60 * 1000),
+      to:   new Date(todayUtcMidnight.getTime() + 2 * 24 * 60 * 60 * 1000),
+    };
+    // (B1, v3) Red de seguridad exclusivamente contra un volumen anormal
+    // en la ventana de 3 días -- NO el tope operativo de 200, que se
+    // aplica después, sobre las filas ya filtradas exactamente (capa 2).
+    const safetyLimit = RESERVATIONS_MAX_LIMIT * 5;
+
+    const candidates = await this.reservationRepository.getPendingAssignmentByCategory(
+      categoryId, todayWindow, safetyLimit,
+    );
+
+    // Capa 2 (JS, exacta) — la MISMA función que ya usa J1-TZ, sin
+    // reimplementar la lógica de marca-vs-instante.
+    const filtered = candidates.filter(
+      (r) => deriveCalendarDate(r.startTime, businessProfile.timezone) === todayBusinessDate,
+    );
+
+    const totalPending = filtered.length;
+    const processed = Math.min(totalPending, RESERVATIONS_MAX_LIMIT);
+    const pendingList = filtered.slice(0, processed);
+
+    // (B1, v3) truncated: por conteo real, O porque la capa SQL alcanzó su
+    // propio tope de seguridad (caso degenerado, no el camino normal —
+    // honest-degradation, se loguea, nunca se ignora en silencio).
+    const sqlSafetyLimitReached = candidates.length >= safetyLimit;
+    if (sqlSafetyLimitReached) {
+      logger.error(
+        { categoryId, safetyLimit },
+        'auto-assign-all: la ventana SQL de 3 días alcanzó el LIMIT de seguridad -- volumen anormal para una categoría, revisar.',
+      );
+    }
+    const truncated = totalPending > processed || sqlSafetyLimitReached;
+
+    const items: AutoAssignAllItemResult[] = [];
+    let confirmedSameResource = 0;
+    let reassigned = 0;
+    let skippedAlreadyAssigned = 0;
+    let failed = 0;
+
+    for (const queuedReservation of pendingList) {   // SECUENCIAL, nunca Promise.all -- ver §4.1
+      try {
+        // Paso A — optimista, fuera de la transacción, barato: ¿sigue
+        // disponible su PROPIA provisoria?
+        const ownStillFree = await this.availability.checkAvailability(
+          queuedReservation.resource.id,
+          queuedReservation.startTime,
+          queuedReservation.endTime,
+          queuedReservation.id,
+          queuedReservation.serviceId ?? undefined,
+          queuedReservation.partySize,
+        );
+
+        let candidateResourceId: string;
+        let outcome: 'CONFIRMED_SAME_RESOURCE' | 'REASSIGNED';
+
+        if (ownStillFree) {
+          candidateResourceId = queuedReservation.resource.id;
+          outcome = 'CONFIRMED_SAME_RESOURCE';
+        } else {
+          // Paso B — solo si A dio false: buscar alternativa en la
+          // categoría, excluyéndose a sí misma (F3-2).
+          const candidate = await this.availability.findAvailableResourceInCategory(
+            {
+              categoryId,
+              startTime: queuedReservation.startTime,
+              endTime:   queuedReservation.endTime,
+              ...(queuedReservation.serviceId && { serviceId: queuedReservation.serviceId }),
+              partySize: queuedReservation.partySize,
+            },
+            queuedReservation.id,
+          );
+          if (!candidate) {
+            // Sin candidato -- FAILED sin abrir ninguna transacción (no
+            // hay nada que lockear todavía). El batch sigue con la
+            // siguiente reserva.
+            items.push({
+              reservationId: queuedReservation.id,
+              previousResourceId: queuedReservation.resource.id,
+              outcome: 'FAILED',
+              code: 'NO_RESOURCE_AVAILABLE',
+              message: `No hay ningún recurso disponible de la categoría "${categoryId}" para la reserva "${queuedReservation.id}".`,
+            });
+            failed++;
+            continue;
+          }
+          candidateResourceId = candidate.id;
+          outcome = 'REASSIGNED';
+        }
+
+        let assigned!: Reservation;
+        await this.transactionManager.run(async (client: SqlClient) => {
+          // PRIMERA sentencia dentro de la transacción -- lockea Y valida
+          // el candidato, ANTES de lockear la fila (N1). Necesario incluso
+          // en la rama CONFIRMED_SAME_RESOURCE porque assignDeferred() se
+          // salta su propia validación cuando isSameResource (documento
+          // base, paso 4).
+          //
+          // (C1 del gate) -- no alcanza con lockear/validar solo
+          // candidateResourceId: si la reserva tiene serviceId, ese
+          // servicio puede tener resource_locks que checkAvailability()
+          // SÍ valida (Paso A, arriba) pero que un chequeo acotado a un
+          // solo id no cubre. Mismo patrón que updateReservation().
+          const lockSet = await this.availability.resolveLockedResourceIds(
+            queuedReservation.serviceId ?? undefined, candidateResourceId,
+          );
+          await this.availability.assertAllResourcesAvailable(
+            client, [...lockSet].sort(), queuedReservation.startTime, queuedReservation.endTime,
+            queuedReservation.id, queuedReservation.partySize,
+          );
+
+          assigned = await this.assignDeferred(
+            client, queuedReservation.id, candidateResourceId, businessId, changedBy,
+            { startTime: queuedReservation.startTime, endTime: queuedReservation.endTime },   // F3-6
+          );
+        });
+
+        // (N1 del gate) recordOccupancy() en su PROPIO try/catch, fuera
+        // del try que rodea la transacción -- si falla acá, la reserva YA
+        // quedó ASSIGNED (commit ya ocurrió), así que reportarla FAILED
+        // mentiría: una re-corrida del batch no la vuelve a ver (ya no es
+        // PENDING_ASSIGNMENT). El outcome real se reporta igual, con
+        // `occupancyRecorded: false` y un log de error -- una
+        // reconciliación manual (mecanismo ya existente para otros casos
+        // de `recordOccupancy()`) puede corregir el contador después.
+        let occupancyRecorded = true;
+        try {
+          await this.availability.recordOccupancy(assigned);
+        } catch (err) {
+          occupancyRecorded = false;
+          logger.error(
+            { reservationId: queuedReservation.id, err },
+            'auto-assign-all: recordOccupancy falló post-commit',
+          );
+        }
+
+        items.push({
+          reservationId: queuedReservation.id,
+          previousResourceId: queuedReservation.resource.id,
+          outcome,
+          newResourceId: assigned.resource.id,
+          ...(!occupancyRecorded && { occupancyRecorded: false }),
+        });
+        if (outcome === 'CONFIRMED_SAME_RESOURCE') confirmedSameResource++;
+        else reassigned++;
+      } catch (err) {
+        // NO relanza -- sigue con la siguiente reserva del batch (§4.2).
+        const item = classifyFailure(queuedReservation.id, queuedReservation.resource.id, err);
+        items.push(item);
+        if (item.outcome === 'SKIPPED_ALREADY_ASSIGNED') skippedAlreadyAssigned++;
+        else failed++;
+      }
+    }
+
+    return {
+      categoryId,
+      categoryName,
+      totalPending,
+      processed,
+      truncated,
+      confirmedSameResource,
+      reassigned,
+      skippedAlreadyAssigned,
+      failed,
+      items,
+    };
   }
 
   // ---------------------------------------------------------------------------

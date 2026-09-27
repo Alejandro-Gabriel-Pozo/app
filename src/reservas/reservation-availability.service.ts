@@ -230,6 +230,17 @@ export class ReservationAvailabilityService {
    * concurrentes de un resourceId conocido de antemano.
    *
    * @returns el primer `PhysicalResource` libre, o `null` si ninguno lo está.
+   * @param excludeReservationId - F3-2 (Fase 3, "Auto Assign All",
+   *   docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §3.2) —
+   *   reenviado tal cual a `checkAvailability()`, que ya lo acepta. Sin
+   *   esto, el fallback de "Auto Assign All" (buscar alternativa cuando la
+   *   provisoria de una reserva ya no está libre) se rechazaría a sí mismo:
+   *   la propia reserva que se está reasignando sigue ocupando su recurso
+   *   VIEJO en la BD hasta que `assignDeferred()` la reescriba, pero eso no
+   *   debería contar como conflicto contra un candidato DISTINTO. Opcional
+   *   -- el único call-site existente (creación por categoría,
+   *   `POST /reservations`) sigue sin pasarlo, comportamiento idéntico a
+   *   hoy.
    */
   async findAvailableResourceInCategory(params: {
     categoryId: string;
@@ -238,7 +249,7 @@ export class ReservationAvailabilityService {
     serviceId?: string;
     /** Bug 1 (25/08/2026) — ver docblock de checkAvailability(). Default 1. */
     partySize?: number;
-  }): Promise<PhysicalResource | null> {
+  }, excludeReservationId?: string): Promise<PhysicalResource | null> {
     const service = params.serviceId
       ? await this.bookableServiceRepository.findById(params.serviceId)
       : null;
@@ -250,7 +261,7 @@ export class ReservationAvailabilityService {
         resource.id,
         params.startTime,
         endTime,
-        undefined,
+        excludeReservationId,
         params.serviceId,
         params.partySize,
       );

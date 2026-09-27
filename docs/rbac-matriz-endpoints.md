@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 25/09/2026 (Fase 0 de "reserva por tipo de unidad con asignación diferida", Wave 14 item 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6 -- `reservations.routes.ts` suma `GET /availability-by-category` (`FRONT_DESK`) -- 221 → 222 call-sites de `authorize()`). Actualización anterior: 24/09/2026 (D-05/P-03, Wave 15 -- `companies.routes.ts` suma 3 rutas nuevas: `POST /link-requests` (`MANAGEMENT` + `requirePlan(ENTERPRISE)`), `POST /link-requests/:id/approve` y `POST /link-requests/:id/reject` (las dos, `MANAGEMENT` + guard de pertenencia) -- 218 → 221 call-sites de `authorize()`). Actualización anterior: 23/09/2026 (ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 6, §3.10 -- `invoices.routes.ts`, `GET /unreconciled` reclasificada de `FRONT_DESK` a `MANAGEMENT`; sin call-sites nuevos, 218 sigue igual -- se reclasifica un `authorize()` existente, no se agrega uno. Actualización anterior: mismo ADR, Bloque 3, §3.9/§3.14 -- `invoices.routes.ts` sumó 3 rutas nuevas: `GET /uncertain` (`MANAGEMENT`), `POST /:id/mark-not-issued` y `POST /:id/reconcile-with-afip` (las dos, `EMISOR_NOTA_CREDITO`) -- 215 → 218 call-sites de `authorize()`).
+**Última actualización:** 27/09/2026 (Fase 3 de "reserva por tipo de unidad con asignación diferida", "Auto Assign All", docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §2.1 -- `reservations.routes.ts` suma `POST /auto-assign-all` (`MANAGEMENT`, `requireModule(ALOJAMIENTO)`) -- 222 → 223 call-sites de `authorize()`). Actualización anterior: 25/09/2026 (Fase 0 de "reserva por tipo de unidad con asignación diferida", Wave 14 item 4.3, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6 -- `reservations.routes.ts` suma `GET /availability-by-category` (`FRONT_DESK`) -- 221 → 222 call-sites de `authorize()`). Actualización anterior: 24/09/2026 (D-05/P-03, Wave 15 -- `companies.routes.ts` suma 3 rutas nuevas: `POST /link-requests` (`MANAGEMENT` + `requirePlan(ENTERPRISE)`), `POST /link-requests/:id/approve` y `POST /link-requests/:id/reject` (las dos, `MANAGEMENT` + guard de pertenencia) -- 218 → 221 call-sites de `authorize()`). Actualización anterior: 23/09/2026 (ADR `ISSUE-BEFORE-REVERSE-WINDOW-001`, Bloque 6, §3.10 -- `invoices.routes.ts`, `GET /unreconciled` reclasificada de `FRONT_DESK` a `MANAGEMENT`; sin call-sites nuevos, 218 sigue igual -- se reclasifica un `authorize()` existente, no se agrega uno. Actualización anterior: mismo ADR, Bloque 3, §3.9/§3.14 -- `invoices.routes.ts` sumó 3 rutas nuevas: `GET /uncertain` (`MANAGEMENT`), `POST /:id/mark-not-issued` y `POST /:id/reconcile-with-afip` (las dos, `EMISOR_NOTA_CREDITO`) -- 215 → 218 call-sites de `authorize()`).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (222 call-sites, 39 archivos)
+## 2. Matriz de endpoints por archivo (223 call-sites, 39 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -299,6 +299,7 @@ GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`
 - GET `/` — `FRONT_DESK`
 - POST `/search` — `FRONT_DESK` (A7.2 — reemplaza el `?search=` que tenía GET)
 - GET `/availability-by-category` — `FRONT_DESK` (Fase 0, docs/diseno-reserva-por-tipo-unidad-2026-09-24.md §6 — instrumentación de solo lectura, cupo restante por categoría en un rango; montada antes de GET /:id, ver comentario en la ruta. SOLO categorías `is_lodging = TRUE` — 422 `CATEGORY_NOT_LODGING` si no lo es, §5/§6 del diseño)
+- POST `/auto-assign-all` — `MANAGEMENT` (`requireModule(ALOJAMIENTO)`; Fase 3, docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md — operación masiva de asignación diferida, más restrictivo que PUT/:id individual por ser irreversible-action-gate)
 - GET `/:id` — `FRONT_DESK`
 - POST `/` — `BOOKING`
 - PUT `/:id` — `FRONT_DESK`

@@ -420,6 +420,16 @@ mueve acá, solo el denominador). Mismo criterio que las seis
 correcciones anteriores: la cita se corrige en el mismo commit que
 produce el delta.
 
+**Corrección 27/09/2026 (Fase 3 de "reserva por tipo de unidad con
+asignación diferida", "Auto Assign All",
+docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §2.1): 270 → 271.**
+`docs/inventario-rutas.md` regenerado en este mismo bloque (+1 ruta de
+`reservations.routes.ts`, nueva en el árbol vivo, no `CLOSURE_MOUNTS`):
+`POST /api/reservations/auto-assign-all`. No está documentada en
+`spec.ts` (el numerador de la cita "17 de N" de más abajo no se mueve,
+solo el denominador). Mismo criterio que las siete correcciones
+anteriores: la cita se corrige en el mismo commit que produce el delta.
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -448,11 +458,12 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 8 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-17 de 270 -- corrección 25/09/2026, Fase 0 de reserva por tipo de unidad,
-ver arriba: el total subió con `GET /api/reservations/availability-by-category`,
-no documentada en `spec.ts`, así que el numerador (17) no se movió, solo
-el denominador. Corrección anterior: 24/09/2026, D-05/P-03 Wave 15, mismo
-criterio, 266→269). Depende de `NODE_ENV` — generado con `development`, `/` y
+17 de 271 -- corrección 27/09/2026, Fase 3 "Auto Assign All", ver arriba:
+el total subió con `POST /api/reservations/auto-assign-all`, no
+documentada en `spec.ts`, así que el numerador (17) no se movió, solo el
+denominador. Corrección anterior: 25/09/2026, Fase 0 de reserva por tipo
+de unidad, mismo criterio, 269→270). Depende de `NODE_ENV` — generado con
+`development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Consumo — qué ruta usa quién

@@ -197,6 +197,19 @@ export const AvailabilityByCategoryQuerySchema = z.object({
   { message: 'endDate debe ser posterior a startDate', path: ['endDate'] },
 );
 
+/**
+ * Fase 3, "Auto Assign All"
+ * (docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §2.3) —
+ * `POST /reservations/auto-assign-all`. Un `categoryId` por llamada, no una
+ * lista (decisión explícita, acota el radio de la operación — mismo
+ * criterio `irreversible-action-gate` que `AvailabilityByCategoryQuerySchema`
+ * arriba). Sin parámetro de fecha: "hoy" se resuelve del lado del servidor
+ * (huso de negocio), no lo elige el staff (§2.2).
+ */
+export const AutoAssignAllSchema = z.object({
+  categoryId: z.string().min(1, 'categoryId es obligatorio'),
+});
+
 // ---------------------------------------------------------------------------
 // Schemas de Órdenes
 // ---------------------------------------------------------------------------

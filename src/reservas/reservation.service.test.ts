@@ -4,6 +4,7 @@ import { BookableResource } from './resource.entities.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
 import { Reservation } from './Reservation.js';
 import { ReservationService } from './reservation.service.js';
+import { RESERVATIONS_MAX_LIMIT } from './reservation.repository.js';
 import { InMemoryReservationRepository } from './in-memory.reservation.repository.js';
 import { InMemoryResourceRepository } from './in-memory.resource.repository.js';
 import { InMemoryOccupancyRepository } from './in-memory.occupancy.repository.js';
@@ -3275,6 +3276,69 @@ describe('ReservationService', () => {
         expect(assignmentEntry.oldValue).toBe('PENDING_ASSIGNMENT');
         expect(assignmentEntry.newValue).toBe('ASSIGNED');
       });
+
+      // -----------------------------------------------------------------
+      // F3-6 (Fase 3, "Auto Assign All",
+      // docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §3.3, C4
+      // §8.1) — guard de coherencia de fechas, 6to parámetro opcional.
+      describe('expectedDateRange (F3-6) — guard de "cambió de fechas"', () => {
+        it('lanza ReservationConcurrentlyModifiedError("cambió de fechas") si expectedDateRange NO coincide con las fechas bajo lock', async () => {
+          const reservation = await createPendingReservation('res-f36-mismatch');
+          const wrongRange = {
+            startTime: new Date(reservation.startTime.getTime() + 60 * 60 * 1000),
+            endTime: reservation.endTime,
+          };
+
+          await expect(
+            txManager.run((client) =>
+              lodgingService.assignDeferred(
+                client, 'res-f36-mismatch', reservation.resource.id, TEST_BUSINESS_ID, TEST_USER_ID, wrongRange,
+              ),
+            ),
+          ).rejects.toThrow(ReservationConcurrentlyModifiedError);
+        });
+
+        it('NO lanza si expectedDateRange coincide EXACTO con las fechas bajo lock', async () => {
+          const reservation = await createPendingReservation('res-f36-match');
+          const rightRange = { startTime: reservation.startTime, endTime: reservation.endTime };
+
+          const updated = await txManager.run((client) =>
+            lodgingService.assignDeferred(
+              client, 'res-f36-match', reservation.resource.id, TEST_BUSINESS_ID, TEST_USER_ID, rightRange,
+            ),
+          );
+          expect(updated.assignmentStatus).toBe('ASSIGNED');
+        });
+
+        it('sin expectedDateRange (los 3 callers existentes: PUT, check-in, completar) -- comportamiento idéntico a hoy, sin regresión', async () => {
+          const reservation = await createPendingReservation('res-f36-omitted');
+
+          const updated = await txManager.run((client) =>
+            lodgingService.assignDeferred(client, 'res-f36-omitted', reservation.resource.id, TEST_BUSINESS_ID, TEST_USER_ID),
+          );
+          expect(updated.assignmentStatus).toBe('ASSIGNED');
+        });
+
+        it('ALREADY_ASSIGNED tiene precedencia sobre "cambió de fechas" cuando las dos condiciones se dan a la vez (paso 2 corre antes que 2.5)', async () => {
+          const reservation = await lodgingService.createReservation({
+            id: 'res-f36-precedence', resourceId: 't1', serviceId: 'svc-estadia-fase2', customer,
+            startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+            enteredByCategory: false, // nace ASSIGNED -- paso 2 dispara antes de llegar a 2.5
+          });
+          expect(reservation.assignmentStatus).toBe('ASSIGNED');
+
+          const wrongRange = {
+            startTime: new Date(reservation.startTime.getTime() + 1000),
+            endTime: reservation.endTime,
+          };
+
+          await expect(
+            txManager.run((client) =>
+              lodgingService.assignDeferred(client, 'res-f36-precedence', 't1', TEST_BUSINESS_ID, TEST_USER_ID, wrongRange),
+            ),
+          ).rejects.toThrow(ReservationAlreadyAssignedError);
+        });
+      });
     });
 
     // -------------------------------------------------------------------
@@ -3447,6 +3511,330 @@ describe('ReservationService', () => {
         await lodgingService.confirmReservation(id, TEST_BUSINESS_ID, TEST_USER_ID);
         return reservationRepo.getById(id);
       }
+    });
+
+    // -------------------------------------------------------------------
+    describe('autoAssignAllForCategory() — Fase 3, "Auto Assign All"', () => {
+      /**
+       * "Hoy" (huso de negocio) fijo en 2026-07-01 -- coincide con el
+       * `startTime`/`endTime` que `createPendingReservationToday()` usa
+       * más abajo (2026-07-01T20:00-22:00Z, 17:00-19:00 hora Argentina,
+       * mismo día calendario). `lodgingService`/`createPendingReservation()`
+       * (el helper del describe padre) siguen usando `FROZEN_TEST_NOW`
+       * (2020) para el guard J1 de "no crear en el pasado" -- 2026 > 2020
+       * de sobra, así que crear estas reservas con `lodgingService` no
+       * choca con el reloj de éste. `batchService` es una instancia
+       * SEPARADA (mismos repos compartidos, MISMO estado) solo para poder
+       * fijar un reloj distinto sin afectar al resto de esta suite.
+       */
+      const BATCH_TODAY_NOW = () => new Date('2026-07-01T15:00:00Z');
+      let batchService: ReservationService;
+
+      beforeEach(() => {
+        batchService = new ReservationService(
+          reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
+          eventRepo, txManager, lockRepo, bookableServiceRepo,
+          customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
+          depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+          auditLogRepo,
+          stayRepo,
+          BATCH_TODAY_NOW,
+        );
+      });
+
+      /** Igual que createPendingReservation() del describe padre, pero con
+       *  fechas fijas que caen en "hoy" según BATCH_TODAY_NOW. */
+      async function createPendingReservationToday(id: string, resourceId = 't1'): Promise<Reservation> {
+        return lodgingService.createReservation({
+          id, resourceId, serviceId: 'svc-estadia-fase2', customer,
+          startTime: new Date('2026-07-01T20:00:00Z'), endTime: new Date('2026-07-01T22:00:00Z'), details: {},
+          enteredByCategory: true,
+        });
+      }
+
+      /** Igual que withResourceAndStatus() del describe padre, pero varía
+       *  startTime/endTime en vez de resource/assignmentStatus -- simula
+       *  un cambio de fechas concurrente (F3-6) sin depender de un lock
+       *  real de Postgres. */
+      function withDifferentDates(r: Reservation, startTime: Date, endTime: Date): Reservation {
+        return Reservation.restore({
+          id: r.id, customer: r.customer, resource: r.resource, startTime, endTime,
+          details: r.details as Record<string, unknown>, initialStatus: r.status, serviceId: r.serviceId,
+          partySize: r.partySize, notes: r.notes, orderItemId: r.orderItemId, totalPrice: r.totalPrice,
+          lines: r.lines, adultos: r.adultos, ninos: r.ninos, ratePlanId: r.ratePlanId,
+          requestedCheckInTime: r.requestedCheckInTime, requestedCheckOutTime: r.requestedCheckOutTime,
+          scheduleApprovalStatus: r.scheduleApprovalStatus, scheduleApprovedBy: r.scheduleApprovedBy,
+          scheduleChargeAmount: r.scheduleChargeAmount, depositAmount: r.depositAmount, depositDueBy: r.depositDueBy,
+          reservationNumber: r.reservationNumber, appliedCustomerRateId: r.appliedCustomerRateId,
+          needsMaintenanceReview: r.needsMaintenanceReview, isExclusiveResource: r.isExclusiveResource,
+          cancellationPolicySnapshot: r.cancellationPolicySnapshot, assignmentStatus: r.assignmentStatus,
+        });
+      }
+
+      it('categoría sin ninguna PENDING_ASSIGNMENT -- processed 0, items vacío, sin ningún error', async () => {
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(result.totalPending).toBe(0);
+        expect(result.processed).toBe(0);
+        expect(result.truncated).toBe(false);
+        expect(result.items).toEqual([]);
+        expect(result.categoryName).toBe('Habitaciones');
+      });
+
+      it('reserva con provisoria libre -- confirma el MISMO recurso (Paso A), sin llamar a findAvailableResourceInCategory()', async () => {
+        const id = await createPendingReservationToday('res-batch-same').then((r) => r.id);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const availability = (batchService as any).availability;
+        const findSpy  = vi.spyOn(availability, 'findAvailableResourceInCategory');
+        const checkSpy = vi.spyOn(availability, 'checkAvailability');
+        const assignSpy = vi.spyOn(batchService, 'assignDeferred');
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(findSpy).not.toHaveBeenCalled();
+        expect(checkSpy.mock.calls[0]?.[0]).toBe('t1');
+        expect(checkSpy.mock.calls[0]?.[3]).toBe(id); // excludeReservationId
+        expect(assignSpy.mock.calls[0]?.[1]).toBe(id);
+        expect(assignSpy.mock.calls[0]?.[2]).toBe('t1');
+        expect(assignSpy.mock.calls[0]?.[5]).toMatchObject({ startTime: expect.any(Date), endTime: expect.any(Date) });
+
+        expect(result.totalPending).toBe(1);
+        expect(result.processed).toBe(1);
+        expect(result.confirmedSameResource).toBe(1);
+        expect(result.reassigned).toBe(0);
+        expect(result.items).toEqual([
+          expect.objectContaining({ reservationId: id, outcome: 'CONFIRMED_SAME_RESOURCE', previousResourceId: 't1', newResourceId: 't1' }),
+        ]);
+
+        const updated = await reservationRepo.getById(id);
+        expect(updated!.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      it('reserva con provisoria ocupada -- busca alternativa en la categoría (Paso B) y reasigna', async () => {
+        const id = (await createPendingReservationToday('res-batch-fallback')).id;
+        // Ocupa t1 con OTRA reserva en el mismo rango -- checkAvailability(excludeReservationId=id) da false.
+        // Inserción directa en el repo (bypassa el chequeo de
+        // disponibilidad de createReservation(), que rechazaría un alta
+        // real sobre un recurso ya ocupado por la propia reserva que
+        // acabamos de crear).
+        await reservationRepo.save(new Reservation({
+          id: 'res-batch-fallback-blocker', customer, resource: table,
+          startTime: new Date('2026-07-01T20:00:00Z'), endTime: new Date('2026-07-01T22:00:00Z'), details: {},
+          totalPrice: 100, reservationNumber: 9001, appliedCustomerRateId: null,
+          assignmentStatus: 'ASSIGNED',
+        }));
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const availability = (batchService as any).availability;
+        const findSpy = vi.spyOn(availability, 'findAvailableResourceInCategory');
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(findSpy).toHaveBeenCalledTimes(1);
+        expect(findSpy.mock.calls[0]?.[1]).toBe(id); // excludeReservationId, F3-2
+        expect(result.reassigned).toBe(1);
+        expect(result.confirmedSameResource).toBe(0);
+        expect(result.items).toEqual([
+          expect.objectContaining({ reservationId: id, outcome: 'REASSIGNED', previousResourceId: 't1', newResourceId: 't2' }),
+        ]);
+
+        const updated = await reservationRepo.getById(id);
+        expect(updated!.assignmentStatus).toBe('ASSIGNED');
+        expect(updated!.resource.id).toBe('t2');
+      });
+
+      it('findAvailableResourceInCategory() sin candidato -- FAILED/NO_RESOURCE_AVAILABLE, sin abrir transacción', async () => {
+        const startTime = new Date('2026-07-01T20:00:00Z');
+        const endTime   = new Date('2026-07-01T22:00:00Z');
+        const id = (await createPendingReservationToday('res-batch-none')).id;
+
+        // Bloquea t1 (con OTRA reserva, no la propia) y t2 (única
+        // alternativa de la categoría) en el mismo rango -- inserción
+        // directa en el repo (bypassa el chequeo de disponibilidad de
+        // createReservation(), que rechazaría un alta real sobre un
+        // recurso ya ocupado).
+        await reservationRepo.save(new Reservation({
+          id: 'blocker-t1', customer, resource: table, startTime, endTime, details: {},
+          totalPrice: 100, reservationNumber: 9101, appliedCustomerRateId: null,
+          assignmentStatus: 'ASSIGNED',
+        }));
+        await reservationRepo.save(new Reservation({
+          id: 'blocker-t2', customer, resource: room2, startTime, endTime, details: {},
+          totalPrice: 100, reservationNumber: 9102, appliedCustomerRateId: null,
+          assignmentStatus: 'ASSIGNED',
+        }));
+
+        const runSpy = vi.spyOn(txManager, 'run');
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(runSpy).not.toHaveBeenCalled();
+        expect(result.failed).toBe(1);
+        expect(result.items).toEqual([
+          expect.objectContaining({ reservationId: id, outcome: 'FAILED', code: 'NO_RESOURCE_AVAILABLE' }),
+        ]);
+        runSpy.mockRestore();
+      });
+
+      it('reserva ya ASSIGNED (carrera con otra operación) -- SKIPPED_ALREADY_ASSIGNED, el batch sigue con la siguiente', async () => {
+        const id1 = (await createPendingReservationToday('res-batch-race-1', 't1')).id;
+        const id2 = (await createPendingReservationToday('res-batch-race-2', 't2')).id;
+
+        const original = (await reservationRepo.getById(id1))!;
+        const alreadyAssigned = Reservation.restore({
+          id: original.id, customer: original.customer, resource: original.resource,
+          startTime: original.startTime, endTime: original.endTime,
+          details: original.details as Record<string, unknown>, initialStatus: original.status,
+          serviceId: original.serviceId, partySize: original.partySize, notes: original.notes,
+          orderItemId: original.orderItemId, totalPrice: original.totalPrice, lines: original.lines,
+          adultos: original.adultos, ninos: original.ninos, ratePlanId: original.ratePlanId,
+          requestedCheckInTime: original.requestedCheckInTime, requestedCheckOutTime: original.requestedCheckOutTime,
+          scheduleApprovalStatus: original.scheduleApprovalStatus, scheduleApprovedBy: original.scheduleApprovedBy,
+          scheduleChargeAmount: original.scheduleChargeAmount, depositAmount: original.depositAmount,
+          depositDueBy: original.depositDueBy, reservationNumber: original.reservationNumber,
+          appliedCustomerRateId: original.appliedCustomerRateId, needsMaintenanceReview: original.needsMaintenanceReview,
+          isExclusiveResource: original.isExclusiveResource, cancellationPolicySnapshot: original.cancellationPolicySnapshot,
+          assignmentStatus: 'ASSIGNED',
+        });
+
+        // Solo intercepta la PRIMERA llamada a getById() -- la que
+        // `assignDeferred()` hace vía `requireReservationWithLock()` para
+        // id1 (checkAvailability()/getPendingAssignmentByCategory() no
+        // llaman a reservationRepo.getById()). Simula que OTRA operación
+        // ya asignó id1 entre la lectura sin lock del batch y su propio
+        // lock -- misma técnica que el test N-2 de completeReservation()
+        // más arriba en este archivo.
+        const getByIdSpy = vi.spyOn(reservationRepo, 'getById');
+        getByIdSpy.mockResolvedValueOnce(alreadyAssigned);
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+        getByIdSpy.mockRestore();
+
+        const first  = result.items.find((i) => i.reservationId === id1)!;
+        const second = result.items.find((i) => i.reservationId === id2)!;
+        expect(first.outcome).toBe('SKIPPED_ALREADY_ASSIGNED');
+        expect(first.code).toBe('RESERVATION_ALREADY_ASSIGNED');
+        expect(second.outcome).toBe('CONFIRMED_SAME_RESOURCE');
+        expect(result.skippedAlreadyAssigned).toBe(1);
+        expect(result.confirmedSameResource).toBe(1);
+        expect(result.failed).toBe(0);
+      });
+
+      it('expectedDateRange (F3-6) -- cambio de fechas concurrente durante el batch: FAILED/RESERVATION_CONCURRENTLY_MODIFIED, el batch sigue con la siguiente', async () => {
+        const id1 = (await createPendingReservationToday('res-batch-datechange-1', 't1')).id;
+        const id2 = (await createPendingReservationToday('res-batch-datechange-2', 't2')).id;
+
+        const original = (await reservationRepo.getById(id1))!;
+        const staleWithDifferentDates = withDifferentDates(
+          original,
+          new Date(original.startTime.getTime() + 60 * 60 * 1000),
+          new Date(original.endTime.getTime() + 60 * 60 * 1000),
+        );
+
+        // Misma técnica que el test anterior -- intercepta SOLO la
+        // primera llamada a getById() (la relectura bajo lock de
+        // assignDeferred() para id1), simulando que un PUT/portal cambió
+        // sus fechas (C7) entre la lectura sin lock del batch y este lock.
+        const getByIdSpy = vi.spyOn(reservationRepo, 'getById');
+        getByIdSpy.mockResolvedValueOnce(staleWithDifferentDates);
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+        getByIdSpy.mockRestore();
+
+        const first  = result.items.find((i) => i.reservationId === id1)!;
+        const second = result.items.find((i) => i.reservationId === id2)!;
+        expect(first.outcome).toBe('FAILED');
+        expect(first.code).toBe('RESERVATION_CONCURRENTLY_MODIFIED');
+        expect(second.outcome).toBe('CONFIRMED_SAME_RESOURCE');
+        expect(result.failed).toBe(1);
+        expect(result.confirmedSameResource).toBe(1);
+      });
+
+      it('(N1) recordOccupancy() falla DESPUÉS del commit -- el ítem NO se reporta FAILED, se reporta con occupancyRecorded:false', async () => {
+        const id = (await createPendingReservationToday('res-batch-occupancy-fail')).id;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const availability = (batchService as any).availability;
+        const recordSpy = vi.spyOn(availability, 'recordOccupancy').mockRejectedValueOnce(new Error('occupancy repo caído'));
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+        recordSpy.mockRestore();
+
+        // La transacción de assignDeferred() ya hizo commit -- la reserva
+        // quedó ASSIGNED de verdad, pese a que recordOccupancy() falló
+        // después. Reportarla FAILED mentiría (una re-corrida no la vería
+        // más, ya no es PENDING_ASSIGNMENT).
+        expect(result.failed).toBe(0);
+        expect(result.confirmedSameResource).toBe(1);
+        expect(result.items).toEqual([
+          expect.objectContaining({ reservationId: id, outcome: 'CONFIRMED_SAME_RESOURCE', occupancyRecorded: false }),
+        ]);
+
+        const updated = await reservationRepo.getById(id);
+        expect(updated!.assignmentStatus).toBe('ASSIGNED');
+      });
+
+      it('(B1) totalPending se deriva del filtro EXACTO de capa 2, no del conteo aproximado de la ventana SQL de capa 1 -- una fila de "mañana" que cae en la ventana de 3 días no cuenta', async () => {
+        // Ventana SQL (capa 1) para BATCH_TODAY_NOW (2026-07-01T15:00Z,
+        // "hoy" = 2026-07-01 ART): [2026-06-30T00:00Z, 2026-07-03T00:00Z).
+        // Una reserva con startTime 2026-07-02T20:00Z (17:00 ART del
+        // 02/07, fecha de negocio "mañana") CAE dentro de esa ventana --
+        // getPendingAssignmentByCategory() (capa 1, sobre-inclusiva) la
+        // devuelve, pero el filtro exacto de capa 2 (deriveCalendarDate())
+        // la descarta. Si totalPending se calculara sobre las filas crudas
+        // de capa 1 en vez del array ya filtrado, este test lo detectaría
+        // (mutante real, verificado: `candidates.length` en vez de
+        // `filtered.length` hace pasar processed/items pero infla
+        // totalPending a 2).
+        const todayId = (await createPendingReservationToday('res-b1-today')).id;
+
+        const tomorrowResource = new BookableResource('t-tomorrow', 'Habitación mañana', 50, 'cat-table', undefined, 1);
+        await resourceRepo.save(tomorrowResource);
+        await reservationRepo.save(new Reservation({
+          id: 'res-b1-tomorrow', customer, resource: tomorrowResource,
+          startTime: new Date('2026-07-02T20:00:00Z'), endTime: new Date('2026-07-02T22:00:00Z'),
+          details: {}, totalPrice: 100, reservationNumber: 9300, appliedCustomerRateId: null,
+          assignmentStatus: 'PENDING_ASSIGNMENT',
+        }));
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(result.totalPending).toBe(1);
+        expect(result.processed).toBe(1);
+        expect(result.truncated).toBe(false);
+        expect(result.items).toHaveLength(1);
+        expect(result.items[0]?.reservationId).toBe(todayId);
+
+        // La de "mañana" queda intacta -- el batch nunca la tocó.
+        const untouchedTomorrow = await reservationRepo.getById('res-b1-tomorrow');
+        expect(untouchedTomorrow!.assignmentStatus).toBe('PENDING_ASSIGNMENT');
+      });
+
+      it('totalPending > RESERVATIONS_MAX_LIMIT -- truncated true, processed === RESERVATIONS_MAX_LIMIT', async () => {
+        const startTime = new Date('2026-07-01T20:00:00Z');
+        const endTime   = new Date('2026-07-01T22:00:00Z');
+        const total = RESERVATIONS_MAX_LIMIT + 1; // 201 -- cada una en SU PROPIO recurso, sin conflicto entre sí.
+
+        for (let i = 0; i < total; i++) {
+          const resourceId = `over-${String(i).padStart(4, '0')}`;
+          const resource = new BookableResource(resourceId, `Habitación over ${i}`, 50, 'cat-table', undefined, 1);
+          await resourceRepo.save(resource);
+          await reservationRepo.save(new Reservation({
+            id: `res-over-${String(i).padStart(4, '0')}`,
+            customer, resource, startTime, endTime, details: {},
+            totalPrice: 100, reservationNumber: 9200 + i, appliedCustomerRateId: null,
+            assignmentStatus: 'PENDING_ASSIGNMENT',
+          }));
+        }
+
+        const result = await batchService.autoAssignAllForCategory('cat-table', TEST_BUSINESS_ID, TEST_USER_ID);
+
+        expect(result.totalPending).toBe(total);
+        expect(result.processed).toBe(RESERVATIONS_MAX_LIMIT);
+        expect(result.truncated).toBe(true);
+        expect(result.items).toHaveLength(RESERVATIONS_MAX_LIMIT);
+      }, 20_000);
     });
   });
 });

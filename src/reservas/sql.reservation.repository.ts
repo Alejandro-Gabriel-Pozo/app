@@ -684,6 +684,37 @@ export class SqlReservationRepository implements ReservationRepository {
     return byReservation;
   }
 
+  /**
+   * F3-3 (Fase 3, "Auto Assign All",
+   * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §7 ítem 3) —
+   * mismo patrón `EXISTS` que ya usa `buildWhereClause()` para el filtro
+   * `isLodging` (no un JOIN nuevo en el FROM principal). `safetyLimit` es
+   * el tope de seguridad de la capa SQL (sobre-inclusiva), NO el tope
+   * operativo de 200 -- ver docblock en `reservation.repository.ts`.
+   * Mapeo con `rowsToReservations()` (D-17, batch) -- nunca fila por fila,
+   * que con hasta `safetyLimit` filas dispararía cientos de queries N+1.
+   */
+  async getPendingAssignmentByCategory(
+    categoryId: string,
+    todayWindow: { from: Date; to: Date },
+    safetyLimit: number,
+  ): Promise<Reservation[]> {
+    const result = await this.sqlClient.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.assignment_status = 'PENDING_ASSIGNMENT'
+         AND r.status IN ('PENDING', 'CONFIRMED')
+         AND r.start_time BETWEEN $2 AND $3
+         AND EXISTS (
+           SELECT 1 FROM resources res
+           WHERE res.id = r.resource_id AND res.category_id = $1
+         )
+       ORDER BY r.start_time ASC, r.id ASC
+       LIMIT $4`,
+      [categoryId, todayWindow.from.toISOString(), todayWindow.to.toISOString(), safetyLimit],
+    );
+    return this.rowsToReservations(result.rows);
+  }
+
   /** D7 (22/08/2026) — ver docblock de `AppliedRateReportRow` (customer-rate.repository.ts). */
   async getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]> {
     const { rows } = await this.sqlClient.query<{

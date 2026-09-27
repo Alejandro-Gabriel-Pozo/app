@@ -298,4 +298,53 @@ describe('ReservationAvailabilityService — cupo compartido (Bug 1)', () => {
       ).rejects.toThrow(InvalidReservationError);
     });
   });
+
+  /**
+   * F3-2 (Fase 3, "Auto Assign All",
+   * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §3.2) —
+   * `findAvailableResourceInCategory()` gana `excludeReservationId?`
+   * (2do parámetro, reenviado a `checkAvailability()`, que ya lo acepta).
+   */
+  describe('findAvailableResourceInCategory() — excludeReservationId (F3-2)', () => {
+    it('la propia reserva excluida no bloquea su propio candidato (regresión directa de F3-2)', async () => {
+      categories.set('cat-room', makeCategory('cat-room', true, true));
+      const room = new BookableResource('room-1', 'Habitación 1', 100, 'cat-room');
+      await resourceRepo.save(room);
+      // La única reserva que ocupa room-1 en el rango es la que se está
+      // reasignando -- sin excludeReservationId, esto se reportaría como
+      // "sin candidato" incluso siendo, de hecho, la propia provisoria.
+      await reservationRepo.save(makeReservation('r-self', room, 1, start, end));
+
+      const found = await service.findAvailableResourceInCategory(
+        { categoryId: 'cat-room', startTime: start, endTime: end },
+        'r-self',
+      );
+      expect(found?.id).toBe('room-1');
+    });
+
+    it('sin excludeReservationId (call-site de creación, POST /reservations) -- comportamiento IDÉNTICO al actual (regresión)', async () => {
+      categories.set('cat-room', makeCategory('cat-room', true, true));
+      const room = new BookableResource('room-1', 'Habitación 1', 100, 'cat-room');
+      await resourceRepo.save(room);
+      await reservationRepo.save(makeReservation('r-other', room, 1, start, end));
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: 'cat-room', startTime: start, endTime: end,
+      });
+      expect(found).toBeNull();
+    });
+
+    it('excludeReservationId no oculta el conflicto de OTRA reserva -- solo se excluye a sí misma', async () => {
+      categories.set('cat-room', makeCategory('cat-room', true, true));
+      const room = new BookableResource('room-1', 'Habitación 1', 100, 'cat-room');
+      await resourceRepo.save(room);
+      await reservationRepo.save(makeReservation('r-other', room, 1, start, end));
+
+      const found = await service.findAvailableResourceInCategory(
+        { categoryId: 'cat-room', startTime: start, endTime: end },
+        'r-self-not-present', // no es 'r-other' -- el conflicto real sigue en pie
+      );
+      expect(found).toBeNull();
+    });
+  });
 });

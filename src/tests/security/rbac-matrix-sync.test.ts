@@ -84,7 +84,12 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // 222, no 221: reservations.routes.ts suma
 // GET /availability-by-category, authorize(Roles.FRONT_DESK) -- cupo
 // restante de una categoría en un rango, de solo lectura.
-const EXPECTED_AUTHORIZE_CALL_SITES = 222;
+// Fase 3 de "reserva por tipo de unidad con asignación diferida", "Auto
+// Assign All" (27/09/2026, docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md
+// §2.1) -- 223, no 222: reservations.routes.ts suma
+// POST /auto-assign-all, authorize(Roles.MANAGEMENT) -- operación masiva de
+// asignación diferida, más restrictiva que PUT /:id individual.
+const EXPECTED_AUTHORIZE_CALL_SITES = 223;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

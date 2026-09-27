@@ -159,4 +159,29 @@ export interface ReservationRepository {
 
   /** D7 (22/08/2026) — tarifas especiales aplicadas en reservas CONFIRMED/COMPLETED en [from, to]. Ver `AppliedRateReportRow`. */
   getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]>;
+
+  /**
+   * F3-3 (Fase 3, "Auto Assign All",
+   * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §7 ítem 3) —
+   * candidatas al batch: `PENDING_ASSIGNMENT` + `status IN (PENDING,
+   * CONFIRMED)` cuyo `resourceId` pertenece a `categoryId`, dentro de
+   * `todayWindow` (la ventana SQL sobre-inclusiva de 3 días, capa 1 del
+   * filtro de 2 capas — el filtro EXACTO por fecha de negocio,
+   * `deriveCalendarDate()`, corre después, en `ReservationService`, no
+   * acá). Orden `start_time ASC, id ASC` (desempate determinístico,
+   * prioriza llegadas más próximas). `safetyLimit` es un tope de
+   * SEGURIDAD alto (`RESERVATIONS_MAX_LIMIT * 5`), no el tope operativo de
+   * 200 — ese se aplica después, en el service, sobre las filas ya
+   * filtradas exactamente (capa 2).
+   *
+   * Método de propósito específico (mismo criterio que
+   * `getApprovedLateCheckoutsForDate()`/`getPendingWithExpiredDeposit()`,
+   * arriba) — no se fuerza a `ReservationFilters`/`getFiltered()`, que
+   * solo admite un `status` singular, no `IN (...)`.
+   */
+  getPendingAssignmentByCategory(
+    categoryId: string,
+    todayWindow: { from: Date; to: Date },
+    safetyLimit: number,
+  ): Promise<Reservation[]>;
 }

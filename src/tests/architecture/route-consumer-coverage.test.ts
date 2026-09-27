@@ -341,6 +341,13 @@ const NO_CONSUMER_ROUTES: Record<string, string> = {
   // por diseño -- no abandonado.
   '/api/reservations/availability-by-category': 'Construido 25/09/2026 (Fase 0 de reserva por tipo de unidad, Wave 14 item 4.3). Fase 2 (asignación diferida, commit 41b1ff9) ya está implementada y consumida por RoomCalendar.tsx -- pero ese wiring nunca incluyó este endpoint de solo lectura; sigue sin UI propia que lo consuma.',
 
+  // Fase 3 de "reserva por tipo de unidad con asignación diferida", "Auto
+  // Assign All" (27/09/2026, docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md)
+  // -- backend-only en este bloque, mismo criterio que las familias
+  // recién construidas de arriba: sin pantalla en appfrontend-main
+  // todavía, no abandonado.
+  '/api/reservations/auto-assign-all': 'Fase 3 de 4.3, backend-only en este bloque -- sin consumidor en appfrontend-main todavía.',
+
   // Hallazgo nuevo de esta cerca (16/09/2026, D-23(1)), no estaba en la lista
   // de 35 de F14-01 -- ese grep no distinguía /platform/businesses/:id (GET
   // de un negocio puntual) de sus 3 hermanos con sufijo (status/provision/

@@ -12,6 +12,13 @@
  *      GET /:id, ver comentario en la ruta. SOLO categorías
  *      is_lodging = TRUE — 422 CATEGORY_NOT_LODGING si no lo es, §5/§6 del
  *      diseño)
+ * POST /reservations/auto-assign-all  — MANAGEMENT (Fase 3,
+ *      docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md — "Auto
+ *      Assign All": resuelve automáticamente todas las PENDING_ASSIGNMENT
+ *      de una categoría cuya llegada es HOY. Más restrictivo que PUT /:id
+ *      individual por ser una operación masiva. requireModule(ALOJAMIENTO)
+ *      — SOLO categorías is_lodging = TRUE, 422 CATEGORY_NOT_LODGING si no
+ *      lo es, mismo patrón que GET /availability-by-category)
  * GET  /reservations/:id              — FRONT_DESK
  * POST /reservations                  — BOOKING (empleados + CUSTOMER desde portal)
  * PUT  /reservations/:id              — FRONT_DESK
@@ -33,10 +40,12 @@
  * POST /reservations/:id/schedule-request/reject  — FRONT_DESK
  *
  * Los 3 endpoints de schedule-request (18/08/2026, pendientes-2026-08-18.md
- * punto N) están detrás de requireModule(ModuleKey.ALOJAMIENTO) — a
- * diferencia del resto de este router, que no está gateado por módulo
- * porque reservas la usan varios rubros (no solo alojamiento). Ver
- * buildStayService() más abajo.
+ * punto N) y, desde Fase 3 (27/09/2026,
+ * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md), también
+ * POST /auto-assign-all — 4 rutas en total — están detrás de
+ * requireModule(ModuleKey.ALOJAMIENTO) — a diferencia del resto de este
+ * router, que no está gateado por módulo porque reservas la usan varios
+ * rubros (no solo alojamiento). Ver buildStayService() más abajo.
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Tenerlo dos
@@ -113,7 +122,7 @@ import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repos
 import { CancellationRefundService }     from './cancellation-refund.service.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema, AvailabilityByCategoryQuerySchema } from '../api/schemas/request.schemas.js';
+import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema, AvailabilityByCategoryQuerySchema, AutoAssignAllSchema } from '../api/schemas/request.schemas.js';
 import { resolveReservationsLimit } from './reservation.repository.js';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
@@ -444,6 +453,59 @@ export function createReservationsRouter(container: AppContainer): Router {
           totalResources: total,
           availableResources: available,
         });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/auto-assign-all ──────────────────────────────────
+  // Fase 3, "Auto Assign All"
+  // (docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §2) —
+  // resuelve automáticamente TODAS las PENDING_ASSIGNMENT de una categoría
+  // cuya llegada es HOY (fecha de negocio). Roles.MANAGEMENT (más
+  // restrictivo que PUT /:id individual — operación masiva, mismo criterio
+  // `irreversible-action-gate` que el resto del repo) + requireModule
+  // (ALOJAMIENTO) (§2.1, C6 del gate — a diferencia de
+  // GET /availability-by-category, de solo lectura, esta ruta escribe y
+  // reasigna reservas reales).
+  //
+  // Montada como ruta de nivel superior (mismo patrón que
+  // POST /reservations/search) — no hay ningún POST /:id de un solo
+  // segmento en este router, así que no hay riesgo de colisión de orden
+  // de montaje con las rutas /:id/... existentes.
+  //
+  // El handler valida ANTES de invocar el service: categoryId por Zod,
+  // categoría existe (404 si no), categoría es is_lodging (422
+  // CATEGORY_NOT_LODGING si no — mismo patrón literal que
+  // GET /availability-by-category, arriba).
+  router.post(
+    '/auto-assign-all',
+    authorize(Roles.MANAGEMENT),
+    requireModule(container, ModuleKey.ALOJAMIENTO),
+    async (req, res, next) => {
+      try {
+        const { categoryId } = AutoAssignAllSchema.parse(req.body);
+
+        const categoryRepo = new SqlCategoryRepository(req.db);
+        const category = await categoryRepo.findById(categoryId);
+        if (!category) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Categoría no encontrada' });
+          return;
+        }
+        if (!category.isLodging) {
+          res.status(422).json({
+            code:    'CATEGORY_NOT_LODGING',
+            message: 'La categoría no es de alojamiento — este endpoint solo aplica a categorías de alojamiento',
+          });
+          return;
+        }
+
+        const service = buildReservationService(req);
+        const result = await service.autoAssignAllForCategory(
+          categoryId,
+          req.user!.businessId as string,
+          req.user!.id,
+        );
+        res.status(200).json(result);
       } catch (err) { next(err); }
     },
   );

@@ -187,6 +187,38 @@ export class InMemoryReservationRepository implements ReservationRepository {
     return (await this.applyFilters(filters)).length;
   }
 
+  /**
+   * F3-3 (Fase 3, "Auto Assign All",
+   * docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §7 ítem 3) —
+   * filtra el array en memoria por los mismos criterios que la variante
+   * SQL, ordena igual (`startTime ASC`, `id` ASC como desempate) y aplica
+   * `safetyLimit`. `r.resource.categoryId` ya viene embebido en la entidad
+   * (`PhysicalResource`), así que a diferencia del filtro `isLodging` de
+   * `applyFilters()` (arriba) esto NO necesita `categoryRepository`
+   * inyectado -- no hace falta resolver `isLodging`, solo comparar
+   * `categoryId` directo.
+   */
+  async getPendingAssignmentByCategory(
+    categoryId: string,
+    todayWindow: { from: Date; to: Date },
+    safetyLimit: number,
+  ): Promise<Reservation[]> {
+    const activeStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    const matches = Array.from(this.reservations.values()).filter(
+      (r) =>
+        r.assignmentStatus === 'PENDING_ASSIGNMENT' &&
+        activeStatuses.includes(r.status) &&
+        r.resource.categoryId === categoryId &&
+        r.startTime >= todayWindow.from &&
+        r.startTime <= todayWindow.to,
+    );
+    matches.sort((a, b) => {
+      const byStart = a.startTime.getTime() - b.startTime.getTime();
+      return byStart !== 0 ? byStart : a.id.localeCompare(b.id);
+    });
+    return matches.slice(0, safetyLimit);
+  }
+
   async delete(id: string): Promise<boolean> {
     return this.reservations.delete(id);
   }

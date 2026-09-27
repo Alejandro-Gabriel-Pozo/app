@@ -202,11 +202,15 @@ export class MaintenanceWindowService {
     // `updateReservation()` usan antes de chequear disponibilidad (Bug 2,
     // 25/08/2026, ver `resource.repository.ts::lockByIds()`). Serializa
     // `createWindow()` contra cualquier otro escritor que TAMBIÉN lockee
-    // este recurso primero -- los 5 sitios reales:
+    // este recurso primero -- los 6 sitios reales (Fase 3, "Auto Assign
+    // All", docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md, suma
+    // un 4to caller de assignDeferred() -- sin cambio de código acá, solo
+    // de este docblock):
     // `ReservationService.createReservation()`/`updateReservation()`,
-    // `assignDeferred()` (vía sus 3 callers `completeReservation()`/
-    // `updateReservation()`/`StayService.checkIn()`) y `StayService.checkIn()`
-    // directo.
+    // `assignDeferred()` (vía sus 4 callers `completeReservation()`/
+    // `updateReservation()`/`StayService.checkIn()`/
+    // `ReservationService.autoAssignAllForCategory()`) y
+    // `StayService.checkIn()` directo.
     //
     // El chequeo de conflicto del tramo cierto (antes AFUERA de la
     // transacción, `MaintenanceWindowConflictError`) ahora corre ACÁ, con

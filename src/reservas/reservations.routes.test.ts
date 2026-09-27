@@ -59,12 +59,23 @@ interface FakeReservationRow {
   applied_customer_rate_id: string | null;
   assignment_status: string;
 }
+/** Fase 3, "Auto Assign All" -- fila mínima de `resource_categories` (SqlCategoryRepository.findById()). */
+interface FakeCategoryRow {
+  id: string; name: string; description?: string; fields: unknown[];
+  active: boolean; is_lodging: boolean; is_exclusive: boolean;
+  created_at: string; updated_at: string;
+}
 
 function makeState() {
   return {
     resources: new Map<string, FakeResourceRow>(),
     reservations: new Map<string, FakeReservationRow>(),
     customers: new Map<string, { id: string }>(),
+    categories: new Map<string, FakeCategoryRow>(),
+    // Fase 3 -- `SqlBusinessProfileRepository.get()` siempre lee la fila
+    // 'default'; null hasta que un test la siembre explícitamente
+    // (seedBusinessProfile()).
+    businessProfile: null as Record<string, unknown> | null,
   };
 }
 
@@ -102,6 +113,17 @@ function fakeDb(state: ReturnType<typeof makeState>) {
       const row = state.customers.get(id);
       return { rows: row ? [row] : [] };
     }
+    // Fase 3, "Auto Assign All" -- SqlCategoryRepository.findById().
+    if (text.includes('FROM resource_categories')) {
+      const [id] = params as [string];
+      const row = state.categories.get(id);
+      return { rows: row ? [row] : [] };
+    }
+    // Fase 3 -- SqlBusinessProfileRepository.get() (timezone para
+    // todayInBusinessTimezone()/deriveCalendarDate()).
+    if (text.includes('FROM business_profile')) {
+      return { rows: state.businessProfile ? [state.businessProfile] : [] };
+    }
 
     throw new Error(`fakeDb: query no reconocida -- ${text.slice(0, 80)}`);
   });
@@ -129,6 +151,17 @@ function seedReservation(state: ReturnType<typeof makeState>, overrides: Partial
     ...overrides,
   };
   state.reservations.set(row.id, row);
+  return row;
+}
+
+function seedCategory(state: ReturnType<typeof makeState>, overrides: Partial<FakeCategoryRow> = {}): FakeCategoryRow {
+  const now = new Date().toISOString();
+  const row: FakeCategoryRow = {
+    id: 'cat-1', name: 'Habitaciones', fields: [], active: true,
+    is_lodging: true, is_exclusive: true, created_at: now, updated_at: now,
+    ...overrides,
+  };
+  state.categories.set(row.id, row);
   return row;
 }
 
@@ -386,5 +419,93 @@ describe('reservations.routes', () => {
       expect(next).toHaveBeenCalledOnce();
       expect(next.mock.calls[0]![0]).toBeInstanceOf(Error);
     });
+  });
+
+  // Fase 3, "Auto Assign All"
+  // (docs/diseno-reserva-por-tipo-unidad-fase-3-2026-09-27.md §8.4). Mismo
+  // criterio de alcance que el resto de este archivo (ver docblock, líneas
+  // 1-27): 403/400/404/422 son tractables con el fake-db actual (rechazan
+  // ANTES de tocar la orquestación real del batch); el happy path se
+  // ejercita con CERO PENDING_ASSIGNMENT sembradas (confirma el shape
+  // completo de la respuesta sin necesitar fakear con fidelidad las
+  // decenas de tablas que `autoAssignAllForCategory()` toca por cada
+  // reserva que sí procesa -- esa lógica ya tiene cobertura extensa en
+  // `reservation.service.test.ts`, describe `autoAssignAllForCategory()`).
+  describe('POST /reservations/auto-assign-all', () => {
+    function getFullStack(method: 'post', path: string) {
+      const stack = (router as unknown as { stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> }).stack;
+      const layer = stack.find((l) => l.route?.path === path && l.route.methods[method]);
+      if (!layer?.route) throw new Error(`${method.toUpperCase()} ${path} no está montado`);
+      return layer.route.stack.map(
+        (s) => s.handle as (req: Request, res: Response, next: (err?: unknown) => void) => void | Promise<void>,
+      );
+    }
+
+    it('403 si el usuario no tiene Roles.MANAGEMENT (primer middleware de la cadena, authorize())', async () => {
+      const [authorizeHandler] = getFullStack('post', '/auto-assign-all');
+      const req = { user: { id: 'u1', businessId: 'biz-1', permissionGroups: [] } } as unknown as Request;
+      const res = fakeRes();
+
+      await authorizeHandler!(req, res, () => { throw new Error('no debería llamar next() -- sin permiso MANAGEMENT'); });
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect((res.body as { code: string }).code).toBe('FORBIDDEN');
+    });
+
+    it('categoryId faltante -- 400 (Zod), propaga a next() sin tocar la base', async () => {
+      const handler = getHandler(router, 'post', '/auto-assign-all');
+      const req = { db: fakeDb(state), body: {}, user: { id: 'u1', businessId: 'biz-1' } } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      await handler(req, res, next);
+
+      expect(next).toHaveBeenCalledOnce();
+      expect(next.mock.calls[0]![0]).toBeInstanceOf(ZodError);
+    });
+
+    it('categoría inexistente -- 404 NOT_FOUND', async () => {
+      const handler = getHandler(router, 'post', '/auto-assign-all');
+      const req = {
+        db: fakeDb(state), body: { categoryId: 'cat-inexistente' },
+        user: { id: 'u1', businessId: 'biz-1' },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect((res.body as { code: string }).code).toBe('NOT_FOUND');
+    });
+
+    it('categoría no-lodging -- 422 CATEGORY_NOT_LODGING (mismo patrón que GET /availability-by-category)', async () => {
+      seedCategory(state, { id: 'cat-turnos', is_lodging: false });
+      const handler = getHandler(router, 'post', '/auto-assign-all');
+      const req = {
+        db: fakeDb(state), body: { categoryId: 'cat-turnos' },
+        user: { id: 'u1', businessId: 'biz-1' },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect((res.body as { code: string }).code).toBe('CATEGORY_NOT_LODGING');
+    });
+
+    // Sin test de happy-path (200) a este nivel, a propósito -- mismo
+    // límite ya declarado por el docblock del archivo (líneas 1-27) para
+    // el resto de los endpoints de ESCRITURA de este router (POST /, PUT
+    // /:id, confirm, cancel, complete...): `buildReservationService(req)`
+    // llama a `buildTenantTransactionManager(req)`, que exige un pool de
+    // tenant REAL ya cacheado por `tenantMiddleware` (`getTenantRawPool()`,
+    // `platform/tenant.middleware.ts`) -- no hay forma de invocar el
+    // service real desde acá sin ese pool, ni siquiera con 0
+    // `PENDING_ASSIGNMENT` (la construcción del `TransactionManager` es
+    // eager, en el composition root, antes de que el batch procese nada).
+    // El camino feliz completo (200, shape de `AutoAssignAllResult`) está
+    // cubierto por `reservation.service.test.ts` (describe
+    // `autoAssignAllForCategory()`, unit) y por
+    // `reservation-auto-assign-all.integration.test.ts` (Postgres real).
   });
 });
