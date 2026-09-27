@@ -6916,3 +6916,94 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
   en el próximo poll (dejar la fila sin marcar solo cuando el propio
   `send()` tira, no cuando faltan destinatarios)? No se toma la decisión
   en este ítem — solo se registra.
+
+## Refactor arquitectónico de `app-main` — hallazgos H1-H11 (`auditor-estructura` 27/09/2026,
+## re-verificados H1-H8 por `architecture-governor` en dos rondas de gate sobre la propuesta
+## de refactor incremental, `app-main-frontend-root` commits `c0c5e33`/`0cc947c`)
+
+Ninguno de estos hallazgos implica que se esté implementando el refactor — la propuesta sigue en
+HOLD (segunda ronda, 27/09/2026). Se registran acá porque son hallazgos reales sobre el código
+actual, independientes de si el refactor avanza o no. H9-H11 los citó `auditor-estructura` pero
+**ningún gate los re-verificó todavía** — tratarlos con menos confianza que H1-H8 hasta que alguien
+los confirme.
+
+- **H1 (alta) — `reservation.service.ts` volvió a crecer sin ninguna cerca que lo frene**
+  (`src/reservas/reservation.service.ts`, 1957 líneas, constructor en L212 con 20 parámetros).
+  Bajó a 493 líneas en la Fase 6 de `auditoria-modularidad.md` (commit `2fbfd05`) y volvió a crecer
+  por el ciclo de vida (`updateReservation` ~440 líneas), la asignación diferida (`assignDeferred`,
+  `autoAssignAllForCategory`) y el ajuste de precio — NO por pricing ni availability, que siguen
+  extraídos (`ReservationPricingService`, `ReservationAvailabilityService`). Sin cerca de tamaño ni
+  de cantidad de parámetros que hubiera avisado antes de esta regresión.
+- **H2 (media) — wiring de `ReservationService` (20 parámetros) copiado a mano en 3 sitios**
+  (`new ReservationService(` en `src/reservas/reservations.routes.ts:167`,
+  `src/reservas/bookable-services.routes.ts:99`, `src/api/routes/customer.routes.ts:260`). Hoy lo
+  mitiga el compilador (parámetros nuevos son obligatorios, sin default), pero es acoplamiento real
+  de composición, no de imports.
+- **H3 (media) — 3 puntos ciegos por convención de nombres en `.dependency-cruiser.cjs`**: (a)
+  clases `Sql*` en archivos sin prefijo `sql.` — `src/pms-estadias/stay.repository.ts`,
+  `src/pms-estadias/housekeeping.repository.ts`, `src/platform/location.repository.ts`,
+  `src/repositories/audit-log.repository.ts`, `src/repositories/processed-event.repository.ts`,
+  `src/facturacion/afip-ticket-storage.ts`; (b) `src/repositories/` fuera de la lista `DOMINIOS`;
+  (c) entidades sin sufijo `.entities.ts` (`Reservation.ts`, `stay.ts`, `housekeeping-task.ts`,
+  `maintenance-window.ts`) — la regla `entidades-sin-express-ni-pg` no las cubre.
+- **H4 (media) — archivos de dominio inventario mal ubicados en `src/repositories/`**: 11 archivos
+  sin contar tests (14 contando `consumption-destination`), consumidos solo por `pos-menu/` o por
+  el kernel (`workers/`, `report.service.ts`, `app.ts`).
+- **H5 (media, corregido en la segunda ronda de gate) — dos hallazgos distintos que NO deben
+  tratarse como uno solo:**
+  1. **4 mutaciones de stock inline sin service**, `src/pos-menu/products.routes.ts`:
+     `transfer`/`waste`/`consumption`/`production`, cada una con su propio `transactionManager.run`
+     + `stockMovementRepo.createWithClient` (líneas 479-480, 557-558, 642-643, 708-709). Sin tests
+     de integración propios (solo tests de ruta con dobles).
+  2. **Hallazgo de integridad de datos aparte, no arquitectura**: `POST /:id/stock/decrement`
+     (`products.routes.ts:400`) y `POST /:id/variants/:variantId/stock/decrement` (`:416`), grupo
+     `Roles.ORDERS`, mutan stock vía `ProductService.decrementStock` →
+     `inventoryLevelRepo.decrementStock` **sin escribir ninguna fila en `stock_movements`** — stock
+     que cambia sin dejar asiento. No estaba en el inventario original de H5.
+  Los 3 sitios de `src/workers/inventory.handlers.ts` (líneas 182, 220, 292) **NO son equivalentes**
+  a los anteriores — son `RESERVATION_RELEASED`/`OUT`/`RETURN` del ciclo de vida de órdenes vía
+  outbox, con una carrera real por el mismo `order_item_id`. Cualquier diseño que los unifique con
+  las 4 mutaciones de rutas en un mismo service tiene que resolver esa concurrencia primero, no
+  asumir que es el mismo problema.
+- **H6 (confirmado, bug real de dinero, no solo deuda de arquitectura) — `domain/money.ts::round2()`
+  tiene un bug de precisión flotante**: `Math.round(128.045*100)/100` da `128.04` (debería dar
+  `128.05`, empate que no es exacto en binario) y produce `-0` con montos negativos mínimos
+  (`Intl` es-AR lo muestra "-$ 0,00"). 74 usos de `round2` fuera de tests, más 3 bypass con
+  redondeo inline duplicado que saltean la función centralizada:
+  `src/reservas/reservation-pricing.service.ts:95` y `:253`,
+  `src/pos-menu/order-pricing.service.ts:104`. Viola la propia regla A3.3 ("un solo lugar redondea,
+  con política declarada").
+- **H7 (confirmado y más amplio de lo reportado inicialmente) — 11 casts `event.payload as {...}`
+  sin validar la forma en runtime**: `src/workers/outbox.handlers.ts` líneas 186, 245, 352, 517,
+  680, 713, 765; `src/workers/inventory.handlers.ts` líneas 212, 254, 336;
+  `src/workers/email.handlers.ts:50`. Hay validación de *versión* del evento
+  (`outbox.worker.ts:57`), pero no de la *forma* del payload — varios de estos casts terminan
+  escribiendo filas de dinero (`financialRepo.create`) sin haber validado el shape primero.
+- **H8 (corregido en la segunda ronda de gate — la primera versión de este hallazgo tenía la
+  premisa transaccional equivocada)** — ciclos reales a nivel carpeta entre `reservas`,
+  `clientes-finanzas`, `facturacion`, `pms-estadias` y `pos-menu` (a nivel archivo no hay ciclos,
+  `no-circular` pasa). La mayoría de los arcos entre dominios que no pasan por rutas son imports
+  `type-only` de interfaces-puerto. La cancelación con Nota de Crédito **NO es una sola transacción
+  síncrona** como se llegó a describir en un borrador de propuesta de refactor — es **dos
+  transacciones separadas, con la llamada a AFIP FUERA de cualquier transacción entre medio**:
+  documentado como N10 en `src/facturacion/cancel-order-with-credit-note.service.ts:15-23` (tx1 en
+  `:278`, AFIP en `:562-565`, tx2 en `:587`). Cualquier diseño futuro sobre estos ciclos tiene que
+  partir de esta estructura real, no de una simplificación.
+- **Residual real del contrato HTTP de errores (H de una propuesta de refactor, corregido — el
+  hallazgo original ya no describe un bug activo)**: la inconsistencia de 3 formas de serializar
+  `ZodError` **ya se arregló** en el commit `1b0c293` (17/09/2026), con cerca
+  `src/tests/architecture/error-400-single-shape.test.ts` (`ZOD_ERROR_ALLOWLIST` vacío hoy). Lo que
+  queda como residuo real, menor: `VALIDATION_ERROR_LITERAL_ALLOWLIST` con 4 archivos
+  (`bookable-services.routes.ts` x2, `invoices.routes.ts` x2, `credit-note-requests.routes.ts` x1,
+  `orders.routes.ts` x1) que emiten un 400 a mano sin `errors`, más algunos 400 no-Zod como
+  `INVALID_QUANTITY`. No priorizar como "bug de cara al usuario" — ya está cerrado en lo esencial.
+- **H9 (baja, citado por `auditor-estructura`, NO re-verificado por ningún gate)** —
+  `src/pms-estadias/stay.service.ts:47` importa `combineDateAndTime` desde
+  `reservas/reservation.service.js` (re-exportado en `:123`), cuando el mismo archivo ya importa
+  `reservation-time.utils.js` en `:57` — posible ruta de import redundante.
+- **H10 (baja, citado por `auditor-estructura`, NO re-verificado por ningún gate)** —
+  `src/facturacion/invoice-pdf.service.ts:61` recibe el `CustomerRepository` completo pero solo usa
+  `getById` — el patrón `Pick<>` ya se aplica en otro lado (`services/report.service.ts:54`).
+- **H11 (baja, ya conocido, con ancla desactualizada)** — `CANCEL_ADVANCE_MS` sigue fijo en 24h en
+  `src/api/routes/customer.routes.ts:131` (y `:968`). Ya estaba registrado más arriba en este mismo
+  archivo citando `:127` — esa cita quedó vieja, la línea real hoy es `:131`.
