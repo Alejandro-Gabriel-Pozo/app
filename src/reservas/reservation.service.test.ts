@@ -21,9 +21,11 @@ import {
   InvalidReservationError, ResourceNotFoundError, ReservationNotFoundError, RatePlanNotAvailableError,
   NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError,
   AssignmentCategoryMismatchError, AssignmentCombinedChangeError, ReservationAlreadyAssignedError,
-  ResourceOccupiedError, ReservationConcurrentlyModifiedError,
+  ResourceOccupiedError, ReservationConcurrentlyModifiedError, LodgingRequiresServiceError,
 } from '../domain/errors.js';
+import { BookableServiceNotFoundError } from './bookable-service.service.js';
 import type { ICategoryRepository } from './category.repository.js';
+import type { ResourceCategory } from './resource-category.types.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -430,6 +432,400 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-move-past', { startTime: new Date('2019-01-01T20:00:00Z') }, TEST_BUSINESS_ID, TEST_USER_ID),
       ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // J1-TZ (27/09/2026, docs/diseno-j1-fecha-alojamiento-huso-negocio-2026-09-27.md)
+  // -- para alojamiento (o bookingMode='block') con startTime como MARCA de
+  // fecha calendario (medianoche UTC exacta), compara fecha en huso de
+  // negocio en vez de instante crudo. FROZEN_TEST_NOW = 2020-01-01T00:00:00Z
+  // -- en huso America/Argentina/Buenos_Aires (UTC-3) es 2019-12-31T21:00
+  // hora local, así que "hoy" (huso de negocio) es 2019-12-31, NO
+  // 2020-01-01 -- ojo con esa diferencia al leer los casos de abajo.
+  // -------------------------------------------------------------------------
+  describe('J1-TZ — comparar fecha calendario para alojamiento/block con marca', () => {
+    const lodgingCategory: ResourceCategory = {
+      id: 'cat-lodging', name: 'Habitaciones', fields: [], active: true,
+      isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
+    };
+    const nonLodgingCategory: ResourceCategory = {
+      id: 'cat-table', name: 'Mesas', fields: [], active: true,
+      isLodging: false, isExclusive: false, createdAt: new Date(), updatedAt: new Date(),
+    };
+    const lodgingCategoryRepo: ICategoryRepository = {
+      async findById() { return lodgingCategory; },
+      async findAll() { return []; },
+      async countActive() { return 0; },
+      async create(): Promise<never> { throw new Error('no usado en este test'); },
+      async update(): Promise<never> { throw new Error('no usado en este test'); },
+      async deactivate() {},
+    };
+    /** Devuelve la categoría real según el id -- para los casos que reasignan de una categoría a otra. */
+    const mixedCategoryRepo: ICategoryRepository = {
+      async findById(id: string) { return id === 'cat-lodging' ? lodgingCategory : id === 'cat-table' ? nonLodgingCategory : null; },
+      async findAll() { return []; },
+      async countActive() { return 0; },
+      async create(): Promise<never> { throw new Error('no usado en este test'); },
+      async update(): Promise<never> { throw new Error('no usado en este test'); },
+      async deactivate() {},
+    };
+
+    function makeService(categoryRepository: ICategoryRepository, now: () => Date = FROZEN_TEST_NOW): ReservationService {
+      return new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, categoryRepository,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo, stayRepo, now,
+      );
+    }
+
+    // 1. Alojamiento, marca de "hoy" (huso de negocio) → permite. Mata:
+    //    deriveCalendarDate() sin la rama de detección de marca (si
+    //    startTime se leyera siempre en huso de negocio sin chequear si es
+    //    marca, la marca de medianoche UTC se interpretaría como el día
+    //    anterior en ART y este caso fallaría).
+    it('1. alojamiento, marca de "hoy" (huso de negocio) → permite', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      bookableServiceRepo.seed({
+        id: 'svc-block-1', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await lodgingService.createReservation({
+        id: 'j1tz-1', resourceId: 't1', serviceId: 'svc-block-1', customer,
+        startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2020-01-01T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-1');
+    });
+
+    // 2. Alojamiento, marca de "ayer" → rechaza.
+    it('2. alojamiento, marca de "ayer" → rechaza', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      bookableServiceRepo.seed({
+        id: 'svc-block-2', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      await expect(
+        lodgingService.createReservation({
+          id: 'j1tz-2', resourceId: 't1', serviceId: 'svc-block-2', customer,
+          startTime: new Date('2019-12-30T00:00:00.000Z'), endTime: new Date('2019-12-31T00:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+    });
+
+    // 3. Reloj 2026-09-28T01:00Z (22:00 ART), marca 2026-09-27T00:00Z →
+    //    permite. Mata: "hoy" calculado en UTC en vez de huso de negocio.
+    it('3. reloj cruza medianoche UTC pero sigue siendo "hoy" en huso de negocio → permite', async () => {
+      const clock = () => new Date('2026-09-28T01:00:00.000Z');
+      const lodgingService = makeService(lodgingCategoryRepo, clock);
+      bookableServiceRepo.seed({
+        id: 'svc-block-3', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await lodgingService.createReservation({
+        id: 'j1tz-3', resourceId: 't1', serviceId: 'svc-block-3', customer,
+        startTime: new Date('2026-09-27T00:00:00.000Z'), endTime: new Date('2026-09-28T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-3');
+    });
+
+    // 4. Reloj 2026-09-28T01:00Z, marca 2026-09-28T00:00Z → permite (forma
+    //    más visible del bug, regresión).
+    it('4. reloj a las 22:00 ART, marca del día de negocio SIGUIENTE (fecha futura, nunca "pasado") → permite', async () => {
+      const clock = () => new Date('2026-09-28T01:00:00.000Z');
+      const lodgingService = makeService(lodgingCategoryRepo, clock);
+      bookableServiceRepo.seed({
+        id: 'svc-block-4', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await lodgingService.createReservation({
+        id: 'j1tz-4', resourceId: 't1', serviceId: 'svc-block-4', customer,
+        startTime: new Date('2026-09-28T00:00:00.000Z'), endTime: new Date('2026-09-29T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-4');
+    });
+
+    // 5. (C2) Alojamiento, servicio 'block' (NO 'slot'), INSTANTE real (no
+    //    marca), 10 min en el pasado, mismo día de negocio → rechaza. Mata:
+    //    quitar "&& isCalendarDateMarker" de qualifies.
+    it('5. alojamiento con instante real (no marca) 10 min en el pasado → rechaza', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      bookableServiceRepo.seed({
+        id: 'svc-block-5', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      await expect(
+        lodgingService.createReservation({
+          id: 'j1tz-5', resourceId: 't1', serviceId: 'svc-block-5', customer,
+          startTime: new Date('2019-12-31T23:50:00.000Z'), endTime: new Date('2020-01-01T02:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+    });
+
+    // 6. No-alojamiento, SIN servicio, marca EXACTA de "hoy" → rechaza. Mata:
+    //    quitar toda la condición (isLodging || bookingMode==='block').
+    it('6. no-alojamiento sin servicio, marca exacta de "hoy" → rechaza', async () => {
+      await expect(
+        service.createReservation({
+          id: 'j1tz-6', resourceId: 't1', customer,
+          startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2019-12-31T02:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+    });
+
+    // 7. bookingMode='block' NO-alojamiento, marca de "hoy" → permite.
+    //    Decisión del dueño, 27/09/2026.
+    it('7. no-alojamiento con servicio "block" (alquiler multi-día), marca de "hoy" → permite', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-block-7', categoryId: 'cat-table', name: 'Alquiler de equipo',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await service.createReservation({
+        id: 'j1tz-7', resourceId: 't1', serviceId: 'svc-block-7', customer,
+        startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2020-01-01T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-7');
+    });
+
+    // 8. bookingMode='slot' sobre recurso de ALOJAMIENTO, instante real a
+    //    las 21:00 ART (== 00:00Z), ya pasado → rechaza. Mata: quitar la
+    //    exclusión explícita de 'slot' (si se quitara, este instante --
+    //    2019-12-31T00:00:00.000Z, indistinguible de una marca -- se
+    //    leería como la marca del 31/12, igual a "hoy" (FROZEN_TEST_NOW en
+    //    huso de negocio), y permitiría por error).
+    it('8. slot sobre alojamiento, instante real a las 21:00 ART ya pasado → rechaza', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      bookableServiceRepo.seed({
+        id: 'svc-slot-8', categoryId: 'cat-lodging', name: 'Actividad guiada',
+        bookingMode: 'slot', durationMinutes: 60, price: 20,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      await expect(
+        lodgingService.createReservation({
+          id: 'j1tz-8', resourceId: 't1', serviceId: 'svc-slot-8', customer,
+          startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2019-12-31T01:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+    });
+
+    // 9. No-alojamiento, servicio sin bookingMode='block' (turno estándar):
+    //    10 min en el pasado → rechaza (regresión); 2 min en el pasado →
+    //    permite (regresión, tolerancia).
+    it('9. no-alojamiento sin servicio "block": 10 min en el pasado rechaza, 2 min permite (regresión)', async () => {
+      await expect(
+        service.createReservation({
+          id: 'j1tz-9a', resourceId: 't1', customer,
+          startTime: new Date(FROZEN_TEST_NOW().getTime() - 10 * 60 * 1000),
+          endTime: new Date(FROZEN_TEST_NOW().getTime() + 60 * 60 * 1000),
+          details: {},
+        }),
+      ).rejects.toThrow('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+
+      const reservation = await service.createReservation({
+        id: 'j1tz-9b', resourceId: 't1', customer,
+        startTime: new Date(FROZEN_TEST_NOW().getTime() - 2 * 60 * 1000),
+        endTime: new Date(FROZEN_TEST_NOW().getTime() + 60 * 60 * 1000),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-9b');
+    });
+
+    // 10. Reloj 2026-09-27T00:00:00.000Z (el reloj MISMO es una marca
+    //     exacta), alojamiento+block, marca 2026-09-26T00:00:00.000Z (día
+    //     ANTERIOR al reloj) → permite. Mata: reemplazar
+    //     todayInBusinessTimezone(now(), tz) por deriveCalendarDate(now(), tz)
+    //     -- con el mutante, el reloj se leería COMO MARCA y "hoy" daría la
+    //     fecha UTC (27/09) en vez de la fecha de negocio real (26/09), y la
+    //     marca del 26 se rechazaría por error.
+    it('10. el reloj cae justo en una marca exacta — "hoy" no se calcula como si el reloj fuera una fecha guardada', async () => {
+      const clock = () => new Date('2026-09-27T00:00:00.000Z');
+      const lodgingService = makeService(lodgingCategoryRepo, clock);
+      bookableServiceRepo.seed({
+        id: 'svc-block-10', categoryId: 'cat-lodging', name: 'Estadía',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await lodgingService.createReservation({
+        id: 'j1tz-10', resourceId: 't1', serviceId: 'svc-block-10', customer,
+        startTime: new Date('2026-09-26T00:00:00.000Z'), endTime: new Date('2026-09-27T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-10');
+    });
+
+    // 11. Alojamiento, marca de "hoy", SIN serviceId →
+    //     LodgingRequiresServiceError, NO InvalidReservationError --
+    //     confirma el cambio de precedencia declarado en el diseño.
+    it('11. alojamiento, marca de "hoy", sin serviceId → LodgingRequiresServiceError (no InvalidReservationError)', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      await expect(
+        lodgingService.createReservation({
+          id: 'j1tz-11', resourceId: 't1', customer,
+          startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2020-01-01T00:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow(LodgingRequiresServiceError);
+    });
+
+    // 12. (C6) Alojamiento, marca de "hoy", serviceId que NO resuelve →
+    //     BookableServiceNotFoundError.
+    it('12. alojamiento, marca de "hoy", serviceId inexistente → BookableServiceNotFoundError', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      await expect(
+        lodgingService.createReservation({
+          id: 'j1tz-12', resourceId: 't1', serviceId: 'svc-no-existe', customer,
+          startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2020-01-01T00:00:00.000Z'),
+          details: {},
+        }),
+      ).rejects.toThrow(BookableServiceNotFoundError);
+    });
+
+    // 13. (C4) Alojamiento, servicio 'event', marca de "hoy" → permite
+    //     (creación exitosa) -- productor real: salón en exclusiva. Mata un
+    //     mutante DISTINTO al del caso 6 (que quita la condición completa):
+    //     este mata quitar SOLO "isLodging ||" y dejar "bookingMode ===
+    //     'block'" sola -- con ese mutante puntual, alojamiento+'event' (sin
+    //     bookingMode='block') dejaría de calificar y este caso rechazaría
+    //     por error en vez de crear con éxito (corrección del gate de
+    //     implementación, 27/09/2026 -- la v5 del diseño tenía esto mal
+    //     atribuido).
+    it('13. alojamiento con servicio "event", marca de "hoy" → permite', async () => {
+      const lodgingService = makeService(lodgingCategoryRepo);
+      bookableServiceRepo.seed({
+        id: 'svc-event-13', categoryId: 'cat-lodging', name: 'Salón en exclusiva',
+        bookingMode: 'event', durationMinutes: null, price: 500,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const reservation = await lodgingService.createReservation({
+        id: 'j1tz-13', resourceId: 't1', serviceId: 'svc-event-13', customer,
+        startTime: new Date('2019-12-31T00:00:00.000Z'), endTime: new Date('2020-01-01T00:00:00.000Z'),
+        details: {},
+      });
+      expect(reservation.id).toBe('j1tz-13');
+    });
+
+    // 14. updateReservation() -- reasignación que cambia de alojamiento a
+    //     no-alojamiento junto con startTime marca de "hoy" → usa la
+    //     categoría del recurso EFECTIVO (el nuevo), no el viejo. Servicio
+    //     'event' de la RESERVA en las dos direcciones (no cambia al
+    //     reasignar), para que el resultado dependa solo de isLodging.
+    //
+    //     (Corrección del gate de implementación, 27/09/2026: la versión
+    //     anterior de este caso usaba una marca de fecha FUTURA -- con esa
+    //     fecha, la categoría vieja (alojamiento) y la nueva (no-alojamiento)
+    //     daban el MISMO resultado -true/false ambas- así que el caso no
+    //     distinguía nada; un mutante que usara `preCheck.resource.categoryId`
+    //     SIEMPRE, ignorando la reasignación, pasaba igual. Con la marca de
+    //     "HOY" (huso de negocio, FROZEN_TEST_NOW), las dos categorías SÍ
+    //     divergen: vieja (alojamiento) → califica → "hoy" == "hoy" →
+    //     PERMITE; nueva (no-alojamiento, sin bookingMode='block') → no
+    //     califica → compara instante crudo → la marca ya es "pasado" por
+    //     más de 5 min → RECHAZA. El caso ahora afirma el resultado de la
+    //     categoría NUEVA -- si el código leyera la vieja, este test lo
+    //     detecta.)
+    it('14. updateReservation reasigna a un recurso no-alojamiento junto con marca de "hoy" → decide por la categoría NUEVA', async () => {
+      const mixedService = makeService(mixedCategoryRepo);
+      const lodgingResource = new BookableResource('res-lodge-14', 'Habitación 14', 100, 'cat-lodging', null, 1);
+      await resourceRepo.save(lodgingResource);
+      bookableServiceRepo.seed({
+        id: 'svc-event-14', categoryId: 'cat-lodging', name: 'Uso puntual',
+        bookingMode: 'event', durationMinutes: 120, price: 500,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // Creada en el recurso de alojamiento, con un instante real (no
+      // relevante para J1 -- solo importa para el update de abajo).
+      await mixedService.createReservation({
+        id: 'j1tz-14', resourceId: 'res-lodge-14', serviceId: 'svc-event-14', customer,
+        startTime: new Date('2026-06-01T20:00:00Z'), endTime: new Date('2026-06-01T22:00:00Z'),
+        details: {},
+      });
+
+      // Reasigna a 't1' (no-alojamiento) Y mueve a la marca de "hoy" en el
+      // mismo PUT -- permitido porque la reserva no está PENDING_ASSIGNMENT
+      // (D-2 no aplica). Con la categoría NUEVA (no-alojamiento, servicio
+      // 'event' sin bookingMode='block'), deja de calificar para la
+      // comparación de fecha calendario y cae a instante crudo -- la marca
+      // "hoy" (2019-12-31T00:00Z) es anterior a FROZEN_TEST_NOW - 5min, así
+      // que rechaza. `endTime` no se toca en el PUT (queda el de la
+      // creación, 2026-06-01T22:00Z) -- irrelevante, J1-TZ corta antes de
+      // llegar a la validación de rango start<end.
+      await expect(
+        mixedService.updateReservation(
+          'j1tz-14',
+          { resourceId: 't1', startTime: new Date('2019-12-31T00:00:00.000Z') },
+          TEST_BUSINESS_ID, TEST_USER_ID,
+        ),
+      ).rejects.toThrow('No se puede mover una reserva a una fecha/hora de inicio en el pasado.');
+    });
+
+    // 14b. Dirección inversa -- reasignación de no-alojamiento A alojamiento,
+    //      misma marca de "hoy" → permite (la categoría NUEVA es alojamiento,
+    //      califica, "hoy" == "hoy"). Confirma que el caso 14 no está
+    //      probando una asimetría accidental (ej. "siempre rechaza en un
+    //      update"), sino específicamente la categoría EFECTIVA.
+    it('14b. updateReservation reasigna a un recurso de ALOJAMIENTO junto con marca de "hoy" → permite (categoría NUEVA califica)', async () => {
+      const mixedService = makeService(mixedCategoryRepo);
+      const lodgingResource = new BookableResource('res-lodge-14b', 'Habitación 14b', 100, 'cat-lodging', null, 1);
+      await resourceRepo.save(lodgingResource);
+      bookableServiceRepo.seed({
+        id: 'svc-event-14b', categoryId: 'cat-table', name: 'Uso puntual',
+        bookingMode: 'event', durationMinutes: 120, price: 500,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // Creada en 't1' (no-alojamiento), instante real, no relevante para J1.
+      await mixedService.createReservation({
+        id: 'j1tz-14b', resourceId: 't1', serviceId: 'svc-event-14b', customer,
+        startTime: new Date('2026-06-01T20:00:00Z'), endTime: new Date('2026-06-01T22:00:00Z'),
+        details: {},
+      });
+
+      const updated = await mixedService.updateReservation(
+        'j1tz-14b',
+        { resourceId: 'res-lodge-14b', startTime: new Date('2019-12-31T00:00:00.000Z') },
+        TEST_BUSINESS_ID, TEST_USER_ID,
+      );
+      expect(updated.resource.id).toBe('res-lodge-14b');
+    });
+
+    // 15. changes.resourceId apunta a un recurso inexistente →
+    //     j1EffectiveCategory = null explícito (isLodging=false), J1
+    //     evalúa con la regla de instante, y ResourceNotFoundError se
+    //     lanza después en su lugar actual. La reserva de origen está
+    //     ASSIGNED (no PENDING_ASSIGNMENT) y el startTime nuevo pasa la
+    //     regla de instante (futuro), para que decida ResourceNotFoundError
+    //     y no un error de J1 -- confirmando que el guard no revienta antes
+    //     con un recurso que no existe.
+    it('15. changes.resourceId inexistente → J1-TZ decide con isLodging=false, luego ResourceNotFoundError', async () => {
+      await service.createReservation({
+        id: 'j1tz-15', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00Z'), endTime: new Date('2026-07-01T22:00:00Z'),
+        details: {},
+      });
+
+      await expect(
+        service.updateReservation(
+          'j1tz-15',
+          { resourceId: 'no-existe', startTime: new Date('2026-07-02T20:00:00Z') },
+          TEST_BUSINESS_ID, TEST_USER_ID,
+        ),
+      ).rejects.toThrow(ResourceNotFoundError);
     });
   });
 

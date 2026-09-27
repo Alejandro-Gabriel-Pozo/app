@@ -83,6 +83,9 @@ import type { AuditLogRepository }           from '../repositories/audit-log.rep
 import { auditReservationTransition }        from './reservation-audit.js';
 import type { IResourceLockRepository }      from './resource-lock.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
+import type { BookableService } from './bookable-service.types.js';
+import type { ResourceCategory } from './resource-category.types.js';
+import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
 import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
@@ -107,7 +110,7 @@ import type { SqlClient }                    from '../repositories/sql.client.js
 import { ReservationPricingService }      from './reservation-pricing.service.js';
 import { ReservationAvailabilityService } from './reservation-availability.service.js';
 import { ReservationScheduleService }     from './reservation-schedule.service.js';
-import { resolveEndTime } from './reservation-time.utils.js';
+import { resolveEndTime, qualifiesForDateComparison, isPastStart } from './reservation-time.utils.js';
 
 // Re-exportado para que `pms-estadias/stay.service.ts` (único consumidor
 // externo) siga importando `combineDateAndTime` desde acá sin cambios —
@@ -301,26 +304,52 @@ export class ReservationService {
       throw new InvalidReservationError(`El recurso ${params.resourceId} está desactivado.`);
     }
 
-    // J1 (23/08/2026, pendientes-2026-08-23.md) — no puede vivir en el
-    // constructor de Reservation: Reservation.restore() comparte el mismo
-    // constructor y reconstruye reservas históricas leídas de la base
-    // (prácticamente todas, su startTime ya "pasó" con solo el paso del
-    // tiempo). El guard va acá, en el caso de uso de ALTA.
-    if (params.startTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS) {
-      throw new InvalidReservationError('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
-    }
-
+    // J1-TZ (27/09/2026, docs/diseno-j1-fecha-alojamiento-huso-negocio-2026-09-27.md)
+    // -- category/service/businessProfile se ADELANTAN acá: los 3 ya se
+    // buscaban sin condición más abajo (líneas originales de este método),
+    // así que esto no duplica ninguna consulta -- solo hace falta conocerlos
+    // ANTES de decidir si J1 compara instante crudo o fecha calendario.
     const category = await this.categoryRepository.findById(resource.categoryId);
-    if (category) {
-      validateDetailsAgainstFields(params.details, category.fields);
-    }
-
     // Se busca una sola vez y se reusa para resolveEndTime Y resolvePrice —
     // antes resolveEndTime la buscaba por su cuenta, y hoy además hace falta
     // para cotizar la reserva.
     const service = params.serviceId
       ? await this.bookableServiceRepository.findById(params.serviceId)
       : null;
+    const businessProfile = await this.businessProfileRepository.get();
+
+    // J1 (23/08/2026, pendientes-2026-08-23.md) — no puede vivir en el
+    // constructor de Reservation: Reservation.restore() comparte el mismo
+    // constructor y reconstruye reservas históricas leídas de la base
+    // (prácticamente todas, su startTime ya "pasó" con solo el paso del
+    // tiempo). El guard va acá, en el caso de uso de ALTA.
+    //
+    // J1-TZ (27/09/2026) — J1 original comparaba SIEMPRE instante crudo
+    // contra `now()` con 5 min de tolerancia. Para alojamiento (o
+    // `bookingMode='block'`) con `startTime` como MARCA de fecha calendario
+    // (medianoche UTC, convención del comentario E1 de confirmReservation()
+    // más abajo en este archivo -- fechas de alojamiento en el email,
+    // citado por nombre y no por línea, SCHEMA-ANCHOR-DRIFT-001),
+    // esa comparación cruda rechazaba cargar/mover a "hoy" casi todo el día
+    // de negocio en husos como Argentina (UTC-3) — ver el diseño para la
+    // medición real. `qualifiesForDateComparison()` decide cuál de las 2
+    // reglas aplica; `slot` queda SIEMPRE en instante crudo, aunque el
+    // recurso sea de alojamiento (manda horario real, no marca).
+    if (
+      isPastStart(
+        params.startTime,
+        qualifiesForDateComparison(category?.isLodging ?? false, service?.bookingMode, params.startTime),
+        businessProfile.timezone,
+        this.now,
+        PAST_START_TOLERANCE_MS,
+      )
+    ) {
+      throw new InvalidReservationError('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
+    }
+
+    if (category) {
+      validateDetailsAgainstFields(params.details, category.fields);
+    }
 
     // 27/08/2026, docs/diseno-precio-servicio-vs-recurso-2026-08-27.md.
     // Mismo criterio que el guard J1 de arriba: va en el caso de uso de
@@ -370,7 +399,7 @@ export class ReservationService {
     // Sin CHARGE todavía: se crea recién al confirmar (handleReservationConfirmed,
     // outbox.handlers.ts), junto con el de saldo -- ver docblock de
     // confirmReservation() más abajo para el porqué de no crearlo acá.
-    const businessProfile = await this.businessProfileRepository.get();
+    // (businessProfile ya se buscó más arriba, para J1-TZ -- se reusa acá.)
     const depositAmount = await this.pricing.resolveDepositAmount({
       resourceId: params.resourceId,
       serviceId:  params.serviceId,
@@ -535,6 +564,40 @@ export class ReservationService {
     // abajo) -- por eso se guarda el resultado en vez de descartarlo.
     const preCheck = await this.requireReservation(id);
 
+    // J1-TZ (27/09/2026, docs/diseno-j1-fecha-alojamiento-huso-negocio-2026-09-27.md)
+    // -- se resuelve ACÁ, junto a `preCheck`, ANTES de abrir la transacción
+    // (no adentro: `businessProfileRepository.get()` usa el pool directo,
+    // tomaría una conexión extra mientras se sostienen locks). Es seguro
+    // decidir con estos valores aunque `preCheck` quede desactualizado: el
+    // guard de coherencia de más abajo (`existing.resource.id !== preCheck.resource.id
+    // || existing.serviceId !== preCheck.serviceId`) aborta la transacción
+    // entera con `ReservationConcurrentlyModifiedError` si el recurso o el
+    // servicio cambiaron entre esta lectura y el lock real de la fila -- así
+    // que si estos valores quedaron obsoletos, ni siquiera se llega a
+    // evaluar el guard J1-TZ de abajo con ellos.
+    //
+    // Todo el bloque queda condicionado a que el PUT traiga `startTime`
+    // (si no, J1 no dispara y no hace falta leer nada de esto -- p.ej.
+    // estadias/page.tsx:135, que solo cambia adultos/ninos en cada check-in).
+    let j1EffectiveCategory: ResourceCategory | null = null;
+    let j1Service: BookableService | null = null;
+    let j1BusinessProfile: BusinessProfile | null = null;
+    if (changes.startTime !== undefined) {
+      if (changes.resourceId && changes.resourceId !== preCheck.resource.id) {
+        // HAY reasignación -- la categoría relevante es la del recurso
+        // EFECTIVO (el nuevo), no la del viejo. Consulta nueva de recurso,
+        // sí hace falta acá para conocer su categoryId.
+        const newResource = await this.resourceRepository.getById(changes.resourceId);
+        j1EffectiveCategory = newResource ? await this.categoryRepository.findById(newResource.categoryId) : null;
+      } else {
+        // NO hay reasignación -- `preCheck.resource` ya tiene `categoryId`,
+        // sin consulta nueva de recurso.
+        j1EffectiveCategory = await this.categoryRepository.findById(preCheck.resource.categoryId);
+      }
+      j1Service = preCheck.serviceId ? await this.bookableServiceRepository.findById(preCheck.serviceId) : null;
+      j1BusinessProfile = await this.businessProfileRepository.get();
+    }
+
     let updated!: Reservation;
     // (B-2, corrección post-gate sobre Fase 2 de 4.3) — `true` solo si esta
     // llamada pasó por `assignDeferred()` (rama de arriba, D-2): distingue
@@ -635,9 +698,24 @@ export class ReservationService {
       // campos de una reserva vieja sigue permitido, no se toca acá.
       // Confirmado con el dueño: mover una reserva al pasado se bloquea
       // igual que crearla en el pasado.
+      //
+      // J1-TZ (27/09/2026, docs/diseno-j1-fecha-alojamiento-huso-negocio-2026-09-27.md)
+      // -- mismo criterio que en createReservation(): para alojamiento (o
+      // `bookingMode='block'`) con `newStartTime` como marca de fecha
+      // calendario, compara fecha en huso de negocio en vez de instante
+      // crudo. `j1EffectiveCategory`/`j1Service`/`j1BusinessProfile` ya se
+      // resolvieron afuera de la transacción, junto a `preCheck` -- el guard
+      // se queda en este mismo lugar, sin reordenar nada de lo que sigue
+      // (D-2/ASSIGNMENT_COMBINED_CHANGE más abajo).
       if (
         changes.startTime !== undefined
-        && newStartTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS
+        && isPastStart(
+          newStartTime,
+          qualifiesForDateComparison(j1EffectiveCategory?.isLodging ?? false, j1Service?.bookingMode, newStartTime),
+          j1BusinessProfile!.timezone,
+          this.now,
+          PAST_START_TOLERANCE_MS,
+        )
       ) {
         throw new InvalidReservationError('No se puede mover una reserva a una fecha/hora de inicio en el pasado.');
       }

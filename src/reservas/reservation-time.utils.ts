@@ -10,7 +10,7 @@
 
 import { DateTime } from 'luxon';
 import { InvalidReservationError } from '../domain/errors.js';
-import type { BookableService } from './bookable-service.types.js';
+import type { BookableService, BookingMode } from './bookable-service.types.js';
 
 /**
  * Combina la fecha calendario (leída en UTC, para no depender de la zona
@@ -152,4 +152,95 @@ export async function resolveEndTime(
   }
 
   return new Date(startTime.getTime() + service.durationMinutes * 60_000);
+}
+
+/**
+ * J1-TZ (27/09/2026, docs/diseno-j1-fecha-alojamiento-huso-negocio-2026-09-27.md)
+ * — ¿este `Date` es una "marca de fecha calendario" (medianoche UTC exacta,
+ * la convención que usa el panel para alojamiento y para servicios
+ * `bookingMode='block'`, ver el comentario E1 de `confirmReservation()` en
+ * `reservation.service.ts` -- fechas de alojamiento en el email, citado por
+ * nombre y no por línea, SCHEMA-ANCHOR-DRIFT-001) o un
+ * instante real? Caso borde declarado, no resuelto acá: un instante real
+ * que cae exactamente a las 21:00 hora Argentina (`datetime-local` de
+ * precisión de minuto) produce el mismo valor que una marca — se lee como
+ * marca, deuda conocida.
+ */
+export function isCalendarDateMarker(d: Date): boolean {
+  const utc = DateTime.fromJSDate(d, { zone: 'utc' });
+  return utc.hour === 0 && utc.minute === 0 && utc.second === 0 && utc.millisecond === 0;
+}
+
+/**
+ * Deriva la fecha calendario (ISO `YYYY-MM-DD`) de un `startTime` que
+ * PUEDE ser una marca de fecha: si lo es, se lee la fecha UTC tal cual (es
+ * la convención con la que se guardó); si es un instante real, se convierte
+ * al huso del negocio antes de tomar la fecha. Solo para `startTime` de una
+ * reserva — para "ahora" usar `todayInBusinessTimezone()`, nunca esta
+ * función (ver su docblock para el motivo).
+ */
+export function deriveCalendarDate(startTime: Date, timezone: string): string {
+  const dt = isCalendarDateMarker(startTime)
+    ? DateTime.fromJSDate(startTime, { zone: 'utc' })
+    : DateTime.fromJSDate(startTime, { zone: 'utc' }).setZone(timezone);
+  const iso = dt.toISODate();
+  if (iso == null) {
+    throw new Error(`deriveCalendarDate: huso horario inválido o fecha inválida (timezone=${timezone})`);
+  }
+  return iso;
+}
+
+/**
+ * Fecha calendario de "ahora" en el huso del negocio. Deliberadamente
+ * SEPARADA de `deriveCalendarDate()`: "ahora" nunca es una marca de fecha
+ * guardada por el panel, es el reloj real — pasarlo por
+ * `isCalendarDateMarker()` sería un bug (si el reloj cae justo en
+ * `00:00:00.000Z`, que ocurre 1ms/día en producción pero es SISTEMÁTICO en
+ * tests con reloj congelado a esa hora, se leería como si fuera una fecha
+ * calendario en UTC en vez de convertirse al huso de negocio).
+ */
+export function todayInBusinessTimezone(now: Date, timezone: string): string {
+  const iso = DateTime.fromJSDate(now, { zone: 'utc' }).setZone(timezone).toISODate();
+  if (iso == null) {
+    throw new Error(`todayInBusinessTimezone: huso horario inválido (timezone=${timezone})`);
+  }
+  return iso;
+}
+
+/**
+ * ¿Esta combinación de categoría/servicio/startTime debe compararse por
+ * FECHA CALENDARIO (huso de negocio) en vez de por INSTANTE crudo? `slot`
+ * se excluye primero y siempre — un servicio con horario real (aunque el
+ * recurso sea de alojamiento) manda un instante real, nunca una marca.
+ * Alojamiento y `bookingMode='block'` (alquiler multi-día no-alojamiento,
+ * decisión del dueño 27/09/2026) califican SOLO si el `startTime` es,
+ * además, una marca exacta — un instante real en esas mismas categorías
+ * (ej. servicio `event`/sin-servicio con horario a mano) sigue comparándose
+ * por instante.
+ */
+export function qualifiesForDateComparison(
+  isLodging: boolean,
+  bookingMode: BookingMode | undefined,
+  startTime: Date,
+): boolean {
+  if (bookingMode === 'slot') return false;
+  return (isLodging || bookingMode === 'block') && isCalendarDateMarker(startTime);
+}
+
+/**
+ * J1-TZ — reemplaza la comparación cruda de J1 cuando `qualifies` es
+ * true (fecha calendario en huso de negocio); mantiene el comportamiento
+ * original de J1 (instante crudo + tolerancia) en cualquier otro caso.
+ */
+export function isPastStart(
+  startTime: Date,
+  qualifies: boolean,
+  businessTimezone: string,
+  now: () => Date,
+  pastToleranceMs: number,
+): boolean {
+  if (!qualifies) {
+    return startTime.getTime() < now().getTime() - pastToleranceMs;
+  }
+  return deriveCalendarDate(startTime, businessTimezone) < todayInBusinessTimezone(now(), businessTimezone);
 }
