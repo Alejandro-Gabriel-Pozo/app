@@ -229,6 +229,18 @@ Tres sub-decisiones, cada una con su propio criterio:
 - **Alternativas descartadas:** fusionar `locations` con `companies` — descartado, iría contra el precedente unánime de los 3 referentes (Cloudbeds, OPERA, Odoo), que mantienen el eje organizativo y el eje físico separados a propósito.
 - **Nota del grounding a tener presente al diseñar:** en Odoo la configuración no se hereda del padre (salvo contabilidad) — el nivel matriz agrupa y consolida, no configura por las sucursales. Aplicar el mismo criterio acá si corresponde.
 - **Gatillo de revisión:** ninguno — decisión tomada alineada con el precedente unánime; lo que sigue es el diseño concreto de cómo `locations` se corrige (no si se fusiona).
+- **Re-verificación 24/09/2026 (Wave 14, sesión de documentación) —
+  sigue vigente, sin cambios de sustancia.** Chequeado contra `git log
+  --since="2026-09-16"`: 67 commits en el repo desde esa fecha (no 37 —
+  cifra corregida acá, la de una nota de investigación previa estaba
+  desactualizada). De esos, **2** tocan archivos de `locations`/`companies`
+  — `1b0c293` (unificación de shapes de error 400, toca
+  `locations.routes.ts`/`companies.routes.ts` solo en la forma de la
+  respuesta de validación) y `2dcad0d` (statement_timeout de Postgres,
+  toca `company-sync.worker.ts` solo en config de pool) — ninguno de los
+  dos toca el modelo de datos, el schema, el CRUD ni la decisión de fondo
+  (fusionar o no `locations` con `companies`). La decisión sigue CERRADA:
+  nada implementado, nada que re-abrir.
 
 ### Penalidad retenida en reembolso parcial (pendientes)
 
