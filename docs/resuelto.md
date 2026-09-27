@@ -20,6 +20,36 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 27/09/2026
+
+- **H12 — `test:integration` rojo en CI desde `c773625`, causa raíz y fix de
+  `reservation-auto-assign-all.integration.test.ts` (occupancy_records/PENDING). Origen:
+  `docs/pendientes-2026-09-27.md` H12, cuatro rondas de gate `architecture-governor` sobre
+  `docs/diseno-occupancy-records-pending-assignment-2026-09-27.md` (v1→v2→v2.1).** No era un bug de
+  producción ni una pregunta de negocio abierta: el guard de `SqlOccupancyRepository.recordReservation()`
+  (descarta reservas no `CONFIRMED`/`COMPLETED`) es la Condición 3 de un gate anterior (`41b1ff9`,
+  25/09/2026), fijada por tests de regresión dedicados ("Regresión B-2"). El fixture de
+  `createTodayPendingAssignment()` en Fase 3 rompía ese contrato ya decidido, no al revés. Verificado
+  que no había riesgo de doble reserva — la detección de colisión no depende de `occupancy_records`.
+
+  Dos commits, en secuencia:
+  - `cc10ca6` — docs: diseño v2.1 (aprobado con condiciones, aplicadas), corrección de
+    `docs/linea-base-refactor-2026-09-27.md` (de "no verificable" a "verificado rojo", con evidencia
+    real de la API REST de GitHub Actions), índice actualizado.
+  - `a33318c` — fix: `createTodayConfirmedAssignment()` (helper nuevo, confirma antes del batch, sin
+    tocar las 5 aserciones de "1 fila" existentes), test nuevo "Regresión B-2 sobre el batch" (0
+    filas sin confirmar, 1 tras confirmar), refuerzo del test de concurrencia con `bookedMinutes`.
+    Sin cambios de producción — un solo archivo bajo `src/tests/`.
+
+  Evidencia real, no solo local: Postgres 16 instalado en el sandbox de esta sesión (apagado,
+  levantado para esta verificación), misma versión mayor que `postgres:16-alpine` de CI —
+  `npm run test:integration` completo, 65/65 archivos, 497/497 tests, 0 salteados. Mutation testing
+  real (M1: sacar guard B-1, M2: duplicar `recordOccupancy()` en el batch, M3: ampliar el guard de
+  producción a `PENDING` — la regresión que este diseño existe para prevenir), cada mutante
+  aplicado/corrido/revertido con hash de `git diff src/` verificado idéntico entre cada uno.
+
+  **Confirmado en CI real post-push:** run `36333199233` sobre `a33318c` — `conclusion: success`.
+
 ## 26/09/2026
 
 - **Bloque 4 (`InvoicePendingExpiryWorker` + guard de solo lectura sobre `PENDING` en
