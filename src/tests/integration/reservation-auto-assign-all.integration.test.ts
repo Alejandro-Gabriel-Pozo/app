@@ -209,6 +209,40 @@ async function createTodayPendingAssignment(params: {
   return id;
 }
 
+/**
+ * Alta por categoría (PENDING_ASSIGNMENT) sobre un recurso PROVISORIO
+ * concreto, HOY, y la CONFIRMA (status CONFIRMED) antes de devolver el id
+ * -- mismo patrón que `createConfirmedPendingAssignment()`
+ * (`reservation-deferred-assignment.integration.test.ts:248-285`, Fase 2),
+ * adaptado a la fecha "hoy" que ya usa `createTodayPendingAssignment()`.
+ *
+ * Precondición de los tests de "Auto Assign All" que esperan EXACTAMENTE 1
+ * fila de ocupación tras el batch mismo (sin paso de confirmación aparte):
+ * con B-1 (`ReservationAvailabilityService.recordOccupancy()`) y B-2
+ * (`SqlOccupancyRepository.recordReservation()`) vigentes,
+ * `confirmReservation()` NO deja ninguna fila fantasma sobre el
+ * provisorio mientras la reserva sigue `PENDING_ASSIGNMENT` -- se verifica
+ * acá mismo, así cada test de más abajo arranca desde una precondición
+ * confirmada, no asumida (docs/diseno-occupancy-records-pending-assignment-2026-09-27.md
+ * §7(i)).
+ */
+async function createTodayConfirmedAssignment(params: {
+  service: ReservationService;
+  provisionalResourceId: string;
+  serviceId: string;
+  customerId: string;
+  customerFullName: string;
+  customerEmail: string;
+}): Promise<string> {
+  const id = await createTodayPendingAssignment(params);
+  await params.service.confirmReservation(id, BUSINESS_ID, USER_ID);
+
+  const provisionalOccupancy = await occupancyForResource(params.provisionalResourceId);
+  expect(provisionalOccupancy.rows).toBe(0);
+
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // Suite — se saltea automáticamente si TEST_DATABASE_URL no está definida
 // ---------------------------------------------------------------------------
@@ -227,7 +261,7 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     const provisional = await seedResource(db, category.id);
     const { service } = buildReservationService();
 
-    const id = await createTodayPendingAssignment({
+    const id = await createTodayConfirmedAssignment({
       service, provisionalResourceId: provisional.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
@@ -256,13 +290,48 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     expect(occupancy.bookedMinutes).toBe(DURATION_MINUTES);
   });
 
+  // (ii), docs/diseno-occupancy-records-pending-assignment-2026-09-27.md §7 --
+  // espejo, aplicado al batch, del primer test de "Regresión B-2"
+  // (reservation-deferred-assignment.integration.test.ts:656-733, commit
+  // 41b1ff9): una reserva SIN confirmar que el batch asigna queda con
+  // assignmentStatus ASSIGNED pero status PENDING -- B-2
+  // (SqlOccupancyRepository.recordReservation()) descarta la fila hasta
+  // que se confirme. Cubre la rama que el fixture confirmado de arriba
+  // deja de ejercitar sobre el batch mismo.
+  it('Regresión B-2 sobre el batch: reserva SIN confirmar que el batch asigna -- 0 filas hasta confirmar, luego exactamente 1', async () => {
+    const { category, customer, serviceId } = await setupCategoryFixture();
+    const provisional = await seedResource(db, category.id);
+    const { service } = buildReservationService();
+
+    const id = await createTodayPendingAssignment({
+      service, provisionalResourceId: provisional.id, serviceId,
+      customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
+    });
+
+    const result = await service.autoAssignAllForCategory(category.id, BUSINESS_ID, USER_ID);
+    expect(result.confirmedSameResource).toBe(1);
+
+    const rowAfterBatch = await db.query<{ assignment_status: string; status: string }>(
+      'SELECT assignment_status, status FROM reservations WHERE id = $1',
+      [id],
+    );
+    expect(rowAfterBatch.rows[0]).toMatchObject({ assignment_status: 'ASSIGNED', status: 'PENDING' });
+    expect((await occupancyForResource(provisional.id)).rows).toBe(0);
+
+    await service.confirmReservation(id, BUSINESS_ID, USER_ID);
+
+    const occupancy = await occupancyForResource(provisional.id);
+    expect(occupancy.rows).toBe(1);
+    expect(occupancy.bookedMinutes).toBe(DURATION_MINUTES);
+  });
+
   it('reasigna cuando la provisoria se ocupó (Paso B, fallback): ocupación exacta en el nuevo recurso, cero en el viejo', async () => {
     const { category, customer, serviceId } = await setupCategoryFixture();
     const provisional = await seedResource(db, category.id);
     const alternative = await seedResource(db, category.id);
     const { service } = buildReservationService();
 
-    const id = await createTodayPendingAssignment({
+    const id = await createTodayConfirmedAssignment({
       service, provisionalResourceId: provisional.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
@@ -311,15 +380,15 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     const r3 = await seedResource(db, category.id);
     const { service, reservationRepo } = buildReservationService();
 
-    const id1 = await createTodayPendingAssignment({
+    const id1 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r1.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
-    const id2 = await createTodayPendingAssignment({
+    const id2 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r2.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
-    const id3 = await createTodayPendingAssignment({
+    const id3 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r3.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
@@ -366,11 +435,11 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     const r2 = await seedResource(db, category.id);
     const { service, reservationRepo } = buildReservationService();
 
-    const id1 = await createTodayPendingAssignment({
+    const id1 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r1.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
-    const id2 = await createTodayPendingAssignment({
+    const id2 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r2.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
@@ -426,11 +495,11 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     const r2 = await seedResource(db, category.id);
     const { service, reservationRepo } = buildReservationService();
 
-    const id1 = await createTodayPendingAssignment({
+    const id1 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r1.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
-    const id2 = await createTodayPendingAssignment({
+    const id2 = await createTodayConfirmedAssignment({
       service, provisionalResourceId: r2.id, serviceId,
       customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,
     });
@@ -451,9 +520,18 @@ describe.skipIf(skipIfNoDb)('Fase 3 de 4.3 ("Auto Assign All") — autoAssignAll
     spy.mockRestore();
 
     // (1) Estado final: exactamente 1 fila de ocupación por reserva
-    // PROCESADA (nunca 0 ni 2).
-    expect((await occupancyForResource(r1.id)).rows).toBe(1);
-    expect((await occupancyForResource(r2.id)).rows).toBe(1);
+    // PROCESADA (nunca 0 ni 2). (iii), docs/diseno-occupancy-records-pending-assignment-2026-09-27.md
+    // §7 -- también bookedMinutes, no solo conteo de filas: por el
+    // UNIQUE(resource_id, date) de occupancy_records, un doble conteo NO
+    // crea una segunda fila -- el ON CONFLICT DO UPDATE suma minutos sobre
+    // la fila existente (sql.occupancy.repository.ts:94-98). Contar solo
+    // filas no detectaría ese caso; bookedMinutes sí.
+    const occupancy1 = await occupancyForResource(r1.id);
+    const occupancy2 = await occupancyForResource(r2.id);
+    expect(occupancy1.rows).toBe(1);
+    expect(occupancy1.bookedMinutes).toBe(DURATION_MINUTES);
+    expect(occupancy2.rows).toBe(1);
+    expect(occupancy2.bookedMinutes).toBe(DURATION_MINUTES);
 
     // (2) A lo sumo un ÉXITO por reserva entre los 2 reportes combinados
     // -- NO "exactamente uno": la misma reserva puede aparecer en los dos
