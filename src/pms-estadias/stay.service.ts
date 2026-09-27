@@ -54,6 +54,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 import type { HousekeepingStatus } from './housekeeping-task.js';
 import { DomainError, ReservationNotFoundError, NextArrivalConflictError, ResourceOccupiedError, ScheduleChangeAssignmentPendingError } from '../domain/errors.js';
+import { deriveCalendarDate, todayInBusinessTimezone } from '../reservas/reservation-time.utils.js';
 
 export class StayNotFoundError extends DomainError {
   constructor(stayId: string) {
@@ -66,6 +67,23 @@ export class ReservationNotConfirmedError extends DomainError {
     super(
       `La reserva debe estar CONFIRMED para hacer check-in. Estado actual: ${status}`,
       'RESERVATION_NOT_CONFIRMED',
+    );
+  }
+}
+
+/**
+ * Guard de check-in antes de la fecha de llegada (27/09/2026,
+ * docs/diseno-early-checkin-guard-2026-09-27.md). Bloqueo duro, sin
+ * override — a diferencia de `ResourceNotReadyForCheckInError`, no hay
+ * ningún flag que lo salteé. Compara fechas de NEGOCIO (`deriveCalendarDate()`/
+ * `todayInBusinessTimezone()`, mismo mecanismo que J1-TZ en
+ * `reservation.service.ts`), no instantes crudos.
+ */
+export class CheckInBeforeArrivalDateError extends DomainError {
+  constructor(reservationId: string, startDate: string) {
+    super(
+      `La reserva ${reservationId} recién puede hacer check-in a partir del ${startDate}.`,
+      'CHECK_IN_BEFORE_ARRIVAL_DATE',
     );
   }
 }
@@ -188,6 +206,16 @@ export class StayService {
      * más el check-in de una reserva `ASSIGNED` (Hallazgo 2, ver el diseño).
      */
     private readonly resourceRepository: Pick<ResourceRepository, 'lockByIds'>,
+    /**
+     * Guard de check-in antes de la fecha de llegada (27/09/2026,
+     * docs/diseno-early-checkin-guard-2026-09-27.md, C2/C3/H3) — reloj
+     * inyectable, mismo criterio ya usado en `ReservationService` para
+     * J1-TZ. Alcance acotado a `checkIn()` (housekeeping + el guard
+     * nuevo, ambos vía `todayBusiness` más abajo) — `checkOut()` y la
+     * entidad `Stay` siguen usando el reloj real a propósito, no se
+     * tocan.
+     */
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -271,7 +299,13 @@ export class StayService {
     // autorizado el override (MANAGEMENT, A6.6) — queda registrado en la
     // Stay quién/cuándo/desde qué estado (A6.5).
     const businessProfile = await this.businessProfileRepository.get();
-    const todayBusiness = DateTime.now().setZone(businessProfile.timezone).toISODate()!;
+    // B4 (guard de check-in) — una sola lectura de reloj para housekeeping
+    // Y para el guard nuevo (más abajo, bajo lock), en vez de dos lecturas
+    // separadas que cerca de medianoche podrían dar días distintos.
+    // `todayInBusinessTimezone()` hace throw ante un huso inválido (a
+    // diferencia del `.toISODate()!` anterior, que fail-openeaba en
+    // silencio con `null` forzado por el `!`) — C3, fail-loud a propósito.
+    const todayBusiness = todayInBusinessTimezone(this.now(), businessProfile.timezone);
     const housekeepingTask = await this.housekeepingRepository.findByResourceAndDate(
       input.resourceId,
       input.businessId,
@@ -305,6 +339,20 @@ export class StayService {
       // `reservation.status`, la lectura sin lock de arriba).
       if (locked.status !== 'CONFIRMED') {
         throw new ReservationNotConfirmedError(locked.status);
+      }
+
+      // Guard de check-in antes de la fecha de llegada (27/09/2026,
+      // docs/diseno-early-checkin-guard-2026-09-27.md) — bloqueo duro, sin
+      // override. `locked.startTime` puede ser una marca de fecha
+      // calendario O un instante real (mismo caso J1-TZ); ante la
+      // ambigüedad, la lectura como marca gana siempre (decisión del
+      // dueño) — `deriveCalendarDate()` ya resuelve eso. A diferencia de
+      // J1-TZ, NO se excluye `bookingMode === 'slot'` acá (C1 v6,
+      // residuo conocido y aceptado — `StayService` no tiene acceso a
+      // categoryRepository/bookableServiceRepository para distinguirlo).
+      const startDate = deriveCalendarDate(locked.startTime, businessProfile.timezone);
+      if (todayBusiness < startDate) {
+        throw new CheckInBeforeArrivalDateError(input.reservationId, startDate);
       }
 
       // exactOptionalPropertyTypes: solo pasamos notes/housekeepingOverride si están definidos

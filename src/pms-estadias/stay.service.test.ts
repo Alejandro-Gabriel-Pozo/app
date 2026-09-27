@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { StayService, StayBalanceOwedError, ResourceNotReadyForCheckInError } from './stay.service.js';
+import { StayService, StayBalanceOwedError, ResourceNotReadyForCheckInError, CheckInBeforeArrivalDateError, ReservationNotConfirmedError } from './stay.service.js';
 import { DateTime } from 'luxon';
-import type { Stay } from './stay.js';
+import { Stay } from './stay.js';
 import { Reservation } from '../reservas/Reservation.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
 import { PhysicalResource } from '../reservas/resource.entities.js';
@@ -23,6 +23,7 @@ import {
   ScheduleChangeAssignmentPendingError,
 } from '../domain/errors.js';
 import { HousekeepingTask } from './housekeeping-task.js';
+import { todayInBusinessTimezone } from '../reservas/reservation-time.utils.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_RESERVATION_ID = 'res-1';
@@ -205,6 +206,11 @@ describe('StayService — ledger (A1, paso 3)', () => {
     service = new StayService(
       stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
       new InMemoryTransactionManager(), reservationServiceFake, resourceLockRepo,
+      // Guard de check-in antes de la fecha de llegada (27/09/2026) --
+      // reloj congelado DENTRO de la ventana del fixture (mismo día de
+      // negocio que startTime), así este describe no ejercita el guard
+      // nuevo -- eso lo hace el describe dedicado más abajo.
+      () => new Date('2026-08-13T20:00:00Z'),
     );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
@@ -424,6 +430,13 @@ describe('StayService — gating de check-in por limpieza', () => {
   let businessProfileRepo: FakeBusinessProfileRepository;
   let service: StayService;
 
+  // Guard de check-in antes de la fecha de llegada (27/09/2026) -- reloj
+  // congelado DENTRO de la ventana del fixture (mismo día de negocio que
+  // startTime), compartido con seedTaskForToday() más abajo para que la
+  // tarea de housekeeping siga coincidiendo con "hoy" según ESTE reloj,
+  // no el reloj real del proceso.
+  const now = () => new Date('2026-08-13T20:00:00Z');
+
   beforeEach(async () => {
     stayRepo = new FakeStayRepository();
     reservationRepo = new InMemoryReservationRepository();
@@ -433,6 +446,7 @@ describe('StayService — gating de check-in por limpieza', () => {
     service = new StayService(
       stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
       new InMemoryTransactionManager(), new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
+      now,
     );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
@@ -453,10 +467,17 @@ describe('StayService — gating de check-in por limpieza', () => {
     await reservationRepo.save(reservation);
   });
 
-  /** Tarea de housekeeping para HOY (huso del negocio) en el status pedido -- restore() no valida, alcanza para fijar cualquier status directo. */
+  /**
+   * Tarea de housekeeping para HOY (huso del negocio) en el status pedido
+   * -- restore() no valida, alcanza para fijar cualquier status directo.
+   * (Guard de check-in, 27/09/2026) usa el MISMO reloj congelado `now()`
+   * que recibe el constructor de este describe -- antes usaba
+   * `DateTime.now()` real, que dejaba de coincidir con "hoy" en cuanto
+   * `StayService` empezó a comparar contra un reloj inyectado.
+   */
   function seedTaskForToday(status: HousekeepingTask['status']) {
-    const todayBusiness = DateTime.now().setZone('America/Argentina/Buenos_Aires').toISODate()!;
-    const now = new Date();
+    const todayBusiness = todayInBusinessTimezone(now(), 'America/Argentina/Buenos_Aires');
+    const nowInstant = new Date();
     housekeepingRepo.seed(HousekeepingTask.restore({
       id: `task-${Math.random()}`,
       businessId: TEST_BUSINESS_ID,
@@ -471,8 +492,8 @@ describe('StayService — gating de check-in por limpieza', () => {
       inspectedAt: null,
       inspectedBy: null,
       notBefore: null,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowInstant,
+      updatedAt: nowInstant,
     }));
   }
 
@@ -539,6 +560,141 @@ describe('StayService — gating de check-in por limpieza', () => {
   });
 });
 
+/**
+ * Guard de check-in antes de la fecha de llegada (27/09/2026,
+ * docs/diseno-early-checkin-guard-2026-09-27.md) — matriz de tests del
+ * diseño, casos 1-5 (los casos 6/7 de regresión de precedencia se agregan
+ * acá también; los 17 call-sites existentes de `checkIn(` de este mismo
+ * archivo, con reloj dentro de ventana, ya cubren "el resto sigue
+ * pasando", ítem 7 del test plan). Cada test construye su PROPIO service
+ * (reloj distinto por caso) — no comparte `beforeEach` con los describes
+ * de arriba.
+ */
+describe('StayService — guard de check-in antes de la fecha de llegada (27/09/2026)', () => {
+  function buildService(now: () => Date) {
+    const stayRepo = new FakeStayRepository();
+    const reservationRepo = new InMemoryReservationRepository();
+    const housekeepingRepo = new InMemoryHousekeepingRepository();
+    const financialRepo = new FakeFinancialTransactionRepository();
+    const businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+    const service = new StayService(
+      stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+      new InMemoryTransactionManager(), new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
+      now,
+    );
+    return { service, stayRepo, reservationRepo };
+  }
+
+  async function seedConfirmedReservation(reservationRepo: InMemoryReservationRepository, startTime: Date) {
+    const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
+    const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
+    const reservation = new Reservation({
+      id: TEST_RESERVATION_ID,
+      customer,
+      resource,
+      startTime,
+      endTime: new Date(startTime.getTime() + 24 * 60 * 60 * 1000),
+      details: {},
+      initialStatus: ReservationStatus.CONFIRMED,
+      totalPrice: 15000,
+      reservationNumber: 1,
+      appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
+    });
+    await reservationRepo.save(reservation);
+  }
+
+  const checkInInput = {
+    reservationId: TEST_RESERVATION_ID,
+    resourceId: TEST_RESOURCE_ID,
+    businessId: TEST_BUSINESS_ID,
+    assignedBy: 'user-1',
+  };
+
+  it('caso 1: marca de hoy, reloj de mediodía ART del mismo día -- permite', async () => {
+    const { service, reservationRepo } = buildService(() => new Date('2026-09-27T15:00:00Z'));
+    await seedConfirmedReservation(reservationRepo, new Date('2026-09-27T00:00:00.000Z'));
+    await expect(service.checkIn(checkInInput)).resolves.toBeDefined();
+  });
+
+  it('caso 2: marca de mañana, mismo reloj que el caso 1 -- bloquea', async () => {
+    const { service, reservationRepo } = buildService(() => new Date('2026-09-27T15:00:00Z'));
+    await seedConfirmedReservation(reservationRepo, new Date('2026-09-28T00:00:00.000Z'));
+    await expect(service.checkIn(checkInInput)).rejects.toThrow(CheckInBeforeArrivalDateError);
+  });
+
+  it('caso 3: marca de hoy, reloj en el límite superior del día de negocio (23:59:59.999 ART) -- permite. Mata < -> <=', async () => {
+    const { service, reservationRepo } = buildService(() => new Date('2026-09-28T02:59:59.999Z'));
+    await seedConfirmedReservation(reservationRepo, new Date('2026-09-27T00:00:00.000Z'));
+    await expect(service.checkIn(checkInInput)).resolves.toBeDefined();
+  });
+
+  it('caso 4 (B1): instante real de portal (22:00 ART del 28/09) -- permite con 3 relojes de la misma fecha de negocio, bloquea un día antes', async () => {
+    for (const clockIso of ['2026-09-28T15:00:00.000Z', '2026-09-28T23:30:00.000Z', '2026-09-29T01:30:00.000Z']) {
+      const { service, reservationRepo } = buildService(() => new Date(clockIso));
+      await seedConfirmedReservation(reservationRepo, new Date('2026-09-29T01:00:00.000Z'));
+      await expect(service.checkIn(checkInInput)).resolves.toBeDefined();
+    }
+
+    const { service: serviceOneDayBefore, reservationRepo: repoOneDayBefore } =
+      buildService(() => new Date('2026-09-27T15:00:00.000Z'));
+    await seedConfirmedReservation(repoOneDayBefore, new Date('2026-09-29T01:00:00.000Z'));
+    await expect(serviceOneDayBefore.checkIn(checkInInput)).rejects.toThrow(CheckInBeforeArrivalDateError);
+  });
+
+  it('caso 5: marca ambigua (21:00 ART del día anterior) -- bloquea hasta las 00:00 ART del día de la marca, luego permite', async () => {
+    const { service: serviceBlocked, reservationRepo: repoBlocked } =
+      buildService(() => new Date('2026-09-28T02:59:59.999Z'));
+    await seedConfirmedReservation(repoBlocked, new Date('2026-09-28T00:00:00.000Z'));
+    await expect(serviceBlocked.checkIn(checkInInput)).rejects.toThrow(CheckInBeforeArrivalDateError);
+
+    const { service: serviceAllowed, reservationRepo: repoAllowed } =
+      buildService(() => new Date('2026-09-28T03:00:00.000Z'));
+    await seedConfirmedReservation(repoAllowed, new Date('2026-09-28T00:00:00.000Z'));
+    await expect(serviceAllowed.checkIn(checkInInput)).resolves.toBeDefined();
+  });
+
+  it('caso 5 (C7): reloj exactamente medianoche UTC (también marca) -- bloquea. Mata deriveCalendarDate(this.now()) en vez de todayInBusinessTimezone', async () => {
+    const { service, reservationRepo } = buildService(() => new Date('2026-09-28T00:00:00.000Z'));
+    await seedConfirmedReservation(reservationRepo, new Date('2026-09-28T00:00:00.000Z'));
+    await expect(service.checkIn(checkInInput)).rejects.toThrow(CheckInBeforeArrivalDateError);
+  });
+
+  it('caso 6 (regresión de precedencia): reserva no CONFIRMED con fecha de llegada futura -- ReservationNotConfirmedError, no el guard nuevo', async () => {
+    const { service, reservationRepo } = buildService(() => new Date('2026-09-27T15:00:00Z'));
+    const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
+    const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
+    const reservation = new Reservation({
+      id: TEST_RESERVATION_ID,
+      customer,
+      resource,
+      startTime: new Date('2026-09-30T00:00:00.000Z'),
+      endTime: new Date('2026-10-01T00:00:00.000Z'),
+      details: {},
+      initialStatus: ReservationStatus.PENDING,
+      totalPrice: 15000,
+      reservationNumber: 1,
+      appliedCustomerRateId: null,
+      assignmentStatus: 'ASSIGNED',
+    });
+    await reservationRepo.save(reservation);
+    await expect(service.checkIn(checkInInput)).rejects.toThrow(ReservationNotConfirmedError);
+  });
+
+  it('caso 7 (regresión de precedencia): recurso ya ocupado con fecha de llegada futura -- ResourceOccupiedError, sin llegar a evaluar el guard nuevo', async () => {
+    const { service, stayRepo, reservationRepo } = buildService(() => new Date('2026-09-27T15:00:00Z'));
+    await seedConfirmedReservation(reservationRepo, new Date('2026-09-30T00:00:00.000Z'));
+    await stayRepo.save(Stay.checkIn({
+      businessId: TEST_BUSINESS_ID,
+      reservationId: 'other-reservation',
+      resourceId: TEST_RESOURCE_ID,
+      customerId: 'other-customer',
+      assignedBy: 'user-1',
+    }));
+    await expect(service.checkIn(checkInInput)).rejects.toThrow(ResourceOccupiedError);
+  });
+});
+
 // Regresión (18/08/2026, pendientes-2026-08-18.md punto N): flujo completo
 // de horario de check-in/check-out — pedido, conflicto con la próxima
 // llegada, cargo, y housekeeping (notBefore).
@@ -563,6 +719,10 @@ describe('StayService — horario de check-in/check-out', () => {
     service = new StayService(
       stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
       txManager, new FakeReservationServiceForCheckIn(), new FakeResourceLockRepository(),
+      // Guard de check-in antes de la fecha de llegada (27/09/2026) --
+      // reloj congelado dentro de la ventana del fixture, mismo criterio
+      // que los otros describes de este archivo.
+      () => new Date('2026-08-13T20:00:00Z'),
     );
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');

@@ -139,7 +139,7 @@ function buildReservationService(): ReservationService {
   );
 }
 
-function buildStayService(reservationService: ReservationService): StayService {
+function buildStayService(reservationService: ReservationService, now: () => Date = () => new Date()): StayService {
   const resourceRepo = new SqlResourceRepository(db);
   const reservationRepo = new SqlReservationRepository(db, resourceRepo);
   const stayRepo = new SqlStayRepository(db);
@@ -161,6 +161,11 @@ function buildStayService(reservationService: ReservationService): StayService {
     // Postgres real.
     reservationService,
     resourceRepo,
+    // Guard de check-in antes de la fecha de llegada (27/09/2026) --
+    // reloj inyectable, reenviado desde setupLodgingFixture() (C4 del
+    // gate sobre el diseño). Default real para los callers de este
+    // archivo que nunca llaman a checkIn() (PUT/completar).
+    now,
   );
 }
 
@@ -214,7 +219,14 @@ async function occupancyForResource(resourceId: string): Promise<{ rows: number;
  * duración la da el `endTime` explícito, no `duration_minutes`) y un
  * cliente.
  */
-async function setupLodgingFixture() {
+/**
+ * `now` (guard de check-in, 27/09/2026) es OPCIONAL con default real --
+ * la mayoría de los callers de este helper (PUT/completar) nunca llaman
+ * a `checkIn()`, así que no se les puede exigir el parámetro. Los 3
+ * tests que sí llaman a `checkIn()` (más abajo) pasan su propio reloj
+ * congelado, sincronizado con la fecha de su fixture puntual.
+ */
+async function setupLodgingFixture(now: () => Date = () => new Date()) {
   const category = await seedCategory(db, { isExclusive: true, isLodging: true });
   const provisional = await seedResource(db, category.id);
   const final = await seedResource(db, category.id);
@@ -228,7 +240,7 @@ async function setupLodgingFixture() {
   );
 
   const reservationService = buildReservationService();
-  const stayService = buildStayService(reservationService);
+  const stayService = buildStayService(reservationService, now);
 
   return { category, provisional, final, customer, serviceId, reservationService, stayService };
 }
@@ -345,7 +357,8 @@ describe.skipIf(skipIfNoDb)('Fase 2 de 4.3 (asignación diferida) — B-1/B-2/B-
 
   describe('Check-in confirma la asignación diferida', () => {
     it('check-in a un recurso concreto: ocupación EXACTA en el final, CERO en el provisorio', async () => {
-      const { provisional, final, customer, serviceId, reservationService, stayService } = await setupLodgingFixture();
+      const { provisional, final, customer, serviceId, reservationService, stayService } =
+        await setupLodgingFixture(() => new Date('2030-06-03T23:00:00Z'));
       const startTime = new Date('2030-06-03T20:00:00Z');
       const endTime = new Date('2030-06-03T22:00:00Z');
 
@@ -378,7 +391,8 @@ describe.skipIf(skipIfNoDb)('Fase 2 de 4.3 (asignación diferida) — B-1/B-2/B-
     });
 
     it('check-in con un recurso candidato de OTRA categoría: AssignmentCategoryMismatchError, y la transacción completa se deshace (sin Stay, sin cargo vinculado, ocupación intacta)', async () => {
-      const { provisional, customer, serviceId, reservationService, stayService } = await setupLodgingFixture();
+      const { provisional, customer, serviceId, reservationService, stayService } =
+        await setupLodgingFixture(() => new Date('2030-06-04T23:00:00Z'));
       // Categoría/recurso AJENOS a la fixture de alojamiento -- el "upgrade
       // real" que assignDeferred() (paso 6) tiene que rechazar.
       const otherCategory = await seedCategory(db, { isExclusive: true, isLodging: false });
@@ -477,7 +491,8 @@ describe.skipIf(skipIfNoDb)('Fase 2 de 4.3 (asignación diferida) — B-1/B-2/B-
     });
 
     it('check-in', async () => {
-      const { provisional: x, final: y, customer, serviceId, reservationService, stayService } = await setupLodgingFixture();
+      const { provisional: x, final: y, customer, serviceId, reservationService, stayService } =
+        await setupLodgingFixture(() => new Date('2030-06-07T23:00:00Z'));
       const id = await createConfirmedPendingAssignment({
         reservationService, provisionalResourceId: x.id, serviceId,
         customerId: customer.id, customerFullName: customer.fullName, customerEmail: customer.email,

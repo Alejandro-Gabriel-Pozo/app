@@ -392,6 +392,11 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESERVATION_NOT_CONFIRMED':
     case 'RESOURCE_OCCUPIED':
     case 'RESOURCE_NOT_READY_FOR_CHECKIN':
+    // CHECK_IN_BEFORE_ARRIVAL_DATE (27/09/2026,
+    // docs/diseno-early-checkin-guard-2026-09-27.md) -- mismo grupo que
+    // RESOURCE_NOT_READY_FOR_CHECKIN: precondición de estado (fecha de
+    // llegada) no cumplida, request bien formado, sin override (no-fallthrough, ver bloque 402 de este archivo).
+    case 'CHECK_IN_BEFORE_ARRIVAL_DATE':
     case 'CUSTOMER_RATE_CONFLICT':
     // Wave 12 (18/09/2026, gate architecture-governor, §7.2(b)) -- ACCOUNTS_RECEIVABLE_REVERSED_CANNOT_INVOICE
     // entra al mismo grupo que ACCOUNTS_RECEIVABLE_ALREADY_INVOICED de acá abajo: precondición de estado del

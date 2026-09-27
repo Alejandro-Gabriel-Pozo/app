@@ -82,6 +82,10 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
       stayRepo, reservationRepo, new InMemoryHousekeepingRepository(),
       financialRepo, businessProfileRepo, pgTxManager,
       reservationServiceStub, resourceRepo,
+      // Guard de check-in antes de la fecha de llegada (27/09/2026) --
+      // fixture único en 2030-01-01 (seed.ts, seedReservation default),
+      // un solo reloj congelado alcanza para todo este archivo.
+      () => new Date('2030-01-01T12:00:00Z'),
     );
   }, 60_000);
 
