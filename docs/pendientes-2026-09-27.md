@@ -7007,3 +7007,26 @@ los confirme.
 - **H11 (baja, ya conocido, con ancla desactualizada)** — `CANCEL_ADVANCE_MS` sigue fijo en 24h en
   `src/api/routes/customer.routes.ts:131` (y `:968`). Ya estaba registrado más arriba en este mismo
   archivo citando `:127` — esa cita quedó vieja, la línea real hoy es `:131`.
+
+## Residuos de `appfrontend-main` encontrados al gatear su propuesta de refactor (`architecture-governor`,
+## segunda ronda, 27/09/2026) — registrados acá porque `appfrontend/docs/` no tiene archivo de
+## pendientes propio; el `CLAUDE.md` raíz señala este archivo como el equivalente
+
+Ninguno bloquea nada del repo `app-main` — son 4 documentos de `appfrontend-main` que quedaron
+desactualizados, encontrados como efecto colateral de auditar la propuesta de refactor de ese repo
+(que también sigue en HOLD). Bloque de docs propio del frontend, sin relación con el refactor en sí.
+
+- **`appfrontend/.github/workflows/ci.yml`** — el comentario dice "3 warnings preexistentes"; la
+  corrida real de `npm run lint` da **4** hoy.
+- **`appfrontend/CLAUDE.md:167-171`** — el backlog de migración a modal/panel/ruta dedicada dice que
+  faltan 7 entidades (Usuarios, Reservas, Estadías, Recursos, Housekeeping, Productos, Turnos). Ya
+  están las 9 rutas `[id]` base, creadas en el commit `0ee207b` (25/08/2026) —
+  `appfrontend/docs/auditoria-modales.md:86-93` las marca ✅. El párrafo quedó desactualizado desde
+  esa migración.
+- **`appfrontend/ARCHITECTURE.md:64-65`** — se autodeclara "referencia canónica" y dice que todo HTTP
+  va en `lib/api.ts` y los tipos en `lib/types.ts`. Contradice directamente
+  `appfrontend/CLAUDE.md` §Modularidad (que dice que esos dos archivos son barrels de
+  compatibilidad, y que el código real vive en `lib/<dominio>/`) — dos fuentes de verdad
+  contradictorias sobre la misma pregunta, en el mismo repo.
+- **`appfrontend/src/lib/auth.tsx`** — stub de 3 líneas con un comentario desactualizado (no dice a
+  qué apunta hoy). Aparece como huérfano en un chequeo de `dependency-cruiser` (`no-orphans`).
